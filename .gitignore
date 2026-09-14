@@ -1,0 +1,6 @@
+.env
+.meet_profile/
+venv/
+.venv/
+__pycache__/
+calendar_token.json

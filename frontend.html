@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MeetSync — ถอดคำบรรยาย Google Meet</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --line: #2a2f3a;
+    --text: #e6e8ec; --muted: #9aa3b2; --accent: #4c8dff; --accent-d: #3a6fd8;
+    --danger: #ff5c5c; --ok: #37c978;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 "Segoe UI", Tahoma, system-ui, sans-serif;
+  }
+  header {
+    padding: 14px 18px; border-bottom: 1px solid var(--line);
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+    background: var(--panel); position: sticky; top: 0; z-index: 5;
+  }
+  h1 { font-size: 16px; margin: 0; font-weight: 600; white-space: nowrap; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); display: inline-block; }
+  .dot.on { background: var(--ok); }
+  .dot.err { background: var(--danger); }
+  form { display: flex; gap: 8px; flex: 1; min-width: 260px; }
+  input[type=text] {
+    flex: 1; background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+    padding: 9px 12px; border-radius: 8px; font-size: 14px; outline: none;
+  }
+  input[type=text]:focus { border-color: var(--accent); }
+  button {
+    border: 0; border-radius: 8px; padding: 9px 16px; font-size: 14px; font-weight: 600;
+    cursor: pointer; background: var(--accent); color: #fff;
+  }
+  button:hover { background: var(--accent-d); }
+  button.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--line); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .bar {
+    padding: 8px 18px; font-size: 13px; color: var(--muted);
+    border-bottom: 1px solid var(--line); background: var(--panel);
+    display: flex; gap: 10px; align-items: center;
+  }
+  main { max-width: 900px; margin: 0 auto; padding: 18px; }
+  .line { padding: 7px 2px; border-bottom: 1px solid var(--line); }
+  .line .who { color: var(--accent); font-weight: 600; }
+  .line .ts { color: var(--muted); font-size: 12px; margin-right: 8px; }
+  .line.interim .txt { color: var(--muted); }
+  .line.raw .who { color: var(--muted); font-style: italic; }
+  .empty { color: var(--muted); text-align: center; padding: 40px 0; }
+  footer {
+    position: sticky; bottom: 0; background: var(--panel); border-top: 1px solid var(--line);
+    padding: 10px 18px; display: flex; gap: 8px; justify-content: flex-end;
+  }
+  #summaryPanel {
+    margin: 0 0 18px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px;
+    background: var(--panel2);
+  }
+  #summaryPanel h2 { font-size: 14px; margin: 0 0 8px; color: var(--accent); }
+  #summaryPanel .item { padding: 4px 0; font-size: 14px; }
+  #summaryPanel .item .meta { color: var(--muted); font-size: 12px; }
+  #summaryPanel .item .calBtn {
+    border: 1px solid var(--line); background: var(--panel); color: var(--text);
+    padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 400; cursor: pointer;
+    margin-left: 6px;
+  }
+  #summaryPanel .item .calBtn:disabled { opacity: .5; cursor: default; }
+  #calStatus { font-size: 12px; color: var(--muted); }
+  #calStatus a { color: var(--accent); text-decoration: none; }
+  #userBadge { font-size: 13px; color: var(--muted); margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  #userBadge img { width: 22px; height: 22px; border-radius: 50%; }
+  #userBadge a { color: var(--accent); text-decoration: none; }
+  #pastPanel {
+    margin: 0 0 18px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px;
+    background: var(--panel2);
+  }
+  #pastPanel h2 { font-size: 14px; margin: 0 0 8px; color: var(--accent); }
+  #pastPanel .item { padding: 4px 0; font-size: 14px; }
+  #pastPanel .item .meta { color: var(--muted); font-size: 12px; margin-right: 8px; }
+  #pastPanel .pastRow { cursor: pointer; border-radius: 6px; padding: 6px 8px; }
+  #pastPanel .pastRow:hover { background: var(--panel); }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="dot"></span>
+  <h1>MeetSync</h1>
+  <form id="f">
+    <input type="text" id="url" placeholder="วางลิงก์ Google Meet เช่น https://meet.google.com/abc-defg-hij" autocomplete="off" />
+    <button id="startBtn" type="submit">เริ่ม</button>
+    <button id="stopBtn" type="button" class="ghost" disabled>หยุด</button>
+  </form>
+  <span id="calStatus">กำลังเช็ค Calendar…</span>
+  <span id="userBadge"></span>
+</header>
+
+<div class="bar"><span id="status">พร้อมใช้งาน</span></div>
+
+<main>
+  <div id="pastPanel" hidden></div>
+  <div id="summaryPanel" hidden></div>
+  <div id="list"><div class="empty">ยังไม่มีคำบรรยาย — วางลิงก์แล้วกด “เริ่ม”</div></div>
+</main>
+
+<footer>
+  <button class="ghost" id="pastBtn" type="button">การประชุมที่ผ่านมา</button>
+  <button class="ghost" id="clearBtn" type="button">ล้างจอ</button>
+  <button class="ghost" id="dlBtn" type="button">ดาวน์โหลด .txt</button>
+  <button class="ghost" id="summarizeBtn" type="button" disabled>สรุปการประชุม (Gemini)</button>
+</footer>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const list = $("#list"), statusEl = $("#status"), dot = $("#dot");
+const startBtn = $("#startBtn"), stopBtn = $("#stopBtn");
+const summarizeBtn = $("#summarizeBtn"), summaryPanel = $("#summaryPanel");
+const pastBtn = $("#pastBtn"), pastPanel = $("#pastPanel");
+const calStatusEl = $("#calStatus");
+const userBadgeEl = $("#userBadge");
+
+async function loadUserBadge() {
+  try {
+    const res = await fetch("/me");
+    if (res.status === 401) { window.location = "/login"; return; }
+    const user = await res.json();
+    userBadgeEl.innerHTML = `${user.picture ? `<img src="${user.picture}">` : ""}${user.name} · <a href="/logout">ออกจากระบบ</a>`;
+  } catch {
+    userBadgeEl.textContent = "";
+  }
+}
+loadUserBadge();
+const rows = new Map();           // id -> {el, name, text, ts}
+let running = false;
+let lastMeetingId = null;
+let calendarConnected = false;
+
+async function checkCalendarStatus() {
+  try {
+    const res = await fetch("/calendar/status");
+    const data = await res.json();
+    calendarConnected = !!data.connected;
+    calStatusEl.innerHTML = calendarConnected
+      ? "Calendar เชื่อมต่อแล้ว ✓"
+      : `<a href="/auth/google">เชื่อมต่อ Google Calendar</a>`;
+  } catch {
+    calStatusEl.textContent = "";
+  }
+}
+
+function setRunning(v) {
+  running = v;
+  startBtn.disabled = v;
+  stopBtn.disabled = !v;
+  dot.classList.toggle("on", v);
+}
+
+function pad(n) { return String(n).padStart(2, "0"); }
+function nowTs() { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
+
+function clearList() {
+  rows.clear();
+  list.innerHTML = '<div class="empty">— ล้างจอแล้ว —</div>';
+}
+
+function upsert(ev) {
+  const empty = list.querySelector(".empty");
+  if (empty) empty.remove();
+
+  let row = rows.get(ev.id);
+  const atBottom = window.innerHeight + window.scrollY >= document.body.offsetHeight - 80;
+
+  if (!row) {
+    const el = document.createElement("div");
+    el.className = "line";
+    el.innerHTML = `<span class="ts"></span><span class="who"></span><span class="txt"></span>`;
+    list.appendChild(el);
+    row = { el, ts: nowTs() };
+    rows.set(ev.id, row);
+    el.querySelector(".ts").textContent = "[" + row.ts + "]";
+  }
+  row.name = ev.name;
+  row.text = ev.text;
+  row.el.classList.toggle("interim", !ev.final);
+  row.el.classList.toggle("raw", ev.name === "(raw)");
+  row.el.querySelector(".who").textContent = ev.name === "(raw)" ? "" : ev.name + ": ";
+  row.el.querySelector(".txt").textContent = ev.text;
+
+  if (atBottom) window.scrollTo(0, document.body.scrollHeight);
+}
+
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => { dot.classList.remove("err"); statusEl.textContent = "เชื่อมต่อแล้ว"; };
+  ws.onclose = () => {
+    dot.classList.add("err"); dot.classList.remove("on");
+    statusEl.textContent = "หลุดการเชื่อมต่อ — กำลังต่อใหม่…";
+    setTimeout(connect, 1500);
+  };
+  ws.onmessage = (m) => {
+    const ev = JSON.parse(m.data);
+    if (ev.type === "caption") upsert(ev);
+    else if (ev.type === "status") statusEl.textContent = ev.text;
+    else if (ev.type === "error") { statusEl.textContent = "ผิดพลาด: " + ev.text; dot.classList.add("err"); }
+    else if (ev.type === "state") setRunning(ev.running);
+    else if (ev.type === "cleared") clearList();
+    else if (ev.type === "meeting_ended") {
+      lastMeetingId = ev.meeting_id;
+      summarizeBtn.disabled = false;
+    }
+  };
+  window._ws = ws;
+}
+
+function renderSummary(data) {
+  const items = (data.action_items || []).map(it => {
+    let calBtn = "";
+    if (it.action_item_id != null && calendarConnected) {
+      calBtn = it.calendar_synced
+        ? `<button class="calBtn" disabled>ส่ง Calendar แล้ว ✓</button>`
+        : `<button class="calBtn" data-action-item-id="${it.action_item_id}">ส่งไป Calendar</button>`;
+    }
+    let when = "";
+    if (it.due_date) when = ` (กำหนด ${it.due_date}${it.due_time ? " เวลา " + it.due_time + " น." : ""})`;
+    return `
+    <div class="item">• ${it.description}
+      <span class="meta">${it.assignee ? " — " + it.assignee : ""}${when}</span>
+      ${calBtn}
+    </div>`;
+  }).join("") || `<div class="item meta">— ไม่มี action item —</div>`;
+  summaryPanel.innerHTML = `
+    <h2>สรุปการประชุม <button class="calBtn" id="regenBtn" data-meeting-id="${data.meeting_id ?? ""}">สรุปใหม่</button></h2>
+    <div class="item">${data.executive_summary}</div>${items}`;
+  summaryPanel.hidden = false;
+}
+
+summaryPanel.addEventListener("click", async (e) => {
+  if (e.target.id === "regenBtn") {
+    const meetingId = e.target.dataset.meetingId;
+    if (meetingId) summarizeMeeting(Number(meetingId), e.target, true);
+    return;
+  }
+  const btn = e.target.closest(".calBtn");
+  if (!btn || btn.disabled) return;
+  const id = btn.dataset.actionItemId;
+  btn.disabled = true;
+  const prevLabel = btn.textContent;
+  btn.textContent = "กำลังส่ง…";
+  try {
+    const res = await fetch(`/action-items/${id}/sync-to-calendar`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "ส่งไม่สำเร็จ");
+    btn.textContent = "ส่ง Calendar แล้ว ✓";
+  } catch (e2) {
+    btn.disabled = false;
+    btn.textContent = prevLabel;
+    statusEl.textContent = "ส่งไป Calendar ไม่สำเร็จ: " + e2.message;
+  }
+});
+
+async function summarizeMeeting(meetingId, btn, regenerate = false) {
+  const prevLabel = btn?.textContent;
+  if (btn) { btn.disabled = true; btn.textContent = "กำลังสรุป…"; }
+  statusEl.textContent = "กำลังสรุป…";
+  try {
+    const url = `/meetings/${meetingId}/summarize${regenerate ? "?regenerate=true" : ""}`;
+    const res = await fetch(url, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "สรุปไม่สำเร็จ");
+    renderSummary(data);
+    statusEl.textContent = "สรุปเรียบร้อย";
+  } catch (e) {
+    statusEl.textContent = "สรุปไม่สำเร็จ: " + e.message;
+  } finally {
+    if (btn) { btn.textContent = prevLabel; btn.disabled = false; }
+  }
+}
+
+summarizeBtn.addEventListener("click", () => {
+  if (!lastMeetingId) return;
+  summarizeMeeting(lastMeetingId, summarizeBtn);
+});
+
+function fmtDate(iso) {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+async function loadPastMeetings() {
+  pastPanel.hidden = false;
+  pastPanel.innerHTML = `<h2>การประชุมที่ผ่านมา</h2><div class="item meta">กำลังโหลด…</div>`;
+  try {
+    const res = await fetch("/meetings");
+    const meetings = await res.json();
+    if (!res.ok) throw new Error(meetings.detail || "โหลดไม่สำเร็จ");
+    if (!meetings.length) {
+      pastPanel.innerHTML = `<h2>การประชุมที่ผ่านมา</h2><div class="item meta">— ยังไม่มีการประชุม —</div>`;
+      return;
+    }
+    const rows = meetings.map(m => `
+      <div class="item pastRow" data-id="${m.meeting_id}">
+        <span class="meta">${fmtDate(m.started_at)}</span>${m.meet_url.replace("https://meet.google.com/", "")}
+        ${m.has_summary ? " — มีสรุปแล้ว ✓" : ""}
+      </div>`).join("");
+    pastPanel.innerHTML = `<h2>การประชุมที่ผ่านมา (คลิกเพื่อดู/สร้างสรุป)</h2>${rows}`;
+    pastPanel.querySelectorAll(".pastRow").forEach((el) => {
+      el.addEventListener("click", () => summarizeMeeting(Number(el.dataset.id)));
+    });
+  } catch (e) {
+    pastPanel.innerHTML = `<h2>การประชุมที่ผ่านมา</h2><div class="item meta">โหลดไม่สำเร็จ: ${e.message}</div>`;
+  }
+}
+
+pastBtn.addEventListener("click", () => {
+  if (!pastPanel.hidden) { pastPanel.hidden = true; return; }
+  loadPastMeetings();
+});
+
+$("#f").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const url = $("#url").value.trim();
+  if (!url) return;
+  localStorage.setItem("meet_url", url);
+  window._ws?.send(JSON.stringify({ action: "start", url }));
+});
+stopBtn.addEventListener("click", () => window._ws?.send(JSON.stringify({ action: "stop" })));
+$("#clearBtn").addEventListener("click", () => window._ws?.send(JSON.stringify({ action: "clear" })));
+$("#dlBtn").addEventListener("click", () => {
+  const lines = [...rows.values()].map(r =>
+    `[${r.ts}] ${r.name === "(raw)" ? "" : r.name + ": "}${r.text}`);
+  const blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `meet-transcript-${Date.now()}.txt`;
+  a.click();
+});
+
+$("#url").value = localStorage.getItem("meet_url") || "";
+connect();
+checkCalendarStatus();
+</script>
+</body>
+</html>
