@@ -29,6 +29,7 @@ JS_CAPTION_WATCHER = r"""
   const FINALIZE_MS = 1500;
   const lastRaw = new Map();   // row -> ข้อความดิบล่าสุดที่อ่านจาก DOM
   const commit = new Map();    // row -> ข้อความสะสม (ยาวขึ้นเรื่อย ๆ ไม่มีวันสั้นลง)
+  const liveTail = new Map();  // row -> ส่วนท้ายของ commit ที่มาจาก "raw" ปัจจุบันจริง ๆ (ไม่ใช่ทั้งก้อน raw)
   const timers = new Map();
   const emit = (p) => { try { window.__onCaption(p); } catch (e) {} };
 
@@ -71,37 +72,49 @@ JS_CAPTION_WATCHER = r"""
   // อยู่ (sliding window) ฟังก์ชันนี้ต่อข้อความใหม่เข้ากับส่วนที่สะสมไว้แล้ว โดยหาจุดที่
   // ท้ายข้อความเดิมทับซ้อนกับหน้าข้อความใหม่ยาวที่สุด แล้วต่อเฉพาะส่วนที่ไม่ซ้ำ กันข้อความ
   // ที่เคยจับได้แล้วหายไปตอน Meet ตัดหน้าทิ้ง
+  // คืนทั้งข้อความที่ต่อแล้ว (next) และ "ส่วนที่ต่อเพิ่มจริง" (tail) — ต้องรู้ tail แยกจาก
+  // incoming ทั้งก้อน เพราะรอบถัดไปถ้าข้อความยาวขึ้นตามปกติ เราต้องลบเฉพาะส่วนที่เคยต่อไว้จริง
+  // ออกก่อน ไม่ใช่ลบทั้ง incoming (ไม่งั้นจะลบผิดขนาดแล้วต่อซ้ำข้อความเดิมเข้าไปอีกรอบ)
   const overlapAppend = (base, incoming) => {
-    if (!base) return incoming;
-    if (!incoming) return base;
+    if (!base) return { next: incoming, tail: incoming };
+    if (!incoming) return { next: base, tail: '' };
     // incoming เป็นเวอร์ชันที่ครอบ base อยู่แล้ว (เช่น ASR แก้คำเดิมเล็กน้อยแล้วโตขึ้น) -> ใช้ incoming ไปเลย
-    if (incoming.includes(base)) return incoming;
-    if (base.includes(incoming)) return base;
+    if (incoming.includes(base)) return { next: incoming, tail: incoming };
+    if (base.includes(incoming)) return { next: base, tail: '' };
     const max = Math.min(base.length, incoming.length);
     for (let k = max; k >= 3; k--) {
-      if (base.slice(-k) === incoming.slice(0, k)) return base + incoming.slice(k);
+      if (base.slice(-k) === incoming.slice(0, k)) {
+        const tail = incoming.slice(k);
+        return { next: base + tail, tail };
+      }
     }
     // หาจุดทับซ้อนไม่เจอเลย (ASR แก้ข้อความเดิมแบบไม่ใช่แค่ตัดหน้า) — เลือกข้อความที่ยาวกว่าแทน
     // การต่อกันตรง ๆ เพื่อไม่ให้คำซ้ำวนอยู่ในบรรทัดเดียวกัน (ยอมเสี่ยงหลุดคำเก่าดีกว่าคำซ้ำ)
-    return incoming.length >= base.length ? incoming : base;
+    return incoming.length >= base.length
+      ? { next: incoming, tail: incoming }
+      : { next: base, tail: '' };
   };
 
   const updateCommit = (row, raw) => {
     const prevRaw = lastRaw.get(row) || '';
     const prevCommit = commit.get(row) || '';
-    let next;
+    const prevTail = liveTail.get(row) || '';
+    let next, tail;
     if (prevRaw && raw.startsWith(prevRaw)) {
-      // ข้อความยาวขึ้นตามปกติ (ยังไม่ถูกตัดหน้า) -> สลับ tail ที่ยังไม่นิ่งเป็นเวอร์ชันยาวขึ้น
-      const base = prevCommit.endsWith(prevRaw)
-        ? prevCommit.slice(0, prevCommit.length - prevRaw.length)
+      // ข้อความยาวขึ้นตามปกติ (ยังไม่ถูกตัดหน้า) -> ลบเฉพาะส่วนที่ต่อไว้จริงครั้งก่อน (prevTail,
+      // ไม่ใช่ prevRaw ทั้งก้อน — ครั้งก่อนอาจเป็นแค่ tail จาก overlapAppend) แล้วต่อก้อนใหม่ทั้งก้อนแทน
+      const base = prevCommit.endsWith(prevTail)
+        ? prevCommit.slice(0, prevCommit.length - prevTail.length)
         : prevCommit;
       next = base + raw;
+      tail = raw;
     } else {
       // Meet ตัดหน้า/รีเซ็ตข้อความในแถวนี้แล้ว -> ต่อเข้ากับของสะสมเดิมแทนการทับ
-      next = overlapAppend(prevCommit, raw);
+      ({ next, tail } = overlapAppend(prevCommit, raw));
     }
     lastRaw.set(row, raw);
     commit.set(row, next);
+    liveTail.set(row, tail);
     return next;
   };
 
@@ -116,6 +129,7 @@ JS_CAPTION_WATCHER = r"""
     timers.delete(row);
     lastRaw.delete(row);
     commit.delete(row);
+    liveTail.delete(row);
   };
 
   let liveRows = new Set();
