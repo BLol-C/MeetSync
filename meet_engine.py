@@ -271,11 +271,6 @@ class MeetCaptionEngine:
         off = re.compile(r"^\s*ปิด|turn off", re.I)
 
         try:
-            await page.screenshot(path="debug_before_cc.png")
-        except Exception:  # noqa: BLE001
-            pass
-
-        try:
             buttons = page.get_by_role("button", name=cc)
             count = await buttons.count()
             for i in range(count):
@@ -290,10 +285,6 @@ class MeetCaptionEngine:
                     await btn.click()
                     await page.wait_for_timeout(1500)
                     self._emit(type="status", text=f"กดเปิดคำบรรยายแล้ว (ปุ่ม: {label!r})")
-                    try:
-                        await page.screenshot(path="debug_after_cc.png")
-                    except Exception:  # noqa: BLE001
-                        pass
                     return
             self._emit(
                 type="status",
@@ -308,10 +299,6 @@ class MeetCaptionEngine:
             await page.keyboard.press("c")
             await page.wait_for_timeout(1500)
             self._emit(type="status", text="กด shortcut 'c' เพื่อเปิดคำบรรยายแล้ว")
-            try:
-                await page.screenshot(path="debug_after_cc.png")
-            except Exception:  # noqa: BLE001
-                pass
         except Exception as e:  # noqa: BLE001
             self._emit(type="status", text=f"⚠️ กด shortcut เปิดคำบรรยายไม่สำเร็จ: {e!r}")
 

@@ -4,5 +4,3 @@ venv/
 .venv/
 __pycache__/
 calendar_token.json
-debug_before_cc.png
-debug_after_cc.png

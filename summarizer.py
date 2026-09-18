@@ -8,13 +8,23 @@
 import datetime
 import json
 import os
+import time
 
 from google import genai
-from google.genai import types
+from google.genai import errors, types
 
 import db
 
 _MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+_MAX_RETRIES = 3
+_RETRY_DELAY_SEC = 5
+_REQUEST_TIMEOUT_MS = 30_000  # SDK ไม่ตั้ง timeout ให้เองเลย ถ้าไม่กำหนดค่านี้ ตอน Gemini โหลดสูงจะค้างได้เป็นนาที ๆ
+                                # โดยไม่มี error ใด ๆ ขึ้นมาให้เห็นเลย
+# google-genai SDK มี retry ของตัวเองในตัวอยู่แล้ว (ค่า default คือ 5 attempts, backoff แบบ exponential
+# สูงสุด 60 วิ/ครั้ง, retry ให้เองอัตโนมัติตอนเจอ 429/5xx) ถ้าปล่อยไว้จะไปซ้อนกับ retry loop ของเราเอง
+# (_generate_with_retry ด้านล่าง) กลายเป็น retry ซ้อน retry คูณกันจนรอเป็นหลักหลายนาทีตอน Gemini โหลดสูง
+# ปิด retry ของ SDK ทิ้ง (attempts=1 = ไม่ retry) ให้เหลือแค่ชั้นเดียวที่เราคุมเองแทน
+_NO_SDK_RETRY = types.HttpRetryOptions(attempts=1)
 
 _THAI_WEEKDAYS = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์", "อาทิตย์"]
 
@@ -53,6 +63,24 @@ def _meeting_reference_date(meeting_id: int) -> datetime.datetime:
     return started_at or datetime.datetime.now()
 
 
+def _generate_with_retry(client: genai.Client, prompt: str):
+    """เรียก Gemini พร้อม retry เฉพาะตอนเจอ ServerError (5xx เช่น 503 UNAVAILABLE ที่ฝั่ง Google โหลดสูงชั่วคราว)
+
+    ไม่ retry ตอนเจอ ClientError (เช่น 429 โควต้าหมด) เพราะรอไม่กี่วิก็ไม่หาย เสียเวลาผู้ใช้เปล่า ๆ
+    """
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            return client.models.generate_content(
+                model=_MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json"),
+            )
+        except errors.ServerError:
+            if attempt == _MAX_RETRIES:
+                raise
+            time.sleep(_RETRY_DELAY_SEC)
+
+
 def summarize_meeting(meeting_id: int) -> dict:
     """สรุป meeting_id ด้วย Gemini แล้วบันทึกผลลง DB คืนค่า dict ผลสรุป (รวม summary_id)"""
     existing = db.get_summary(meeting_id)
@@ -75,12 +103,11 @@ def summarize_meeting(meeting_id: int) -> dict:
         transcript=transcript_text,
     )
 
-    client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model=_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(response_mime_type="application/json"),
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=_REQUEST_TIMEOUT_MS, retry_options=_NO_SDK_RETRY),
     )
+    response = _generate_with_retry(client, prompt)
     result = json.loads(response.text)
 
     summary_id = db.insert_summary(meeting_id, result["executive_summary"], _MODEL)

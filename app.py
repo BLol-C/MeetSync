@@ -16,13 +16,14 @@ load_dotenv()  # ต้องโหลดก่อน import db เพราะ 
 import os
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from starlette.middleware.sessions import SessionMiddleware
 
 import auth
 import calendar_auth
 import calendar_sync
 import db
+import pdf_report
 import summarizer
 from meet_engine import MEET_URL_RE, MeetCaptionEngine
 
@@ -210,6 +211,40 @@ async def list_meetings() -> list[dict]:
     return await asyncio.to_thread(db.list_meetings)
 
 
+@app.get("/meetings/{meeting_id}/transcript.txt")
+async def download_transcript(meeting_id: int) -> PlainTextResponse:
+    if not _db_ready:
+        raise HTTPException(status_code=503, detail="ฐานข้อมูลไม่พร้อม")
+    meeting = await asyncio.to_thread(db.get_meeting, meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="ไม่พบการประชุมนี้")
+    rows = await asyncio.to_thread(db.get_transcript, meeting_id)
+    lines = [f"[{r['spoken_at']:%H:%M:%S}] {r['display_name']}: {r['text']}" for r in rows]
+    body = "\n".join(lines) + ("\n" if lines else "")
+    return PlainTextResponse(
+        body,
+        headers={"Content-Disposition": f'attachment; filename="meet-transcript-{meeting_id}.txt"'},
+    )
+
+
+@app.get("/meetings/{meeting_id}/summary.pdf")
+async def download_summary_pdf(meeting_id: int) -> Response:
+    if not _db_ready:
+        raise HTTPException(status_code=503, detail="ฐานข้อมูลไม่พร้อม")
+    meeting = await asyncio.to_thread(db.get_meeting, meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="ไม่พบการประชุมนี้")
+    summary = await asyncio.to_thread(db.get_summary, meeting_id)
+    if not summary:
+        raise HTTPException(status_code=404, detail="การประชุมนี้ยังไม่ได้สรุป")
+    pdf_bytes = await asyncio.to_thread(pdf_report.build_summary_pdf, meeting, summary)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="meeting-summary-{meeting_id}.pdf"'},
+    )
+
+
 @app.post("/meetings/{meeting_id}/summarize")
 async def summarize_meeting(meeting_id: int, regenerate: bool = False) -> dict:
     if not _db_ready:
@@ -275,9 +310,6 @@ async def ws(sock: WebSocket):
                 await _start((msg.get("url") or "").strip())
             elif action == "stop":
                 await _stop()
-            elif action == "clear":
-                _history.clear()
-                _broadcast({"type": "cleared"})
     except WebSocketDisconnect:
         pass
     finally:

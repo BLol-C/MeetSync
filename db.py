@@ -221,13 +221,13 @@ def update_segment(segment_id: int, text: str):
 
 
 def list_meetings(limit: int = 50) -> list[dict]:
-    """รายการการประชุมล่าสุด พร้อมบอกว่ามีสรุปแล้วหรือยัง (สำหรับหน้า "การประชุมที่ผ่านมา")"""
+    """รายการการประชุมล่าสุด พร้อมสรุปย่อ (ถ้ามี) สำหรับหน้า "การประชุมที่ผ่านมา\""""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """SELECT m.meeting_id, m.meet_url, m.started_at, m.ended_at, m.status,
-                          (s.summary_id IS NOT NULL) AS has_summary
+                          s.executive_summary
                    FROM meetings m
                    LEFT JOIN summaries s ON s.meeting_id = m.meeting_id
                    ORDER BY m.started_at DESC
@@ -258,7 +258,7 @@ def get_transcript(meeting_id: int) -> list[dict]:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT s.display_name, t.text
+                """SELECT s.display_name, t.text, t.spoken_at
                    FROM transcript_segments t
                    JOIN speakers s ON s.speaker_id = t.speaker_id
                    WHERE t.meeting_id = %s

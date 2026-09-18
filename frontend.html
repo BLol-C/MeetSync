@@ -35,13 +35,32 @@
     cursor: pointer; background: var(--accent); color: #fff;
   }
   button:hover { background: var(--accent-d); }
-  button.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--line); }
+  button.ghost, a.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--line); }
   button:disabled { opacity: .45; cursor: not-allowed; }
+  a.ghost {
+    display: inline-block; border-radius: 8px; padding: 9px 16px; font-size: 14px; font-weight: 600;
+    cursor: pointer; text-decoration: none;
+  }
+  a.ghost:hover { background: var(--line); }
+  a.ghost[hidden] { display: none; }
   .bar {
     padding: 8px 18px; font-size: 13px; color: var(--muted);
     border-bottom: 1px solid var(--line); background: var(--panel);
-    display: flex; gap: 10px; align-items: center;
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
   }
+  .bar .hint { font-style: italic; }
+  .steps {
+    display: flex; gap: 4px; padding: 8px 18px; overflow-x: auto;
+    background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  .step {
+    font-size: 12px; color: var(--muted); padding: 4px 12px; border-radius: 999px;
+    white-space: nowrap; background: var(--panel2); border: 1px solid var(--line);
+  }
+  .step.active { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+  .step.done { color: var(--ok); border-color: var(--ok); }
+  .actionRow { display: flex; gap: 8px; padding: 0 0 16px; }
+  .actionRow[hidden] { display: none; }
   main { max-width: 900px; margin: 0 auto; padding: 18px; }
   .line { padding: 7px 2px; border-bottom: 1px solid var(--line); }
   .line .who { color: var(--accent); font-weight: 600; }
@@ -49,10 +68,6 @@
   .line.interim .txt { color: var(--muted); }
   .line.raw .who { color: var(--muted); font-style: italic; }
   .empty { color: var(--muted); text-align: center; padding: 40px 0; }
-  footer {
-    position: sticky; bottom: 0; background: var(--panel); border-top: 1px solid var(--line);
-    padding: 10px 18px; display: flex; gap: 8px; justify-content: flex-end;
-  }
   #summaryPanel {
     margin: 0 0 18px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px;
     background: var(--panel2);
@@ -60,26 +75,45 @@
   #summaryPanel h2 { font-size: 14px; margin: 0 0 8px; color: var(--accent); }
   #summaryPanel .item { padding: 4px 0; font-size: 14px; }
   #summaryPanel .item .meta { color: var(--muted); font-size: 12px; }
-  #summaryPanel .item .calBtn {
+  .calBtn {
     border: 1px solid var(--line); background: var(--panel); color: var(--text);
     padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 400; cursor: pointer;
-    margin-left: 6px;
+    margin-left: 6px; text-decoration: none; display: inline-block;
   }
-  #summaryPanel .item .calBtn:disabled { opacity: .5; cursor: default; }
-  #calStatus { font-size: 12px; color: var(--muted); }
+  .calBtn:disabled { opacity: .5; cursor: default; }
+  #headerMeta { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
   #calStatus a { color: var(--accent); text-decoration: none; }
-  #userBadge { font-size: 13px; color: var(--muted); margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  #userBadge { display: flex; align-items: center; gap: 8px; }
   #userBadge img { width: 22px; height: 22px; border-radius: 50%; }
   #userBadge a { color: var(--accent); text-decoration: none; }
   #pastPanel {
-    margin: 0 0 18px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px;
-    background: var(--panel2);
+    position: fixed; top: 0; right: 0; height: 100%; width: 320px; max-width: 85vw;
+    margin: 0; padding: 16px; border: 1px solid var(--line); border-top: 0; border-bottom: 0;
+    background: var(--panel2); box-shadow: -6px 0 20px rgba(0,0,0,.4); overflow-y: auto; z-index: 10;
   }
-  #pastPanel h2 { font-size: 14px; margin: 0 0 8px; color: var(--accent); }
-  #pastPanel .item { padding: 4px 0; font-size: 14px; }
-  #pastPanel .item .meta { color: var(--muted); font-size: 12px; margin-right: 8px; }
-  #pastPanel .pastRow { cursor: pointer; border-radius: 6px; padding: 6px 8px; }
+  #pastPanel h2 { font-size: 14px; margin: 0 0 8px; color: var(--accent); display: flex; align-items: center; gap: 8px; }
+  #pastPanel h2 .closeBtn {
+    margin-left: auto; background: transparent; border: 0; color: var(--muted); font-size: 18px;
+    line-height: 1; cursor: pointer; padding: 0 4px;
+  }
+  #pastPanel h2 .closeBtn:hover { color: var(--text); }
+  #pastPanel h2 .backBtn {
+    background: transparent; border: 0; color: var(--muted); font-size: 12px; font-weight: 400;
+    cursor: pointer; padding: 0;
+  }
+  #pastPanel h2 .backBtn:hover { color: var(--text); }
+  #pastPanel h2 .title { flex: 1; }
+  #pastPanel .item { padding: 8px 0; font-size: 14px; border-bottom: 1px solid var(--line); }
+  #pastPanel .item .meta { display: block; color: var(--muted); font-size: 12px; margin-bottom: 2px; }
+  #pastPanel .item .row-actions { margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
+  #pastPanel .pastRow { cursor: pointer; margin: 0 -16px; padding: 8px 16px; }
   #pastPanel .pastRow:hover { background: var(--panel); }
+  #pastPanel .pastRow .topic { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #pastPanel .sectionTitle { font-size: 13px; font-weight: 600; color: var(--accent); margin: 14px 0 6px; }
+  #pastPanel .rawTranscript {
+    white-space: pre-wrap; font-size: 13px; color: var(--text); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px; max-height: 320px; overflow-y: auto;
+  }
 </style>
 </head>
 <body>
@@ -88,36 +122,65 @@
   <h1>MeetSync</h1>
   <form id="f">
     <input type="text" id="url" placeholder="วางลิงก์ Google Meet เช่น https://meet.google.com/abc-defg-hij" autocomplete="off" />
-    <button id="startBtn" type="submit">เริ่ม</button>
-    <button id="stopBtn" type="button" class="ghost" disabled>หยุด</button>
+    <button id="startBtn" type="submit">เริ่มประชุม</button>
+    <button id="stopBtn" type="button" class="ghost" disabled>หยุดประชุม</button>
   </form>
-  <span id="calStatus">กำลังเช็ค Calendar…</span>
-  <span id="userBadge"></span>
+  <span id="headerMeta">
+    <button class="calBtn" id="pastBtn" type="button">ประวัติการประชุม</button>
+    <span id="calStatus">กำลังเช็ค Calendar…</span>
+    <span id="userBadge"></span>
+  </span>
 </header>
 
-<div class="bar"><span id="status">พร้อมใช้งาน</span></div>
+<nav class="steps" id="steps">
+  <span class="step" data-step="link">① วางลิงก์</span>
+  <span class="step" data-step="run">② กำลังประชุม</span>
+  <span class="step" data-step="ended">③ ประชุมจบ</span>
+  <span class="step" data-step="summary">④ สรุปผล</span>
+</nav>
+
+<div class="bar"><span id="status">พร้อมใช้งาน</span><span class="hint" id="hint"></span></div>
 
 <main>
   <div id="pastPanel" hidden></div>
   <div id="summaryPanel" hidden></div>
-  <div id="list"><div class="empty">ยังไม่มีคำบรรยาย — วางลิงก์แล้วกด “เริ่ม”</div></div>
+  <div class="actionRow" id="actionRow" hidden>
+    <button class="ghost" id="dlBtn" type="button">ดาวน์โหลด transcript .txt</button>
+    <a class="ghost" id="pdfBtn" href="#" download hidden>ดาวน์โหลด PDF สรุปผล</a>
+    <button id="summarizeBtn" type="button">สรุปการประชุม (Gemini)</button>
+  </div>
+  <div id="list"><div class="empty">ยังไม่มีคำบรรยาย — วางลิงก์แล้วกด “เริ่มประชุม”</div></div>
 </main>
-
-<footer>
-  <button class="ghost" id="pastBtn" type="button">การประชุมที่ผ่านมา</button>
-  <button class="ghost" id="clearBtn" type="button">ล้างจอ</button>
-  <button class="ghost" id="dlBtn" type="button">ดาวน์โหลด .txt</button>
-  <button class="ghost" id="summarizeBtn" type="button" disabled>สรุปการประชุม (Gemini)</button>
-</footer>
 
 <script>
 const $ = (s) => document.querySelector(s);
-const list = $("#list"), statusEl = $("#status"), dot = $("#dot");
-const startBtn = $("#startBtn"), stopBtn = $("#stopBtn");
+const list = $("#list"), statusEl = $("#status"), dot = $("#dot"), hintEl = $("#hint");
+const startBtn = $("#startBtn"), stopBtn = $("#stopBtn"), dlBtn = $("#dlBtn"), pdfBtn = $("#pdfBtn");
 const summarizeBtn = $("#summarizeBtn"), summaryPanel = $("#summaryPanel");
 const pastBtn = $("#pastBtn"), pastPanel = $("#pastPanel");
 const calStatusEl = $("#calStatus");
 const userBadgeEl = $("#userBadge");
+const stepsEl = $("#steps"), actionRow = $("#actionRow");
+
+const STEP_ORDER = ["link", "run", "ended", "summary"];
+const STAGE_HINT = {
+  link: "ขั้นตอนที่ 1/4 — วางลิงก์ Google Meet แล้วกด “เริ่มประชุม”",
+  run: "ขั้นตอนที่ 2/4 — กำลังบันทึกคำบรรยายสด พูดในที่ประชุมได้เลย",
+  ended: "ขั้นตอนที่ 3/4 — ประชุมจบแล้ว กด “สรุปการประชุม” หรือดาวน์โหลด transcript ด้านล่าง",
+  summary: "ขั้นตอนที่ 4/4 — สรุปผลแล้ว ดูรายละเอียดด้านล่าง หรือส่ง action item เข้า Calendar",
+};
+
+function setStage(stage) {
+  const idx = STEP_ORDER.indexOf(stage);
+  stepsEl.querySelectorAll(".step").forEach((el) => {
+    const i = STEP_ORDER.indexOf(el.dataset.step);
+    el.classList.toggle("active", i === idx);
+    el.classList.toggle("done", i < idx);
+  });
+  hintEl.textContent = STAGE_HINT[stage] || "";
+  actionRow.hidden = stage === "link" || stage === "run";
+  summarizeBtn.hidden = stage === "summary"; // สรุปได้แค่ครั้งเดียวต่อการประชุม พอสรุปแล้วซ่อนปุ่มทิ้ง
+}
 
 async function loadUserBadge() {
   try {
@@ -149,10 +212,20 @@ async function checkCalendarStatus() {
 }
 
 function setRunning(v) {
+  const wasRunning = running;
   running = v;
   startBtn.disabled = v;
   stopBtn.disabled = !v;
   dot.classList.toggle("on", v);
+  if (v) {
+    // เริ่มประชุมใหม่ — ผลของการประชุม "ก่อนหน้า" ต้องกลับไปรอจนคุยจบใหม่อีกครั้ง
+    lastMeetingId = null;
+    pdfBtn.hidden = true;
+    setStage("run");
+  } else if (wasRunning) {
+    // เพิ่งกดหยุดจริง ๆ (ไม่ใช่แค่ WS เพิ่งต่อแล้วรายงานว่าไม่ได้ประชุมอยู่)
+    setStage("ended");
+  }
 }
 
 function pad(n) { return String(n).padStart(2, "0"); }
@@ -206,14 +279,13 @@ function connect() {
     else if (ev.type === "cleared") clearList();
     else if (ev.type === "meeting_ended") {
       lastMeetingId = ev.meeting_id;
-      summarizeBtn.disabled = false;
     }
   };
   window._ws = ws;
 }
 
-function renderSummary(data) {
-  const items = (data.action_items || []).map(it => {
+function buildActionItemsHtml(actionItems) {
+  return (actionItems || []).map(it => {
     let calBtn = "";
     if (it.action_item_id != null && calendarConnected) {
       calBtn = it.calendar_synced
@@ -228,20 +300,22 @@ function renderSummary(data) {
       ${calBtn}
     </div>`;
   }).join("") || `<div class="item meta">— ไม่มี action item —</div>`;
-  summaryPanel.innerHTML = `
-    <h2>สรุปการประชุม <button class="calBtn" id="regenBtn" data-meeting-id="${data.meeting_id ?? ""}">สรุปใหม่</button></h2>
-    <div class="item">${data.executive_summary}</div>${items}`;
-  summaryPanel.hidden = false;
 }
 
-summaryPanel.addEventListener("click", async (e) => {
-  if (e.target.id === "regenBtn") {
-    const meetingId = e.target.dataset.meetingId;
-    if (meetingId) summarizeMeeting(Number(meetingId), e.target, true);
-    return;
+function renderSummary(data) {
+  summaryPanel.innerHTML = `
+    <h2>สรุปการประชุม
+      <button class="calBtn" id="regenBtn" data-meeting-id="${data.meeting_id ?? ""}">สรุปใหม่</button>
+    </h2>
+    <div class="item">${data.executive_summary}</div>${buildActionItemsHtml(data.action_items)}`;
+  summaryPanel.hidden = false;
+  if (data.meeting_id != null) {
+    pdfBtn.href = `/meetings/${data.meeting_id}/summary.pdf`;
+    pdfBtn.hidden = false;
   }
-  const btn = e.target.closest(".calBtn");
-  if (!btn || btn.disabled) return;
+}
+
+async function syncActionItemToCalendar(btn) {
   const id = btn.dataset.actionItemId;
   btn.disabled = true;
   const prevLabel = btn.textContent;
@@ -256,9 +330,24 @@ summaryPanel.addEventListener("click", async (e) => {
     btn.textContent = prevLabel;
     statusEl.textContent = "ส่งไป Calendar ไม่สำเร็จ: " + e2.message;
   }
+}
+
+summaryPanel.addEventListener("click", async (e) => {
+  if (e.target.id === "regenBtn") {
+    const meetingId = Number(e.target.dataset.meetingId);
+    if (!meetingId) return;
+    try {
+      const data = await fetchOrGenerateSummary(meetingId, e.target, true);
+      renderSummary(data);
+    } catch { /* ข้อความ error แสดงใน statusEl แล้วจาก fetchOrGenerateSummary */ }
+    return;
+  }
+  const btn = e.target.closest(".calBtn[data-action-item-id]");
+  if (!btn || btn.disabled) return;
+  syncActionItemToCalendar(btn);
 });
 
-async function summarizeMeeting(meetingId, btn, regenerate = false) {
+async function fetchOrGenerateSummary(meetingId, btn, regenerate = false) {
   const prevLabel = btn?.textContent;
   if (btn) { btn.disabled = true; btn.textContent = "กำลังสรุป…"; }
   statusEl.textContent = "กำลังสรุป…";
@@ -267,18 +356,23 @@ async function summarizeMeeting(meetingId, btn, regenerate = false) {
     const res = await fetch(url, { method: "POST" });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "สรุปไม่สำเร็จ");
-    renderSummary(data);
     statusEl.textContent = "สรุปเรียบร้อย";
+    return data;
   } catch (e) {
     statusEl.textContent = "สรุปไม่สำเร็จ: " + e.message;
+    throw e;
   } finally {
     if (btn) { btn.textContent = prevLabel; btn.disabled = false; }
   }
 }
 
-summarizeBtn.addEventListener("click", () => {
+summarizeBtn.addEventListener("click", async () => {
   if (!lastMeetingId) return;
-  summarizeMeeting(lastMeetingId, summarizeBtn);
+  try {
+    const data = await fetchOrGenerateSummary(lastMeetingId, summarizeBtn);
+    renderSummary(data);
+    setStage("summary");
+  } catch { /* ข้อความ error แสดงใน statusEl แล้วจาก fetchOrGenerateSummary */ }
 });
 
 function fmtDate(iso) {
@@ -287,30 +381,125 @@ function fmtDate(iso) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+const PAST_HEADER = `<h2>การประชุมที่ผ่านมา<button class="closeBtn" id="pastCloseBtn" type="button">✕</button></h2>`;
+
 async function loadPastMeetings() {
   pastPanel.hidden = false;
-  pastPanel.innerHTML = `<h2>การประชุมที่ผ่านมา</h2><div class="item meta">กำลังโหลด…</div>`;
+  pastPanel.innerHTML = `${PAST_HEADER}<div class="item meta">กำลังโหลด…</div>`;
   try {
     const res = await fetch("/meetings");
     const meetings = await res.json();
     if (!res.ok) throw new Error(meetings.detail || "โหลดไม่สำเร็จ");
     if (!meetings.length) {
-      pastPanel.innerHTML = `<h2>การประชุมที่ผ่านมา</h2><div class="item meta">— ยังไม่มีการประชุม —</div>`;
+      pastPanel.innerHTML = `${PAST_HEADER}<div class="item meta">— ยังไม่มีการประชุม —</div>`;
       return;
     }
     const rows = meetings.map(m => `
-      <div class="item pastRow" data-id="${m.meeting_id}">
-        <span class="meta">${fmtDate(m.started_at)}</span>${m.meet_url.replace("https://meet.google.com/", "")}
-        ${m.has_summary ? " — มีสรุปแล้ว ✓" : ""}
+      <div class="item pastRow" data-id="${m.meeting_id}" data-has-summary="${m.executive_summary ? "true" : "false"}">
+        <span class="meta">${fmtDate(m.started_at)} — ${m.meet_url.replace("https://meet.google.com/", "")}</span>
+        <div class="topic">${m.executive_summary || "ยังไม่ได้สรุป — คลิกเพื่อดูข้อความดิบ"}</div>
       </div>`).join("");
-    pastPanel.innerHTML = `<h2>การประชุมที่ผ่านมา (คลิกเพื่อดู/สร้างสรุป)</h2>${rows}`;
-    pastPanel.querySelectorAll(".pastRow").forEach((el) => {
-      el.addEventListener("click", () => summarizeMeeting(Number(el.dataset.id)));
-    });
+    pastPanel.innerHTML = `${PAST_HEADER}${rows}`;
   } catch (e) {
-    pastPanel.innerHTML = `<h2>การประชุมที่ผ่านมา</h2><div class="item meta">โหลดไม่สำเร็จ: ${e.message}</div>`;
+    pastPanel.innerHTML = `${PAST_HEADER}<div class="item meta">โหลดไม่สำเร็จ: ${e.message}</div>`;
   }
 }
+
+async function fillRawTranscript(meetingId) {
+  const el = document.getElementById("rawTranscript");
+  if (!el) return;
+  try {
+    const res = await fetch(`/meetings/${meetingId}/transcript.txt`);
+    const text = await res.text();
+    el.textContent = text.trim() || "— ไม่มีคำบรรยาย —";
+  } catch (e) {
+    el.textContent = "โหลด transcript ไม่สำเร็จ: " + e.message;
+  }
+}
+
+function renderPastDetail(data) {
+  const txtLink = data.meeting_id != null
+    ? `<a class="calBtn" href="/meetings/${data.meeting_id}/transcript.txt" download>ดาวน์โหลด .txt</a>` : "";
+  const pdfLink = data.meeting_id != null
+    ? `<a class="calBtn" href="/meetings/${data.meeting_id}/summary.pdf" download>ดาวน์โหลด PDF</a>` : "";
+  pastPanel.innerHTML = `
+    <h2>
+      <button class="backBtn" id="pastBackBtn" type="button">← กลับ</button>
+      <span class="title">รายละเอียดการประชุม</span>
+      <button class="calBtn" data-regen-id="${data.meeting_id ?? ""}">สรุปใหม่</button>
+      <button class="closeBtn" id="pastCloseBtn" type="button">✕</button>
+    </h2>
+    <div class="item">${data.executive_summary}</div>
+    ${buildActionItemsHtml(data.action_items)}
+    <div class="row-actions">${txtLink}${pdfLink}</div>
+    <div class="sectionTitle">ข้อความดิบ (transcript)</div>
+    <div class="rawTranscript" id="rawTranscript">กำลังโหลด…</div>`;
+
+  if (data.meeting_id != null) fillRawTranscript(data.meeting_id);
+}
+
+function renderPastRaw(meetingId) {
+  const txtLink = `<a class="calBtn" href="/meetings/${meetingId}/transcript.txt" download>ดาวน์โหลด .txt</a>`;
+  pastPanel.innerHTML = `
+    <h2>
+      <button class="backBtn" id="pastBackBtn" type="button">← กลับ</button>
+      <span class="title">ยังไม่ได้สรุป</span>
+      <button class="closeBtn" id="pastCloseBtn" type="button">✕</button>
+    </h2>
+    <div class="row-actions">
+      <button class="calBtn" data-summarize-id="${meetingId}">สรุปด้วย Gemini</button>
+      ${txtLink}
+    </div>
+    <div class="sectionTitle">ข้อความดิบ (transcript)</div>
+    <div class="rawTranscript" id="rawTranscript">กำลังโหลด…</div>`;
+
+  fillRawTranscript(meetingId);
+}
+
+pastPanel.addEventListener("click", async (e) => {
+  if (e.target.id === "pastCloseBtn") { pastPanel.hidden = true; return; }
+  if (e.target.id === "pastBackBtn") { loadPastMeetings(); return; }
+
+  const calBtn = e.target.closest(".calBtn[data-action-item-id]");
+  if (calBtn) {
+    if (!calBtn.disabled) syncActionItemToCalendar(calBtn);
+    return;
+  }
+
+  const regenBtn = e.target.closest("[data-regen-id]");
+  if (regenBtn) {
+    const meetingId = Number(regenBtn.dataset.regenId);
+    if (meetingId) {
+      try {
+        const data = await fetchOrGenerateSummary(meetingId, regenBtn, true);
+        renderPastDetail(data);
+      } catch { /* ข้อความ error แสดงใน statusEl แล้วจาก fetchOrGenerateSummary */ }
+    }
+    return;
+  }
+
+  const summarizeEl = e.target.closest("[data-summarize-id]");
+  if (summarizeEl) {
+    try {
+      const data = await fetchOrGenerateSummary(Number(summarizeEl.dataset.summarizeId), summarizeEl);
+      renderPastDetail(data);
+    } catch { /* ข้อความ error แสดงใน statusEl แล้วจาก fetchOrGenerateSummary */ }
+    return;
+  }
+
+  const row = e.target.closest(".pastRow");
+  if (row) {
+    const meetingId = Number(row.dataset.id);
+    if (row.dataset.hasSummary === "true") {
+      try {
+        const data = await fetchOrGenerateSummary(meetingId);
+        renderPastDetail(data);
+      } catch { /* ข้อความ error แสดงใน statusEl แล้วจาก fetchOrGenerateSummary */ }
+    } else {
+      renderPastRaw(meetingId);
+    }
+  }
+});
 
 pastBtn.addEventListener("click", () => {
   if (!pastPanel.hidden) { pastPanel.hidden = true; return; }
@@ -324,9 +513,10 @@ $("#f").addEventListener("submit", (e) => {
   localStorage.setItem("meet_url", url);
   window._ws?.send(JSON.stringify({ action: "start", url }));
 });
-stopBtn.addEventListener("click", () => window._ws?.send(JSON.stringify({ action: "stop" })));
-$("#clearBtn").addEventListener("click", () => window._ws?.send(JSON.stringify({ action: "clear" })));
-$("#dlBtn").addEventListener("click", () => {
+stopBtn.addEventListener("click", () => {
+  window._ws?.send(JSON.stringify({ action: "stop" }));
+});
+dlBtn.addEventListener("click", () => {
   const lines = [...rows.values()].map(r =>
     `[${r.ts}] ${r.name === "(raw)" ? "" : r.name + ": "}${r.text}`);
   const blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain;charset=utf-8" });
@@ -337,6 +527,7 @@ $("#dlBtn").addEventListener("click", () => {
 });
 
 $("#url").value = localStorage.getItem("meet_url") || "";
+setStage("link");
 connect();
 checkCalendarStatus();
 </script>
