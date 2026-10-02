@@ -292,9 +292,41 @@ def reopen_transcript(user: dict, meeting_id: int) -> None:
         raise ServiceError(f"กลับไปแก้ transcript ไม่ได้ในสถานะ \"{meeting['status']}\"", "conflict")
 
 
+TURN_GAP_S = 30   # ประโยคของคนเดียวกันที่ห่างกันไม่เกินนี้ ถือเป็นช่วงพูดเดียวกัน
+
+
+def group_turns(segments: list[dict], gap_s: float = TURN_GAP_S) -> list[dict]:
+    """จัดประโยคที่ต่อเนื่องของคนเดียวกันเป็น "ช่วงพูด" (ผู้พูด + เวลาเริ่ม–สุดท้าย + ข้อความรวม) เพื่อให้อ่านง่าย
+
+    ใช้แสดงผล/ส่งออกเท่านั้น — ในฐานข้อมูลยังเก็บ 1 ประโยค = 1 แถว (บันทึกทันที ตรวจย้อนรายประโยคได้)
+    ข้ามประโยคที่ลบแล้ว segments ต้องเรียงตามลำดับพูด (มี display_name, text, spoken_at, deleted)
+    """
+    turns: list[dict] = []
+    for s in segments:
+        if s.get("deleted"):
+            continue
+        cur = turns[-1] if turns else None
+        if (cur and cur["display_name"] == s["display_name"]
+                and (s["spoken_at"] - cur["end"]).total_seconds() <= gap_s):
+            cur["text"] += " " + s["text"]
+            cur["end"] = s["spoken_at"]
+            cur["segment_ids"].append(s.get("segment_id"))
+            cur["edited"] = cur["edited"] or bool(s.get("original_text"))
+        else:
+            turns.append({"display_name": s["display_name"], "start": s["spoken_at"], "end": s["spoken_at"],
+                          "text": s["text"], "segment_ids": [s.get("segment_id")], "edited": bool(s.get("original_text"))})
+    return turns
+
+
+def format_turn_time(turn: dict) -> str:
+    a, b = f"{turn['start']:%H:%M:%S}", f"{turn['end']:%H:%M:%S}"
+    return a if a == b else f"{a}–{b}"
+
+
 def transcript_text(user: dict, meeting_id: int) -> str:
+    """ไฟล์ .txt สำหรับคนอ่าน/เก็บ: หนึ่งบรรทัดต่อหนึ่งช่วงพูด (ไม่รวมช่วงที่ลบ) — AI อ่านจากฐานข้อมูลรายประโยคโดยตรง ไม่ผ่านไฟล์นี้"""
     meeting_for(user, meeting_id)
-    lines = [f"[{r['spoken_at']:%H:%M:%S}] {r['display_name']}: {r['text']}" for r in db.get_transcript(meeting_id)]
+    lines = [f"[{format_turn_time(t)}] {t['display_name']}: {t['text']}" for t in group_turns(db.list_segments(meeting_id))]
     return "\n".join(lines) + ("\n" if lines else "")
 
 

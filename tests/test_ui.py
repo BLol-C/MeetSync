@@ -241,6 +241,15 @@ class UiTests(TempDbCase):
         next(b for b in at.button if b.key == f"verify_{mid}").click().run()
         self.assertEqual(db.get_meeting(mid)["status"], "transcript_verified")
 
+    def test_transcript_tab_shows_conversation_grouped_into_speaker_turns(self):
+        mid = self.meeting("transcript_review")            # สมชาย 1 ประโยค แล้ว Alice 1 ประโยค = 2 ช่วงพูด
+        at = self.app(m=mid)
+        self.assertTrue(any("บทสนทนา (2 ช่วงพูด · 2 ประโยค)" in v for v in texts(at.subheader)))
+        body = " ".join(texts(at.markdown))
+        self.assertIn("เห็นด้วยค่ะ", body)
+        text = service.transcript_text(self.user, mid)
+        self.assertEqual(len(text.strip().splitlines()), 2)
+
     def test_transcript_is_read_only_after_verification_until_reopened(self):
         mid = self.meeting("transcript_verified")
         at = self.app(m=mid)

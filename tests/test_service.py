@@ -36,6 +36,44 @@ def fake_ai(prompt, schema=None):
     })
 
 
+class GroupTurnsTests(unittest.TestCase):
+    """รวมประโยคต่อเนื่องของคนเดียวกันเป็นช่วงพูด (แสดงผล/ส่งออกเท่านั้น)"""
+
+    @staticmethod
+    def seg(sid, name, text, sec, deleted=False, original=None):
+        import datetime
+        return {"segment_id": sid, "display_name": name, "text": text, "deleted": deleted, "original_text": original,
+                "spoken_at": datetime.datetime(2026, 10, 2, 10, 0, 0) + datetime.timedelta(seconds=sec)}
+
+    def test_same_speaker_close_together_merges_and_other_speaker_splits(self):
+        turns = service.group_turns([
+            self.seg(1, "สมชาย", "ประโยคหนึ่ง", 0), self.seg(2, "สมชาย", "ประโยคสอง", 10),
+            self.seg(3, "Alice", "เห็นด้วย", 20), self.seg(4, "สมชาย", "ขอบคุณ", 25),
+        ])
+        self.assertEqual([t["display_name"] for t in turns], ["สมชาย", "Alice", "สมชาย"])
+        self.assertEqual(turns[0]["text"], "ประโยคหนึ่ง ประโยคสอง")
+        self.assertEqual(turns[0]["segment_ids"], [1, 2])
+        self.assertEqual(service.format_turn_time(turns[0]), "10:00:00–10:00:10")
+        self.assertEqual(service.format_turn_time(turns[1]), "10:00:20")          # ประโยคเดียว แสดงเวลาเดียว
+
+    def test_long_pause_starts_a_new_turn_for_the_same_speaker(self):
+        turns = service.group_turns([self.seg(1, "สมชาย", "ก", 0), self.seg(2, "สมชาย", "ข", service.TURN_GAP_S),
+                                     self.seg(3, "สมชาย", "ค", service.TURN_GAP_S * 3)])
+        self.assertEqual([t["text"] for t in turns], ["ก ข", "ค"])                  # ห่างพอดีเกณฑ์ยังรวม เกินแล้วแยก
+
+    def test_deleted_sentences_are_skipped_and_edits_are_flagged(self):
+        turns = service.group_turns([
+            self.seg(1, "สมชาย", "ดี", 0), self.seg(2, "Bob", "ทดสอบไมค์", 5, deleted=True),
+            self.seg(3, "สมชาย", "ต่อ", 8, original="ตอ"),
+        ])
+        self.assertEqual(len(turns), 1)                                             # ประโยคที่ลบไม่ตัดช่วงพูดของสมชายขาดกลาง
+        self.assertEqual(turns[0]["text"], "ดี ต่อ")
+        self.assertTrue(turns[0]["edited"])
+
+    def test_empty_input(self):
+        self.assertEqual(service.group_turns([]), [])
+
+
 class FakeCalendar:
     def __init__(self):
         self.inserted = []

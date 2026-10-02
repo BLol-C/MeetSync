@@ -89,30 +89,43 @@ def render(user: dict, detail: dict):
 
     _merge_section(user, [{**p, "meeting_id": mid} for p in people], editable and status != "approved")
 
-    st.subheader(f"ข้อความที่บอทจับได้ ({sum(1 for s in segments if not s['deleted'])} ช่วง)")
-    if editable:
-        st.caption("แก้ข้อความที่ถอดผิด / เปลี่ยนผู้พูด / ติ๊ก “ลบ” ช่วงที่ไม่เกี่ยวข้อง แล้วกดบันทึก — ข้อความต้นฉบับยังเก็บไว้ "
-                   "(ช่วงที่ลบยังกู้คืนได้โดยเอาติ๊กออก) ค้นหาได้ด้วยไอคอนแว่นขยายมุมขวาบนของตาราง "
-                   "ผู้พูดเลือกได้เฉพาะคนในรายชื่อ — ถ้าเป็นคนใหม่ให้เพิ่มที่แท็บ ① ก่อน")
-    elif status == "transcript_review":
-        st.caption("ดูอย่างเดียวขณะที่บอทยังบันทึกอยู่")
     if not segments:
+        st.subheader("ข้อความที่บอทจับได้")
         st.info("ยังไม่มีข้อความ")
         return
 
+    # มุมมองอ่านง่าย: รวมประโยคต่อเนื่องของคนเดียวกันเป็นช่วงพูด (ในฐานข้อมูลยังเป็น 1 ประโยค = 1 แถว)
+    turns = service.group_turns(segments)
+    n_sentences = sum(1 for s in segments if not s["deleted"])
+    st.subheader(f"บทสนทนา ({len(turns)} ช่วงพูด · {n_sentences} ประโยค)")
+    st.caption(f"ประโยคต่อเนื่องของคนเดียวกัน (ห่างกันไม่เกิน {service.TURN_GAP_S} วินาที) รวมเป็นช่วงพูดเดียวเพื่อให้อ่านง่าย · "
+               "✎ = มีประโยคที่ถูกแก้ · แก้ไขได้ที่ตารางรายประโยคด้านล่าง")
+    with st.container(height=420, border=True):
+        st.markdown("\n\n".join(
+            f"**{service.format_turn_time(t)} · {common.md_escape(t['display_name'])}**{' ✎' if t['edited'] else ''}  \n"
+            f"{common.md_escape(t['text'])}" for t in turns) or "_ไม่มีข้อความ (ลบทั้งหมด)_")
+
     speaker_options = [p["display_name"] for p in people]
     df = _segments_df(segments)
-    edited = st.data_editor(
-        df, key=f"segs_{mid}_{_rev(mid)}", hide_index=True, width="stretch", height=520,
-        num_rows="fixed", disabled=True if not editable else ["เวลา", "แก้แล้ว"], column_order=COLS[1:],
-        column_config={
-            "เวลา": st.column_config.TextColumn("เวลา", width="small"),
-            "ผู้พูด": st.column_config.SelectboxColumn("ผู้พูด", options=speaker_options, required=True, width="medium"),
-            "ข้อความ": st.column_config.TextColumn("ข้อความ", width="large"),
-            "ลบ": st.column_config.CheckboxColumn("ลบ", width="small"),
-            "แก้แล้ว": st.column_config.TextColumn("แก้แล้ว", width="small", help="✎ = มีการแก้ไข (เก็บต้นฉบับไว้)"),
-        },
-    )
+    # expander ยังวาดเนื้อหาทุกครั้งแม้พับอยู่ จึงไม่ทำให้ค่าที่แก้ค้างในตารางหายตอนสลับแท็บ
+    with st.expander("✎ แก้ไข / ลบ รายประโยค" if editable else "ดูรายประโยค", expanded=False):
+        if editable:
+            st.caption("แก้ข้อความที่ถอดผิด / เปลี่ยนผู้พูด / ติ๊ก “ลบ” ช่วงที่ไม่เกี่ยวข้อง แล้วกดบันทึก — ข้อความต้นฉบับยังเก็บไว้ "
+                       "(ช่วงที่ลบยังกู้คืนได้โดยเอาติ๊กออก) ค้นหาได้ด้วยไอคอนแว่นขยายมุมขวาบนของตาราง "
+                       "ผู้พูดเลือกได้เฉพาะคนในรายชื่อ — ถ้าเป็นคนใหม่ให้เพิ่มที่แท็บ ① ก่อน")
+        elif status == "transcript_review":
+            st.caption("ดูอย่างเดียวขณะที่บอทยังบันทึกอยู่")
+        edited = st.data_editor(
+            df, key=f"segs_{mid}_{_rev(mid)}", hide_index=True, width="stretch", height=520,
+            num_rows="fixed", disabled=True if not editable else ["เวลา", "แก้แล้ว"], column_order=COLS[1:],
+            column_config={
+                "เวลา": st.column_config.TextColumn("เวลา", width="small"),
+                "ผู้พูด": st.column_config.SelectboxColumn("ผู้พูด", options=speaker_options, required=True, width="medium"),
+                "ข้อความ": st.column_config.TextColumn("ข้อความ", width="large"),
+                "ลบ": st.column_config.CheckboxColumn("ลบ", width="small"),
+                "แก้แล้ว": st.column_config.TextColumn("แก้แล้ว", width="small", help="✎ = มีการแก้ไข (เก็บต้นฉบับไว้)"),
+            },
+        )
 
     def save_edits() -> bool:
         try:
