@@ -145,7 +145,7 @@ AI สามารถให้ผลลัพธ์ผิดพลาดได�
 
 ## 10. โครงสร้างฐานข้อมูลและ Data Dictionary (หน้า 22–29)
 
-**RDM:** เพิ่มตาราง **agenda_items** (FK → summaries) และเพิ่มคอลัมน์ตามด้านล่าง (ตารางเดิม 6 ตาราง + ตารางใหม่ 1 ตาราง = **7 ตารางข้อมูล**; ยังมีตารางเทคนิค `schema_migrations` เก็บเวอร์ชันการปรับโครงสร้างฐานข้อมูล ไม่ใช่ข้อมูลการประชุม จึงไม่ต้องใส่ใน RDM)
+**RDM:** เพิ่มตาราง **agenda_items** (FK → summaries) และเพิ่มคอลัมน์ตามด้านล่าง (ตารางเดิม 6 ตาราง + ตารางใหม่ 1 ตาราง = **7 ตารางข้อมูล**)
 
 ความสัมพันธ์: users 1—N meetings (owner_user_id) · meetings 1—N speakers · meetings 1—N transcript_segments · speakers 1—N transcript_segments · **meetings 1—1 summaries** · summaries 1—N agenda_items · summaries 1—N action_items · users 1—N summaries (approved_by)
 
