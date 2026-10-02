@@ -161,22 +161,6 @@ def add_person(user: dict, meeting_id: int, display_name: str, email: str | None
         raise _value_error(e)
 
 
-def update_person(user: dict, speaker_id: int, **fields) -> None:
-    _person_meeting(user, speaker_id)
-    try:
-        db.update_speaker(speaker_id, **fields)
-    except ValueError as e:
-        raise _value_error(e)
-
-
-def delete_person(user: dict, speaker_id: int) -> None:
-    _person_meeting(user, speaker_id)
-    try:
-        db.delete_speaker(speaker_id)
-    except ValueError as e:
-        raise _value_error(e)
-
-
 def merge_people(user: dict, source_id: int, target_id: int) -> int:
     source, _ = _person_meeting(user, source_id)
     target = db.get_speaker(target_id)

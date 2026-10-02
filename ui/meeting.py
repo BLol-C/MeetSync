@@ -11,11 +11,6 @@ from service import ServiceError
 from ui import common, tab_bot, tab_report, tab_setup, tab_transcript
 
 
-def jump_to_tab(label: str):
-    """สั่งให้เปิดแท็บนี้ในการ rerun ครั้งถัดไป (ตั้งค่าตอนวาดแท็บแล้วไม่ได้ จึงฝากไว้ก่อน)"""
-    st.session_state["_goto_tab"] = label
-
-
 def _bot_info(user: dict, meeting_id: int) -> dict:
     """สถานะบอทที่ทุกแท็บใช้ร่วมกัน (เรียกบริการบอทครั้งเดียวต่อหนึ่งรอบ)"""
     info = {"reachable": False, "error": None, "running": False, "running_here": False, "running_other": False,
@@ -61,10 +56,7 @@ def render(user: dict, meeting_id: int):
     common.render_stepper(status)
     common.render_next_step(status)
 
-    goto = st.session_state.pop("_goto_tab", None)
     tab_key = f"tabs_{meeting_id}"
-    if goto:
-        st.session_state[tab_key] = goto
     tabs = st.tabs(common.TAB_LABELS, default=common.default_tab(status), key=tab_key)
     with tabs[0]:
         tab_setup.render(user, detail)

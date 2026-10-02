@@ -6,7 +6,6 @@ import streamlit as st
 
 import botclient
 import report_data
-from service import ServiceError
 
 STATUS_LABEL = {
     "scheduled": "⚪ ตั้งค่าแล้ว รอเริ่มบอท",
@@ -95,10 +94,6 @@ def show_flash():
     with st.container():
         for kind, text in st.session_state.pop("_flash", []):
             getattr(st, kind)(text)
-
-
-def show_service_error(e: ServiceError):
-    st.error(str(e))
 
 
 # ── ตัวบอกขั้นตอน ──

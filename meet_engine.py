@@ -1,7 +1,7 @@
 """
 เครื่องยนต์กลาง: เข้าห้อง Google Meet, เปิดคำบรรยาย (CC), เฝ้าอ่านแล้วส่ง event ออกทาง callback
 
-ใช้ร่วมกันทั้ง caption_bot.py (CLI) และ app.py (web)
+ใช้โดยบริการบอท (app.py)
 
 event ที่ส่งออก (dict):
   {"type": "status",  "text": ...}

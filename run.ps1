@@ -1,4 +1,4 @@
-# เปิด MeetSync ทั้งสองส่วนพร้อมกัน: บริการบอท (FastAPI, พอร์ต 8000) + หน้าเว็บ (Streamlit, พอร์ต 8501)
+﻿# เปิด MeetSync ทั้งสองส่วนพร้อมกัน: บริการบอท (FastAPI, พอร์ต 8000) + หน้าเว็บ (Streamlit, พอร์ต 8501)
 #   powershell -ExecutionPolicy Bypass -File run.ps1
 # ปิดด้วย Ctrl+C ในหน้าต่างนี้ (บริการบอทจะถูกปิดตามไปด้วย)
 $ErrorActionPreference = "Stop"
