@@ -114,6 +114,13 @@ CREATE TABLE IF NOT EXISTS minutes (
     FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id) ON DELETE CASCADE,
     FOREIGN KEY (approved_by) REFERENCES users(user_id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS calendar_tokens (
+    user_id    INT PRIMARY KEY,
+    token_json LONGTEXT NOT NULL,
+    updated_at DATETIME NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
 # Migration แบบมีเวอร์ชัน (CREATE TABLE IF NOT EXISTS ข้างบนไม่เพิ่มคอลัมน์ใหม่ให้ตารางที่มีอยู่แล้ว)
@@ -148,14 +155,25 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
         "UPDATE meetings SET status = 'transcript_review' WHERE status = 'completed'",
         "ALTER TABLE meetings ALTER COLUMN status SET DEFAULT 'recording'",
     ]),
+    (8, [  # รายงานเวอร์ชันที่ AI ร่างไว้ (ไว้เทียบกับฉบับที่คนแก้) + action item ผูกกับรายงานได้
+        "ALTER TABLE minutes ADD COLUMN ai_content LONGTEXT NULL",
+        "ALTER TABLE action_items MODIFY summary_id INT NULL",
+        "ALTER TABLE action_items ADD COLUMN minutes_id INT NULL",
+        "ALTER TABLE action_items ADD CONSTRAINT fk_action_items_minutes FOREIGN KEY (minutes_id) "
+        "REFERENCES minutes(minutes_id) ON DELETE CASCADE",
+    ]),
 ]
 
-# workflow ของการประชุม: recording -> transcript_review -> transcript_verified -> draft -> approved
-# approved คือสถานะสุดท้าย (ล็อก) การแก้หลังอนุมัติต้องสร้างรายงานเวอร์ชันใหม่ในอนาคต ไม่ย้อนสถานะ
-MEETING_STATUSES = ("recording", "transcript_review", "transcript_verified", "draft", "approved")
+# workflow ของการประชุม:
+#   scheduled -> recording -> transcript_review -> transcript_verified -> draft -> approved
+# scheduled = ตั้งค่าการประชุม/รายชื่อไว้แล้วแต่ยังไม่เริ่มบอท; approved = ล็อก ไม่ย้อนผ่าน set_meeting_status
+# (การแก้รายงานที่อนุมัติแล้วต้องผ่าน revise_minutes ซึ่งสร้างเวอร์ชันใหม่และเก็บเวอร์ชันที่อนุมัติไว้)
+# transcript_review -> recording = กลับมาบันทึกต่อหลังบอทหลุดกลางประชุม
+MEETING_STATUSES = ("scheduled", "recording", "transcript_review", "transcript_verified", "draft", "approved")
 _STATUS_TRANSITIONS: dict[str, set[str]] = {
+    "scheduled": {"recording"},
     "recording": {"transcript_review"},
-    "transcript_review": {"transcript_verified"},
+    "transcript_review": {"transcript_verified", "recording"},
     "transcript_verified": {"transcript_review", "draft"},
     "draft": {"transcript_review", "draft", "approved"},
     "approved": set(),
@@ -247,6 +265,19 @@ def upsert_user(google_sub: str, email: str, name: str | None, picture: str | No
         conn.close()
 
 
+def get_user_name(user_id: int | None) -> str | None:
+    if user_id is None:
+        return None
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COALESCE(name, email) AS n FROM users WHERE user_id = %s", (user_id,))
+            row = cur.fetchone()
+            return row["n"] if row else None
+    finally:
+        conn.close()
+
+
 def create_meeting(meet_url: str, owner_user_id: int) -> int:
     conn = get_connection()
     try:
@@ -257,6 +288,112 @@ def create_meeting(meet_url: str, owner_user_id: int) -> int:
                 (meet_url, owner_user_id),
             )
             return cur.lastrowid
+    finally:
+        conn.close()
+
+
+_SETUP_EDITABLE = ("meet_url", "title", "venue", "scheduled_at", "meeting_no", "org_name")
+
+
+def create_meeting_setup(owner_user_id: int, **fields) -> int:
+    """สร้างการประชุมที่ตั้งค่าไว้ล่วงหน้า (status = scheduled) ก่อนสั่งบอทเข้าห้อง
+    started_at เป็นแค่ค่าชั่วคราว (คอลัมน์บังคับ) จะถูกเขียนทับด้วยเวลาเริ่มบันทึกจริงใน begin_recording
+    """
+    unknown = set(fields) - set(_SETUP_EDITABLE)
+    if unknown:
+        raise ValueError(f"ฟิลด์ไม่ถูกต้อง: {', '.join(sorted(unknown))}")
+    meet_url = (fields.get("meet_url") or "").strip()
+    if not meet_url:
+        raise ValueError("ต้องระบุลิงก์ Google Meet")
+    fields["meet_url"] = meet_url
+    cols = list(fields)
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""INSERT INTO meetings (owner_user_id, status, started_at, {", ".join(cols)})
+                    VALUES (%s, 'scheduled', NOW(), {", ".join(["%s"] * len(cols))})""",
+                (owner_user_id, *[_clean(fields[c]) for c in cols]),
+            )
+            return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def _clean(value):
+    return value.strip() or None if isinstance(value, str) else value
+
+
+def update_meeting_setup(meeting_id: int, **fields) -> None:
+    unknown = set(fields) - set(_SETUP_EDITABLE)
+    if unknown:
+        raise ValueError(f"แก้ฟิลด์นี้ไม่ได้: {', '.join(sorted(unknown))}")
+    if "meet_url" in fields and not (fields["meet_url"] or "").strip():
+        raise ValueError("ต้องระบุลิงก์ Google Meet")
+    if not fields:
+        return
+    sets = ", ".join(f"{col} = %s" for col in fields)
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE meetings SET {sets} WHERE meeting_id = %s",
+                (*[_clean(v) for v in fields.values()], meeting_id),
+            )
+    finally:
+        conn.close()
+
+
+def begin_recording(meeting_id: int) -> bool:
+    """เริ่ม (หรือกลับมาบันทึกต่อ) — ได้จาก scheduled / transcript_review / recording เท่านั้น
+    เวลาเริ่มถูกตั้งใหม่เฉพาะตอนเริ่มครั้งแรก (scheduled) ถ้าบันทึกต่อจะคงเวลาเริ่มเดิมไว้
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE meetings
+                   SET started_at = IF(status = 'scheduled', NOW(), started_at),
+                       ended_at = NULL, status = 'recording'
+                   WHERE meeting_id = %s AND status IN ('scheduled', 'transcript_review', 'recording')""",
+                (meeting_id,),
+            )
+            return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def max_sequence_no(meeting_id: int) -> int:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COALESCE(MAX(sequence_no), 0) AS n FROM transcript_segments WHERE meeting_id = %s",
+                (meeting_id,),
+            )
+            return cur.fetchone()["n"]
+    finally:
+        conn.close()
+
+
+def is_meeting_manager(meeting: dict, user_id: int | None, email: str | None) -> bool:
+    """เจ้าของการประชุม หรือผู้เข้าร่วมที่เป็นประธาน/เลขาและอีเมลตรงกับผู้ใช้ — จัดการประชุมนี้ได้
+    (เทียบอีเมลแบบไม่สนตัวพิมพ์เล็ก/ใหญ่)
+    """
+    if user_id is not None and meeting.get("owner_user_id") == user_id:
+        return True
+    if not email:
+        return False
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT 1 FROM participants
+                   WHERE meeting_id = %s AND role IN ('chair', 'secretary') AND LOWER(email) = LOWER(%s)
+                   LIMIT 1""",
+                (meeting["meeting_id"], email),
+            )
+            return cur.fetchone() is not None
     finally:
         conn.close()
 
@@ -565,20 +702,24 @@ def update_segment(segment_id: int, text: str):
         conn.close()
 
 
-def list_meetings(owner_user_id: int, limit: int = 50) -> list[dict]:
-    """รายการการประชุมล่าสุดของผู้ใช้คนนี้ พร้อมสรุปย่อ (ถ้ามี) สำหรับหน้า "การประชุมที่ผ่านมา\""""
+def list_meetings(owner_user_id: int, email: str | None = None, limit: int = 50) -> list[dict]:
+    """รายการการประชุมล่าสุดที่ผู้ใช้จัดการได้ (เป็นเจ้าของ หรือเป็นประธาน/เลขาตามอีเมล)
+    พร้อมสรุปย่อ (ถ้ามี) สำหรับหน้า "การประชุมที่ผ่านมา\""""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """SELECT m.meeting_id, m.meet_url, m.title, m.started_at, m.ended_at, m.status,
-                          s.executive_summary
+                          m.owner_user_id, s.executive_summary
                    FROM meetings m
                    LEFT JOIN summaries s ON s.meeting_id = m.meeting_id
                    WHERE m.owner_user_id = %s
+                      OR EXISTS (SELECT 1 FROM participants p
+                                 WHERE p.meeting_id = m.meeting_id AND p.role IN ('chair', 'secretary')
+                                   AND %s IS NOT NULL AND LOWER(p.email) = LOWER(%s))
                    ORDER BY m.started_at DESC
                    LIMIT %s""",
-                (owner_user_id, limit),
+                (owner_user_id, email, email, limit),
             )
             return cur.fetchall()
     finally:
@@ -696,12 +837,16 @@ def get_action_item(action_item_id: int) -> dict | None:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT action_item_id, summary_id, description, assignee, due_date, due_time,
+                """SELECT action_item_id, summary_id, minutes_id, description, assignee, due_date, due_time,
                           due_time_end, calendar_synced, google_calendar_event_id
                    FROM action_items WHERE action_item_id = %s""",
                 (action_item_id,),
             )
-            return cur.fetchone()
+            item = cur.fetchone()
+            if item:  # คอลัมน์ TIME ของ pymysql เป็น timedelta — แปลงเป็น "HH:MM" เหมือนที่อื่นในไฟล์นี้
+                item["due_time"] = _fmt_time(item["due_time"])
+                item["due_time_end"] = _fmt_time(item["due_time_end"])
+            return item
     finally:
         conn.close()
 
@@ -719,15 +864,23 @@ def insert_minutes(
                 "SELECT COALESCE(MAX(version), 0) + 1 AS v FROM minutes WHERE meeting_id = %s", (meeting_id,)
             )
             version = cur.fetchone()["v"]
+            payload = json.dumps(content, ensure_ascii=False)
             cur.execute(
                 """INSERT INTO minutes
-                   (meeting_id, version, status, content, model_used, prompt_version, created_at)
-                   VALUES (%s, %s, 'draft', %s, %s, %s, NOW())""",
-                (meeting_id, version, json.dumps(content, ensure_ascii=False), model_used, prompt_version),
+                   (meeting_id, version, status, content, ai_content, model_used, prompt_version, created_at)
+                   VALUES (%s, %s, 'draft', %s, %s, %s, %s, NOW())""",
+                (meeting_id, version, payload, payload, model_used, prompt_version),
             )
             return {"minutes_id": cur.lastrowid, "version": version}
     finally:
         conn.close()
+
+
+def _parse_minutes_row(row: dict | None) -> dict | None:
+    if row:
+        row["content"] = json.loads(row["content"])
+        row["ai_content"] = json.loads(row["ai_content"]) if row.get("ai_content") else None
+    return row
 
 
 def get_latest_minutes(meeting_id: int) -> dict | None:
@@ -737,29 +890,237 @@ def get_latest_minutes(meeting_id: int) -> dict | None:
             cur.execute(
                 "SELECT * FROM minutes WHERE meeting_id = %s ORDER BY version DESC LIMIT 1", (meeting_id,)
             )
-            row = cur.fetchone()
-            if row:
-                row["content"] = json.loads(row["content"])
-            return row
+            return _parse_minutes_row(cur.fetchone())
     finally:
         conn.close()
 
 
-def get_action_item_owner(action_item_id: int) -> int | None:
-    """user_id เจ้าของการประชุมที่ action item นี้อยู่ (None ถ้าไม่พบ item หรือประชุมไม่มีเจ้าของ)"""
+def update_minutes_content(minutes_id: int, content: dict) -> bool:
+    """บันทึกการแก้ไขของคน — ทำได้เฉพาะรายงานที่ยังเป็น draft (อนุมัติแล้วล็อก) ฉบับ AI เดิมใน ai_content ไม่ถูกแตะ"""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT m.owner_user_id
+                "UPDATE minutes SET content = %s, edited_at = NOW() WHERE minutes_id = %s AND status = 'draft'",
+                (json.dumps(content, ensure_ascii=False), minutes_id),
+            )
+            return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def approve_minutes(meeting_id: int, user_id: int | None, action_items: list[dict]) -> bool:
+    """อนุมัติรายงานฉบับล่าสุด: รายงาน -> approved, ประชุม -> approved, และสร้างแถว action item ของรายงานนี้
+    (ให้ Calendar sync ใช้) — คืน False ถ้าประชุมไม่ได้อยู่ในสถานะ draft หรือไม่มีรายงานฉบับร่าง
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT minutes_id FROM minutes
+                   WHERE meeting_id = %s AND status = 'draft' ORDER BY version DESC LIMIT 1""",
+                (meeting_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return False
+            cur.execute(
+                "UPDATE meetings SET status = 'approved' WHERE meeting_id = %s AND status = 'draft'",
+                (meeting_id,),
+            )
+            if cur.rowcount != 1:
+                return False
+            minutes_id = row["minutes_id"]
+            cur.execute(
+                """UPDATE minutes SET status = 'approved', approved_by = %s, approved_at = NOW()
+                   WHERE minutes_id = %s""",
+                (user_id, minutes_id),
+            )
+            cur.execute("DELETE FROM action_items WHERE minutes_id = %s", (minutes_id,))
+            for it in action_items:
+                cur.execute(
+                    """INSERT INTO action_items
+                       (minutes_id, description, assignee, due_date, due_time, due_time_end)
+                       VALUES (%s, %s, %s, %s, %s, %s)""",
+                    (minutes_id, it["description"], it.get("assignee"), it.get("due_date"),
+                     it.get("due_time"), it.get("due_time_end")),
+                )
+            return True
+    finally:
+        conn.close()
+
+
+def revise_minutes(meeting_id: int) -> dict | None:
+    """แก้รายงานที่อนุมัติแล้ว: สร้างเวอร์ชันใหม่ (draft) คัดลอกเนื้อหาล่าสุดมาแก้ต่อ ส่วนเวอร์ชันที่อนุมัติ
+    ยังอยู่ครบในประวัติ ประชุมกลับเป็น draft — คืน {minutes_id, version} หรือ None ถ้าประชุมไม่ได้อยู่สถานะ approved
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE meetings SET status = 'draft' WHERE meeting_id = %s AND status = 'approved'",
+                (meeting_id,),
+            )
+            if cur.rowcount != 1:
+                return None
+            cur.execute(
+                "SELECT version, content, ai_content, model_used, prompt_version FROM minutes "
+                "WHERE meeting_id = %s ORDER BY version DESC LIMIT 1",
+                (meeting_id,),
+            )
+            last = cur.fetchone()
+            version = last["version"] + 1
+            cur.execute(
+                """INSERT INTO minutes
+                   (meeting_id, version, status, content, ai_content, model_used, prompt_version, created_at)
+                   VALUES (%s, %s, 'draft', %s, %s, %s, %s, NOW())""",
+                (meeting_id, version, last["content"], last["ai_content"], last["model_used"],
+                 last["prompt_version"]),
+            )
+            return {"minutes_id": cur.lastrowid, "version": version}
+    finally:
+        conn.close()
+
+
+def list_minutes_action_items(minutes_id: int) -> list[dict]:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT action_item_id, description, assignee, due_date, due_time, due_time_end,
+                          calendar_synced, google_calendar_event_id
+                   FROM action_items WHERE minutes_id = %s ORDER BY action_item_id""",
+                (minutes_id,),
+            )
+            items = list(cur.fetchall())
+            for item in items:
+                item["due_time"] = _fmt_time(item["due_time"])
+                item["due_time_end"] = _fmt_time(item["due_time_end"])
+            return items
+    finally:
+        conn.close()
+
+
+# ── แก้ transcript ในขั้นตรวจทาน ──
+
+def list_segments(meeting_id: int) -> list[dict]:
+    """ทุกช่วงคำพูดของการประชุม (รวมที่ลบแล้ว เพื่อให้กู้คืนได้) เรียงตามลำดับพูด"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT t.segment_id, t.sequence_no, t.speaker_id, s.display_name, s.participant_id,
+                          t.text, t.original_text, t.edited_at, t.deleted, t.spoken_at
+                   FROM transcript_segments t
+                   JOIN speakers s ON s.speaker_id = t.speaker_id
+                   WHERE t.meeting_id = %s
+                   ORDER BY t.sequence_no""",
+                (meeting_id,),
+            )
+            rows = list(cur.fetchall())
+            for r in rows:
+                r["deleted"] = bool(r["deleted"])
+            return rows
+    finally:
+        conn.close()
+
+
+def get_segment(segment_id: int) -> dict | None:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT segment_id, meeting_id, speaker_id, text, original_text, deleted "
+                "FROM transcript_segments WHERE segment_id = %s",
+                (segment_id,),
+            )
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def edit_segment(
+    segment_id: int, text: str | None = None, speaker_name: str | None = None, deleted: bool | None = None
+) -> None:
+    """แก้ช่วงคำพูด: ข้อความ / ผู้พูด (ระบุเป็นชื่อ ถ้ายังไม่มีผู้พูดชื่อนี้จะสร้างให้และจับคู่ผู้เข้าร่วมอัตโนมัติ) /
+    ลบ-กู้คืน ข้อความต้นฉบับถูกเก็บไว้ครั้งแรกที่มีการแก้ และไม่ถูกเขียนทับอีก
+    """
+    seg = get_segment(segment_id)
+    if not seg:
+        raise ValueError("ไม่พบช่วงคำพูดนี้")
+    sets: list[str] = []
+    args: list = []
+    if text is not None:
+        text = text.strip()
+        if not text:
+            raise ValueError("ข้อความห้ามว่าง (ถ้าต้องการเอาออกให้ลบช่วงคำพูดนี้)")
+        if text != seg["text"]:
+            sets += ["original_text = COALESCE(original_text, text)", "text = %s", "edited_at = NOW()"]
+            args.append(text)
+    if speaker_name is not None:
+        speaker_name = speaker_name.strip()
+        if not speaker_name:
+            raise ValueError("ชื่อผู้พูดห้ามว่าง")
+        speaker_id = get_or_create_speaker(seg["meeting_id"], speaker_name)
+        if speaker_id != seg["speaker_id"]:
+            sets += ["speaker_id = %s", "edited_at = NOW()"]
+            args.append(speaker_id)
+    if deleted is not None:
+        sets.append("deleted = %s")
+        args.append(bool(deleted))
+    if not sets:
+        return
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE transcript_segments SET {', '.join(sets)} WHERE segment_id = %s", (*args, segment_id)
+            )
+    finally:
+        conn.close()
+
+
+# ── token Google Calendar ต่อผู้ใช้ ──
+
+def save_calendar_token(user_id: int, token_json: str) -> None:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO calendar_tokens (user_id, token_json, updated_at) VALUES (%s, %s, NOW())
+                   ON DUPLICATE KEY UPDATE token_json = %s, updated_at = NOW()""",
+                (user_id, token_json, token_json),
+            )
+    finally:
+        conn.close()
+
+
+def get_calendar_token(user_id: int) -> str | None:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT token_json FROM calendar_tokens WHERE user_id = %s", (user_id,))
+            row = cur.fetchone()
+            return row["token_json"] if row else None
+    finally:
+        conn.close()
+
+
+def get_action_item_meeting(action_item_id: int) -> int | None:
+    """meeting_id ของการประชุมที่ action item นี้อยู่ (ทั้งแบบผูกกับรายงานใหม่และสรุปแบบเก่า) None ถ้าไม่พบ"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT COALESCE(s.meeting_id, mi.meeting_id) AS meeting_id
                    FROM action_items a
-                   JOIN summaries s ON s.summary_id = a.summary_id
-                   JOIN meetings m ON m.meeting_id = s.meeting_id
+                   LEFT JOIN summaries s ON s.summary_id = a.summary_id
+                   LEFT JOIN minutes mi ON mi.minutes_id = a.minutes_id
                    WHERE a.action_item_id = %s""",
                 (action_item_id,),
             )
             row = cur.fetchone()
-            return row["owner_user_id"] if row else None
+            return row["meeting_id"] if row else None
     finally:
         conn.close()
 
