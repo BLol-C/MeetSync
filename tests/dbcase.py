@@ -26,29 +26,57 @@ def server_conn():
     )
 
 
+def _create_db() -> str:
+    name = f"meetsync_test_{uuid.uuid4().hex[:8]}"
+    conn = server_conn()
+    with conn.cursor() as cur:
+        cur.execute(f"CREATE DATABASE `{name}` CHARACTER SET utf8mb4")
+    conn.close()
+    return name
+
+
+def _drop_db(name: str):
+    conn = server_conn()
+    with conn.cursor() as cur:
+        cur.execute(f"DROP DATABASE IF EXISTS `{name}`")
+    conn.close()
+
+
 class TempDbCase(unittest.TestCase):
-    """สร้างฐานข้อมูลชั่วคราวหนึ่งก้อนต่อหนึ่งคลาสเทสต์ แล้วชี้ db.DB_NAME ไปที่มัน"""
+    """ฐานข้อมูลชั่วคราวสำหรับเทสต์ แล้วชี้ db.DB_NAME ไปที่มัน
+
+    ค่าเริ่มต้น: หนึ่งก้อนต่อหนึ่งคลาส (เร็ว) — ตั้ง per_test = True ถ้าแต่ละเทสต์ต้องเริ่มจากฐานเปล่า
+    (เช่นเทสต์ migration ที่แต่ละเคสสร้างข้อมูลเวอร์ชันเก่าของตัวเอง)
+    """
+
+    per_test = False
 
     @classmethod
     def setUpClass(cls):
         try:
-            conn = server_conn()
+            server_conn().close()
         except Exception as e:  # noqa: BLE001
             raise unittest.SkipTest(f"ต่อ MySQL ไม่ได้: {e!r}")
-        cls.dbname = f"meetsync_test_{uuid.uuid4().hex[:8]}"
-        with conn.cursor() as cur:
-            cur.execute(f"CREATE DATABASE `{cls.dbname}` CHARACTER SET utf8mb4")
-        conn.close()
         cls._orig_name = db.DB_NAME
-        db.DB_NAME = cls.dbname
+        if not cls.per_test:
+            cls.dbname = _create_db()
+            db.DB_NAME = cls.dbname
 
     @classmethod
     def tearDownClass(cls):
         db.DB_NAME = cls._orig_name
-        conn = server_conn()
-        with conn.cursor() as cur:
-            cur.execute(f"DROP DATABASE IF EXISTS `{cls.dbname}`")
-        conn.close()
+        if not cls.per_test:
+            _drop_db(cls.dbname)
+
+    def setUp(self):
+        if self.per_test:
+            self.dbname = _create_db()
+            db.DB_NAME = self.dbname
+
+    def tearDown(self):
+        if self.per_test:
+            db.DB_NAME = self._orig_name
+            _drop_db(self.dbname)
 
     def rows(self, sql, args=()):
         conn = db.get_connection()

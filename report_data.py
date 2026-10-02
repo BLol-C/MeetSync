@@ -45,6 +45,10 @@ def header_warnings(header: dict) -> list[dict]:
     if header["unconfirmed_count"]:
         warn("unconfirmed_attendance",
              f"มีผู้เข้าร่วม {header['unconfirmed_count']} คนที่ยังไม่ยืนยันการเข้าร่วม — จะแสดงเป็น \"ผู้ไม่มาประชุม\"")
+    if header["unmapped"]:
+        warn("unmapped_speaker",
+             "มีชื่อที่พบใน Meet แต่ไม่ได้อยู่ในรายชื่อที่ลงทะเบียน: " + ", ".join(header["unmapped"])
+             + " — ถ้าเป็นคนเดียวกับผู้เข้าร่วมที่ลงทะเบียนไว้ให้ \"รวมชื่อ\" ในแท็บ Transcript")
     return out
 
 
@@ -52,7 +56,7 @@ _ROLE_ORDER = {"chair": 0, "secretary": 1, "attendee": 2}
 
 
 def _sorted(people: list[dict]) -> list[dict]:
-    return sorted(people, key=lambda p: (_ROLE_ORDER.get(p["role"], 9), p["participant_id"]))
+    return sorted(people, key=lambda p: (_ROLE_ORDER.get(p["role"], 9), p["speaker_id"]))
 
 
 def build_header(meeting: dict, participants: list[dict]) -> dict:
@@ -83,4 +87,7 @@ def build_header(meeting: dict, participants: list[dict]) -> dict:
             for p in absent
         ],
         "unconfirmed_count": sum(1 for p in participants if p["attendance"] == "invited"),
+        # ชื่อที่พบจาก Meet (ไม่ได้ลงทะเบียน) และมีข้อความอยู่จริง — อาจเป็นคนเดียวกับผู้ที่ลงทะเบียนไว้แต่ชื่อไม่ตรง
+        "unmapped": [p["display_name"] for p in participants
+                     if p.get("source") == "meet" and p.get("segment_count", 0) > 0],
     }

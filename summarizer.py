@@ -206,6 +206,9 @@ def validate_minutes(
             "due_time_end": _norm_time(a.get("due_time_end")),
             "evidence": _clean_evidence(a.get("evidence")),
         }
+        for key in ("action_item_id", "calendar_synced", "google_calendar_event_id"):   # ข้อมูลของแถวที่มีอยู่แล้ว ส่งต่อไว้
+            if key in a:
+                item[key] = a[key]
         label = f"งานที่ {i + 1}"
         if not item["description"]:
             warn("action_description_missing", f"action_items[{i}].description", f"{label}ไม่มีรายละเอียด")
@@ -395,8 +398,24 @@ def generate_minutes_content(
 
 # ── ประกอบเข้ากับ DB ──
 
+def for_storage(content: dict) -> dict:
+    """เนื้อหาเฉพาะส่วนที่เก็บลงฐานข้อมูล (คำเตือนและเครื่องหมาย grounded คำนวณสดทุกครั้ง ไม่เก็บ)"""
+    return {
+        "summary": content.get("summary") or "",
+        "other_matters": content.get("other_matters"),
+        "agenda": [
+            {k: a.get(k) for k in ("title", "discussion", "resolution", "evidence")} for a in content.get("agenda") or []
+        ],
+        "action_items": [
+            {k: it.get(k) for k in ("description", "assignee", "due_date", "due_time", "due_time_end", "evidence")}
+            for it in content.get("action_items") or []
+        ],
+    }
+
+
 def generate_for_meeting(meeting_id: int, generate: Callable | None = None) -> dict:
-    """สร้างรายงานฉบับร่างใหม่ให้การประชุม (เก็บเป็นเวอร์ชันใหม่ ไม่ทับของเดิม) แล้วเลื่อนสถานะเป็น draft
+    """ให้ AI ร่างรายงานของการประชุม แล้วเลื่อนสถานะเป็น draft — ถ้ามีฉบับร่างค้างอยู่จะถูกแทนที่ (ไม่มีร่างเก่าซ้อนกัน)
+    ถ้าฉบับล่าสุดอนุมัติแล้ว (กำลังแก้ต่อ) ต้องผ่าน db.revise_report ก่อน ไม่ใช่ที่นี่
     ต้องยืนยัน transcript แล้วเท่านั้น (transcript_verified) หรือกำลังแก้ร่างอยู่ (draft)
     """
     meeting = db.get_meeting(meeting_id)
@@ -406,11 +425,12 @@ def generate_for_meeting(meeting_id: int, generate: Callable | None = None) -> d
         raise ValueError("ต้องตรวจทานและกด \"ยืนยัน transcript\" ก่อน จึงจะให้ AI สร้างรายงานได้")
 
     rows = db.get_transcript(meeting_id)
-    participants = db.list_participants(meeting_id)
+    participants = db.list_speakers(meeting_id)
     content = generate_minutes_content(
         rows, participants, meeting.get("title"),
         meeting.get("started_at") or datetime.datetime.now(), generate,
     )
-    saved = db.insert_minutes(meeting_id, content, _MODEL, PROMPT_NAME)
+    stored = for_storage(content)
+    saved = db.save_report(meeting_id, stored, _MODEL, PROMPT_NAME, ai_snapshot=stored)
     db.set_meeting_status(meeting_id, "draft")
     return {**saved, "content": content}

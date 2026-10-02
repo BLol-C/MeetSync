@@ -98,7 +98,7 @@ def sync_action_item(action_item_id: int, user_id: int, service=None) -> str:
         service = build("calendar", "v3", credentials=creds)
 
     meeting_id = db.get_action_item_meeting(action_item_id)
-    participants = db.list_participants(meeting_id) if meeting_id else []
+    participants = db.list_speakers(meeting_id) if meeting_id else []
     body = build_event_body(item, attendee_email(participants, item["assignee"]))
     send = "all" if os.environ.get("CALENDAR_SEND_INVITES") == "1" else "none"
     event = service.events().insert(calendarId="primary", body=body, sendUpdates=send).execute()
