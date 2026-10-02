@@ -301,6 +301,9 @@ def render(user: dict, detail: dict):
                 for w in warnings:
                     st.markdown(f"- {w['message']}")
 
+    if status == "transcript_verified":
+        st.info("แก้และยืนยัน transcript ใหม่แล้ว — รายงานด้านล่างสร้างจากข้อความเดิม กด “ให้ AI ร่างใหม่” เพื่อสร้างจาก transcript ล่าสุด")
+
     rev = _rev(mid)
     st.subheader("สรุปภาพรวม")
     summary = st.text_area("สรุปภาพรวมการประชุม", value=content["summary"], key=f"sum_{mid}_{rev}", disabled=not editable,
@@ -364,6 +367,9 @@ def render(user: dict, detail: dict):
                 st.error(str(e))
             else:
                 _approve_dialog(user, mid, cleaned["warnings"] + view["header_warnings"])
+    elif status == "transcript_verified":
+        if b1.button("✨ ให้ AI ร่างใหม่", key=f"regen_{mid}", type="primary"):
+            _regenerate_dialog(user, mid)
     elif approved:
         if b1.button("✎ ยกเลิกการอนุมัติเพื่อแก้", key=f"reopen_rep_{mid}"):
             _reopen_dialog(user, mid)

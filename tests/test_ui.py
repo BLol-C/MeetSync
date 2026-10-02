@@ -269,6 +269,22 @@ class UiTests(TempDbCase):
         self.assertFalse(any(b.key == f"approve_{mid}" for b in at.button))
         self.assertTrue(any(b.key == f"reopen_rep_{mid}" for b in at.button))
 
+    def test_after_editing_transcript_of_an_approved_report_ai_can_regenerate(self):
+        """อนุมัติแล้ว -> ยกเลิกอนุมัติ -> กลับไปแก้ transcript -> ยืนยันใหม่ ต้องมีปุ่มให้ AI ร่างใหม่ (เคยไม่มีปุ่ม ค้างอยู่)"""
+        mid = self.meeting("approved")
+        service.reopen_report(self.user, mid)
+        service.reopen_transcript(self.user, mid)
+        service.verify_transcript(self.user, mid)
+        self.assertEqual(db.get_meeting(mid)["status"], "transcript_verified")
+        at = self.app(m=mid)
+        self.assertTrue(any("แก้และยืนยัน transcript ใหม่แล้ว" in v for v in texts(at.info)))
+        regen = next(b for b in at.button if b.key == f"regen_{mid}")
+        self.assertFalse(any(b.key == f"approve_{mid}" for b in at.button))     # ยังไม่ให้อนุมัติฉบับเก่า
+        regen.click().run()                                                       # เปิด dialog ยืนยัน
+        self.assertEqual([e.value for e in at.exception], [])
+        service.generate_report(self.user, mid, generate=fake_ai)                 # สิ่งที่ปุ่มใน dialog เรียก
+        self.assertEqual(db.get_meeting(mid)["status"], "draft")
+
     def test_dev_banner_is_always_visible_in_test_mode(self):
         at = self.app()
         self.assertTrue(any("โหมดทดสอบ" in v for v in texts(at.sidebar.warning)))
