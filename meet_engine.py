@@ -1,7 +1,7 @@
 """
 เครื่องยนต์กลาง: เข้าห้อง Google Meet, เปิดคำบรรยาย (CC), เฝ้าอ่านแล้วส่ง event ออกทาง callback
 
-ใช้ร่วมกันทั้ง caption_bot.py (CLI) และ app.py (web)
+ใช้โดยบริการบอท (app.py)
 
 event ที่ส่งออก (dict):
   {"type": "status",  "text": ...}
@@ -25,11 +25,16 @@ JS_CAPTION_WATCHER = r"""
   if (window.__capWatcherInstalled) return;
   window.__capWatcherInstalled = true;
   window.__capSeq = window.__capSeq || 0;
+  // heartbeat ให้ฝั่ง Python (watchdog) อ่านเช็กว่าตัวจับยังมีชีวิตและยังเห็นคำบรรยายอยู่ไหม
+  window.__capLastActivity = Date.now();   // ครั้งล่าสุดที่ข้อความคำบรรยายเปลี่ยน
+  window.__capRegionSeen = Date.now();     // ครั้งล่าสุดที่เห็นกรอบคำบรรยายบนจอ
 
   const FINALIZE_MS = 1500;
+  const EMIT_THROTTLE_MS = 250;  // ส่ง event "ยังไม่ final" ได้ไม่เกินนี้ต่อแถว (กัน flood ผ่าน CDP/WebSocket)
   const lastRaw = new Map();   // row -> ข้อความดิบล่าสุดที่อ่านจาก DOM
   const commit = new Map();    // row -> ข้อความสะสม (ยาวขึ้นเรื่อย ๆ ไม่มีวันสั้นลง)
   const liveTail = new Map();  // row -> ส่วนท้ายของ commit ที่มาจาก "raw" ปัจจุบันจริง ๆ (ไม่ใช่ทั้งก้อน raw)
+  const lastEmitAt = new Map();  // row -> เวลาที่ส่ง event ไม่ final ล่าสุด
   const timers = new Map();
   const emit = (p) => { try { window.__onCaption(p); } catch (e) {} };
 
@@ -130,6 +135,7 @@ JS_CAPTION_WATCHER = r"""
     lastRaw.delete(row);
     commit.delete(row);
     liveTail.delete(row);
+    lastEmitAt.delete(row);
   };
 
   let liveRows = new Set();
@@ -165,7 +171,14 @@ JS_CAPTION_WATCHER = r"""
       if (!raw || lastRaw.get(row) === raw) continue;
 
       const text = updateCommit(row, raw);
-      emit({ id: row.__capId, name, text, final: false });
+      window.__capLastActivity = Date.now();
+      // ข้อความสะสมใน commit ครบเสมอ ข้ามการส่ง event ไม่ final ถี่ ๆ ได้โดยไม่ทำให้ข้อความหาย
+      // (ตอน final จะส่งก้อนเต็มอีกครั้ง) — แค่ภาพสดบนจออัปเดตห่างขึ้นเล็กน้อย
+      const now = Date.now();
+      if (now - (lastEmitAt.get(row) || 0) >= EMIT_THROTTLE_MS) {
+        lastEmitAt.set(row, now);
+        emit({ id: row.__capId, name, text, final: false });
+      }
 
       clearTimeout(timers.get(row));
       timers.set(row, setTimeout(() => {
@@ -176,29 +189,64 @@ JS_CAPTION_WATCHER = r"""
   };
 
   let observed = null;
-  setInterval(() => {
-    const region = findRegion();
-    if (region && region !== observed) {
-      observed = region;
-      new MutationObserver(scan).observe(region, {
-        childList: true, subtree: true, characterData: true,
-      });
-      scan();
+  let observer = null;
+
+  // Meet สร้างกรอบคำบรรยายใหม่ได้ตอนเปลี่ยน layout — ต้อง disconnect observer ตัวเก่าทุกครั้ง
+  // ไม่งั้นสะสมเรื่อย ๆ ตลอดการประชุมยาว ๆ (memory leak) และแถวของกรอบเก่าต้องปิดจบให้ครบก่อน
+  const attach = (region) => {
+    if (observer) observer.disconnect();
+    for (const row of liveRows) {
+      flush(row, true);
+      cleanup(row);
     }
+    liveRows = new Set();
+    observed = region;
+    observer = new MutationObserver(scan);
+    observer.observe(region, { childList: true, subtree: true, characterData: true });
+    scan();
+  };
+
+  const intervalId = setInterval(() => {
+    const region = findRegion();
+    if (region) window.__capRegionSeen = Date.now();
+    if (region && region !== observed) attach(region);
   }, 2000);
+
+  // ไว้ให้ test/harness ถอดตัวจับออกได้สะอาด
+  window.__capWatcherStop = () => {
+    clearInterval(intervalId);
+    if (observer) observer.disconnect();
+    for (const t of timers.values()) clearTimeout(t);
+    timers.clear();
+    window.__capWatcherInstalled = false;
+  };
 }
 """
+
+
+WATCHDOG_INTERVAL_S = 15     # ตรวจสุขภาพบอททุกกี่วินาที
+LEFT_ROOM_STRIKES = 3        # ไม่เจอปุ่มวางสายติดกันกี่รอบ ถึงถือว่าประชุมจบ/หลุดห้อง (3 x 15 = 45 วิ)
+EVAL_FAIL_STRIKES = 5        # สั่ง JS ในหน้าไม่ได้ติดกันกี่รอบ ถึงถือว่าหน้าตาย
+REGION_GONE_S = 60           # ไม่เห็นกรอบคำบรรยายนานเท่านี้ -> ลองเปิดคำบรรยายใหม่
+SILENCE_WARN_S = 300         # ไม่มีข้อความคำบรรยายใหม่นานเท่านี้ -> เตือน (อาจแค่ไม่มีใครพูด)
+SEQ_BASE_STEP = 1_000_000    # id แถวคำบรรยายของการติดตั้งตัวจับแต่ละรอบเริ่มห่างกันเท่านี้ (กัน id ชนกัน)
 
 
 class _Stopped(Exception):
     pass
 
 
+class _EngineLost(Exception):
+    """บอทใช้งานต่อไม่ได้ (ประชุมจบ/เบราว์เซอร์ปิด/หน้า crash) — ต้องหยุดและปิดงานให้เรียบร้อย"""
+
+
 class MeetCaptionEngine:
-    def __init__(self, on_event):
+    def __init__(self, on_event, max_duration_s: float | None = None):
         self.on_event = on_event
+        self.max_duration_s = max_duration_s   # None = ไม่จำกัด; ครบเวลาแล้วบอทออกจากห้องเอง
         self._stop = asyncio.Event()
         self._task: asyncio.Task | None = None
+        self._seq_base = 0
 
     # ── lifecycle ──
     def start(self, url: str) -> asyncio.Task:
@@ -302,6 +350,98 @@ class MeetCaptionEngine:
         except Exception as e:  # noqa: BLE001
             self._emit(type="status", text=f"⚠️ กด shortcut เปิดคำบรรยายไม่สำเร็จ: {e!r}")
 
+    async def _install_watcher(self, page):
+        # id แถวคำบรรยายต้องนับต่อจากรอบก่อนเสมอ: ถ้าหน้าถูกโหลดใหม่ window.__capSeq จะรีเซ็ตเป็น 0
+        # แล้ว id ไปซ้ำกับแถวเก่า ฝั่งแอปจะเอาข้อความใหม่ไปทับ segment ของคนละคน
+        self._seq_base += SEQ_BASE_STEP
+        await page.evaluate(
+            "(b) => { window.__capSeq = Math.max(window.__capSeq || 0, b); }", self._seq_base
+        )
+        await page.evaluate(JS_CAPTION_WATCHER)
+
+    async def _monitor(self, page, context, joined):
+        """เฝ้าสุขภาพบอทตลอดการประชุม — คืนค่าไม่ได้ ออกได้ทาง _Stopped (สั่งหยุด) หรือ _EngineLost เท่านั้น
+
+        จับ: เบราว์เซอร์/หน้าถูกปิดหรือ crash, ประชุมจบหรือบอทหลุดห้อง, ตัวจับคำบรรยายหายไปหลังหน้า
+        โหลดใหม่ (ติดตั้งซ้ำให้), กรอบคำบรรยายหาย (เปิดคำบรรยายใหม่), เงียบนาน (เตือน), ครบเวลาสูงสุด
+        """
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        lost = {}
+        dead = asyncio.Event()
+
+        def mark(reason: str):
+            lost.setdefault("reason", reason)
+            dead.set()
+
+        page.on("close", lambda *_: mark("หน้าประชุมถูกปิด"))
+        page.on("crash", lambda *_: mark("หน้าเบราว์เซอร์ crash"))
+        context.on("close", lambda *_: mark("เบราว์เซอร์ถูกปิด"))
+
+        gone = 0
+        eval_fail = 0
+        last_reenable = last_silence_warn = started
+
+        while True:
+            try:
+                await self._guard(dead.wait(), timeout=WATCHDOG_INTERVAL_S)
+                raise _EngineLost(lost["reason"])
+            except asyncio.TimeoutError:
+                pass  # ครบรอบตรวจปกติ
+
+            if self.max_duration_s and loop.time() - started >= self.max_duration_s:
+                raise _EngineLost(f"ครบเวลาสูงสุดที่ตั้งไว้ ({self.max_duration_s / 60:.0f} นาที)")
+
+            try:
+                # ใช้ count() ไม่ใช่ is_visible(): แถบปุ่มของ Meet ซ่อนตัวเองตอนไม่มีการขยับเมาส์ได้
+                # แต่ปุ่มวางสายยังอยู่ใน DOM จนกว่าจะออกจากห้องจริง ๆ
+                in_room = await joined.count() > 0
+                region_gap_ms, quiet_ms, installed = await page.evaluate(
+                    "() => [Date.now() - (window.__capRegionSeen || 0),"
+                    " Date.now() - (window.__capLastActivity || 0), !!window.__capWatcherInstalled]"
+                )
+                eval_fail = 0
+            except Exception:  # noqa: BLE001 — หน้ากำลังโหลดใหม่/ปิดอยู่
+                eval_fail += 1
+                if eval_fail >= EVAL_FAIL_STRIKES:
+                    raise _EngineLost("สั่งงานหน้าประชุมไม่ได้ต่อเนื่อง (หน้าอาจค้างหรือถูกปิด)")
+                continue
+
+            if not in_room:
+                gone += 1
+                if gone >= LEFT_ROOM_STRIKES:
+                    raise _EngineLost("ออกจากห้องประชุมแล้ว (ประชุมจบ หรือบอทถูกนำออกจากห้อง)")
+                continue
+            gone = 0
+
+            if not installed:
+                # หน้าถูกโหลดใหม่ (เช่น Meet รีเฟรชเอง) ตัวจับคำบรรยายหายไป
+                self._emit(type="status", text="⚠️ ตัวจับคำบรรยายหายไป (หน้าถูกโหลดใหม่) — ติดตั้งใหม่")
+                try:
+                    await self._guard(self._enable_captions(page), timeout=60)
+                    await self._install_watcher(page)
+                except asyncio.TimeoutError:
+                    pass
+                continue
+
+            now = loop.time()
+            if region_gap_ms > REGION_GONE_S * 1000 and now - last_reenable >= REGION_GONE_S:
+                last_reenable = now
+                self._emit(
+                    type="status",
+                    text=f"⚠️ ไม่เห็นกรอบคำบรรยายมา {int(region_gap_ms / 1000)} วินาที — ลองเปิดคำบรรยายใหม่",
+                )
+                try:
+                    await self._guard(self._enable_captions(page), timeout=60)
+                except asyncio.TimeoutError:
+                    pass
+            elif quiet_ms > SILENCE_WARN_S * 1000 and now - last_silence_warn >= SILENCE_WARN_S:
+                last_silence_warn = now
+                self._emit(
+                    type="status",
+                    text=f"ไม่มีคำบรรยายใหม่มา {int(quiet_ms / 60000)} นาทีแล้ว (อาจไม่มีใครพูด)",
+                )
+
     # ── main ──
     async def _run(self, url: str):
         try:
@@ -365,10 +505,10 @@ class MeetCaptionEngine:
 
                     await page.wait_for_timeout(1500)
                     await self._enable_captions(page)
-                    await page.evaluate(JS_CAPTION_WATCHER)
+                    await self._install_watcher(page)
                     self._emit(type="status", text="กำลังฟังคำบรรยายแบบเรียลไทม์")
 
-                    await self._stop.wait()
+                    await self._monitor(page, context, joined)
                 finally:
                     try:
                         await asyncio.wait_for(context.close(), timeout=10)
@@ -381,6 +521,8 @@ class MeetCaptionEngine:
                         self._emit(type="status", text=f"⚠️ ปิดเบราว์เซอร์ไม่สำเร็จ: {e!r}")
         except (_Stopped, asyncio.CancelledError):
             self._emit(type="status", text="หยุดแล้ว")
+        except _EngineLost as e:
+            self._emit(type="status", text=f"⚠️ บอทหยุดเอง: {e}")
         except Exception as e:  # noqa: BLE001
             self._emit(type="error", text=repr(e))
         finally:

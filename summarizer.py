@@ -1,6 +1,12 @@
 """
-สรุปการประชุมด้วย Gemini จาก transcript ที่เก็บไว้ใน MySQL แล้วบันทึกผลกลับลง
-ตาราง summaries/action_items
+สร้าง "เนื้อหารายงานการประชุม" ด้วย Gemini จาก transcript ที่ตรวจทานแล้ว พร้อมชั้นตรวจคุณภาพหลัง AI
+
+หลักการ: ไม่เชื่อผลของ AI ตรงๆ
+  1. บังคับรูปแบบด้วย response_schema (pydantic) — ไม่ใช่แค่ขอ JSON ใน prompt
+  2. ส่วนหัวรายงาน (วันที่ ประธาน เลขา ผู้เข้า/ไม่มา) มาจากข้อมูลในระบบ ไม่ให้ AI สร้าง
+  3. หลัง AI ตอบ ทุกรายการผ่าน validate_minutes: ผู้รับผิดชอบต้องอยู่ในรายชื่อ, วันที่/เวลาต้องถูกต้อง,
+     มติและงานต้องมี "ข้อความอ้างอิง" ที่หาเจอใน transcript จริง — ที่ไม่ผ่านจะถูกติดคำเตือนให้คนตรวจ
+  4. prompt อยู่ในไฟล์ prompts/ (มีเวอร์ชัน) แก้ได้โดยไม่ต้องแตะโค้ด
 
 ต้องตั้งค่า GEMINI_API_KEY ใน .env ก่อนใช้ (ขอฟรีได้ที่ https://aistudio.google.com/apikey)
 """
@@ -8,117 +14,423 @@
 import datetime
 import json
 import os
+import pathlib
+import re
 import time
+from typing import Callable
 
-from google import genai
-from google.genai import errors, types
+from pydantic import BaseModel, ValidationError
 
 import db
 
+HERE = pathlib.Path(__file__).parent
+PROMPT_DIR = HERE / "prompts"
+PROMPT_NAME = os.environ.get("MINUTES_PROMPT", "minutes_v2")          # ชื่อไฟล์ใน prompts/ (ไม่รวม .md)
+                                                                      # v2: ห้ามข้ามหัวข้อที่ไม่มีข้อสรุป + เขียนปี พ.ศ. ในเนื้อความ
+                                                                      # (v1 ยังเก็บไว้ให้ไล่ย้อนรายงานที่เคยสร้างด้วย v1 ได้)
+MAP_PROMPT_NAME = os.environ.get("MINUTES_MAP_PROMPT", "minutes_map_v1")
+
 _MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
-_MAX_RETRIES = 3
-_RETRY_DELAY_SEC = 5
-_REQUEST_TIMEOUT_MS = 30_000  # SDK ไม่ตั้ง timeout ให้เองเลย ถ้าไม่กำหนดค่านี้ ตอน Gemini โหลดสูงจะค้างได้เป็นนาที ๆ
-                                # โดยไม่มี error ใด ๆ ขึ้นมาให้เห็นเลย
-# google-genai SDK มี retry ของตัวเองในตัวอยู่แล้ว (ค่า default คือ 5 attempts, backoff แบบ exponential
-# สูงสุด 60 วิ/ครั้ง, retry ให้เองอัตโนมัติตอนเจอ 429/5xx) ถ้าปล่อยไว้จะไปซ้อนกับ retry loop ของเราเอง
-# (_generate_with_retry ด้านล่าง) กลายเป็น retry ซ้อน retry คูณกันจนรอเป็นหลักหลายนาทีตอน Gemini โหลดสูง
-# ปิด retry ของ SDK ทิ้ง (attempts=1 = ไม่ retry) ให้เหลือแค่ชั้นเดียวที่เราคุมเองแทน
-_NO_SDK_RETRY = types.HttpRetryOptions(attempts=1)
+_MAX_RETRIES = 4
+_RETRY_DELAY_SEC = 5            # รอ 5, 10, 20 วินาที (ทวีคูณ) ระหว่างความพยายามที่ 1->2->3->4 ตอน Google โหลดสูงชั่วคราว
+_RATE_LIMIT_DELAY_SEC = 15
+_REQUEST_TIMEOUT_MS = 120_000   # รายงานยาว + ประชุมนาน ใช้เวลาตอบมากกว่าสรุปสั้นๆ แบบเดิม
+
+# transcript ยาวกว่านี้ (ตัวอักษร) จะใช้ map-reduce: สกัดบันทึกย่อทีละช่วงก่อน แล้วค่อยเรียบเรียงรายงาน
+SINGLE_PASS_CHARS = int(os.environ.get("MINUTES_SINGLE_PASS_CHARS", "60000"))
+CHUNK_CHARS = int(os.environ.get("MINUTES_CHUNK_CHARS", "30000"))
+
+GROUNDED_THRESHOLD = 0.8   # สัดส่วนของข้อความอ้างอิงที่ต้องหาเจอใน transcript ถึงถือว่า "มีที่มาจริง"
 
 _THAI_WEEKDAYS = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์", "อาทิตย์"]
-
-_PROMPT = """คุณเป็นผู้ช่วยสรุปการประชุมภาษาไทย การประชุมนี้จัดขึ้นวัน{weekday}ที่ {date} (ใช้วันนี้เป็น
-จุดอ้างอิงตีความคำพูดที่พูดถึงวันแบบสัมพัทธ์ เช่น "พรุ่งนี้"/"วันศุกร์นี้"/"อีก 2 วัน" ให้เป็นวันที่จริง)
-
-จาก transcript ด้านล่าง ให้สรุปเนื้อหาและแยก action item ออกมา ถือว่า "action item" คือทั้งงานที่ต้องทำ
-และนัดหมาย/กำหนดการ/เดดไลน์ใดๆ ที่ถูกพูดถึงในที่ประชุม (ไม่ใช่แค่ประโยคที่ขึ้นต้นด้วย "ต้องทำ")
-ถ้าในบทสนทนาระบุวันและ/หรือเวลาของเรื่องนั้นไว้ชัดเจน **ต้องแปลงเป็น due_date/due_time เสมอ อย่าตอบ
-null ทั้งที่มีข้อมูลอยู่ในบทสนทนา**
-
-ตอบเป็น JSON เท่านั้น ตามรูปแบบนี้ (ห้ามมีข้อความอื่นนอก JSON):
-{{
-  "executive_summary": "สรุปเนื้อหาการประชุมแบบกระชับ 3-6 ประโยค",
-  "action_items": [
-    {{
-      "description": "งานหรือนัดหมายที่ต้องทำ ระบุรายละเอียดให้ชัดว่าเรื่องอะไร",
-      "assignee": "ชื่อผู้รับผิดชอบ หรือ null ถ้าไม่ชัด",
-      "due_date": "YYYY-MM-DD หรือ null ถ้าไม่มีกำหนดวันเลย",
-      "due_time": "HH:MM แบบ 24 ชม. (เวลาเริ่ม) หรือ null ถ้าไม่มีการระบุเวลา",
-      "due_time_end": "HH:MM แบบ 24 ชม. (เวลาสิ้นสุด ถ้าบทสนทนาระบุช่วงเวลาไว้ เช่น '13:00 ถึง 16:00 น.'
-        ให้ใส่ 16:00 ที่นี่) หรือ null ถ้าไม่มีการระบุเวลาสิ้นสุด"
-    }}
-  ]
-}}
-ถ้าไม่มี action item ให้ตอบ "action_items": []
-
-Transcript:
-{transcript}
-"""
+_ROLE_LABEL = {"chair": "ประธาน", "secretary": "เลขา", "attendee": "ผู้เข้าร่วม"}
 
 
-def _meeting_reference_date(meeting_id: int) -> datetime.datetime:
-    meeting = db.get_meeting(meeting_id)
-    started_at = meeting["started_at"] if meeting else None
-    return started_at or datetime.datetime.now()
+# ── schema ที่บังคับให้ Gemini ตอบ ──
+
+class AgendaItemAI(BaseModel):
+    title: str
+    discussion: str
+    resolution: str | None
+    evidence: list[str]
 
 
-def _generate_with_retry(client: genai.Client, prompt: str):
-    """เรียก Gemini พร้อม retry เฉพาะตอนเจอ ServerError (5xx เช่น 503 UNAVAILABLE ที่ฝั่ง Google โหลดสูงชั่วคราว)
+class ActionItemAI(BaseModel):
+    description: str
+    assignee: str | None
+    due_date: str | None
+    due_time: str | None
+    due_time_end: str | None
+    evidence: list[str]
 
-    ไม่ retry ตอนเจอ ClientError (เช่น 429 โควต้าหมด) เพราะรอไม่กี่วิก็ไม่หาย เสียเวลาผู้ใช้เปล่า ๆ
+
+class MinutesBodyAI(BaseModel):
+    summary: str
+    agenda: list[AgendaItemAI]
+    other_matters: str | None
+    action_items: list[ActionItemAI]
+
+
+# ── ตรวจคุณภาพหลัง AI (ฟังก์ชันล้วน ไม่แตะ DB/เครือข่าย ทดสอบได้ตรงๆ) ──
+
+def _squash(s: str) -> str:
+    """ตัดช่องว่างทั้งหมดทิ้งก่อนเทียบข้อความ: ASR ภาษาไทยเว้นวรรคไม่แน่นอน ('สวัสดี ครับ' = 'สวัสดีครับ')"""
+    return re.sub(r"\s+", "", s or "")
+
+
+def _shingles(s: str, k: int = 4) -> set[str]:
+    s = _squash(s)
+    if not s:
+        return set()
+    return {s[i:i + k] for i in range(max(len(s) - k + 1, 1))}
+
+
+def transcript_shingles(texts: list[str]) -> set[str]:
+    return _shingles("".join(_squash(t) for t in texts))
+
+
+def grounding_score(quote: str, source_shingles: set[str]) -> float:
+    """สัดส่วน (0-1) ของข้อความอ้างอิงที่พบใน transcript จริง — ทนต่อการเว้นวรรค/คำพลาดเล็กน้อย
+    แต่ข้อความที่ AI แต่งขึ้นเองจะได้คะแนนต่ำ
     """
-    for attempt in range(1, _MAX_RETRIES + 1):
-        try:
-            return client.models.generate_content(
-                model=_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(response_mime_type="application/json"),
-            )
-        except errors.ServerError:
-            if attempt == _MAX_RETRIES:
-                raise
-            time.sleep(_RETRY_DELAY_SEC)
+    sh = _shingles(quote)
+    if not sh:
+        return 0.0
+    return len(sh & source_shingles) / len(sh)
 
 
-def summarize_meeting(meeting_id: int) -> dict:
-    """สรุป meeting_id ด้วย Gemini แล้วบันทึกผลลง DB คืนค่า dict ผลสรุป (รวม summary_id)"""
-    existing = db.get_summary(meeting_id)
-    if existing is not None:
-        return existing
+_TITLE_RE = re.compile(r"^(คุณ|นางสาว|นาง|นาย|น\.ส\.|ดร\.|ผศ\.|รศ\.|ศ\.|อาจารย์|อ\.|mr\.?|mrs\.?|ms\.?|dr\.?)\s*", re.I)
 
+
+def _name_key(name: str) -> str:
+    """ชื่อสำหรับเทียบ: ตัดช่องว่าง/ตัวพิมพ์/ต่อท้าย (You) และคำนำหน้าชื่อ (คุณ นาย นาง ดร. ฯลฯ) ที่ AI มักใส่มาให้"""
+    n = db.normalize_name(name or "")
+    stripped = _TITLE_RE.sub("", n)
+    return stripped or n
+
+
+def match_participant_name(name: str | None, participants: list[dict]) -> str | None:
+    """ชื่อผู้รับผิดชอบที่ AI ให้มา -> ชื่อในรายชื่อผู้เข้าร่วม (ตรงตัว หรือเป็นส่วนหนึ่งของกันและกันแบบไม่กำกวม)
+    ถ้าจับคู่ได้มากกว่าหนึ่งคนจะไม่เดา (คืน None) ให้คนเลือกเอง
+    """
+    n = _name_key(name or "")
+    if not n:
+        return None
+    exact = [p for p in participants if _name_key(p["display_name"]) == n]
+    if len(exact) == 1:
+        return exact[0]["display_name"]
+    partial = []
+    for p in participants:
+        pn = _name_key(p["display_name"])
+        if len(pn) >= 2 and len(n) >= 2 and (pn in n or n in pn):
+            partial.append(p["display_name"])
+    return partial[0] if len(partial) == 1 else None
+
+
+_TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
+
+
+def _norm_time(value) -> str | None:
+    if not value:
+        return None
+    m = _TIME_RE.match(str(value).strip())
+    return f"{int(m.group(1)):02d}:{m.group(2)}" if m else "INVALID"
+
+
+def _clean_str(v) -> str | None:
+    v = (v or "").strip() if isinstance(v, str) else v
+    return v or None
+
+
+def _clean_evidence(v) -> list[str]:
+    return [e.strip() for e in (v or []) if isinstance(e, str) and e.strip()]
+
+
+def validate_minutes(
+    content: dict,
+    participants: list[dict],
+    source_texts: list[str],
+    meeting_date: datetime.date | None,
+) -> dict:
+    """ทำความสะอาดเนื้อหารายงานและตรวจคุณภาพ คืนเนื้อหาใหม่ที่มี "warnings" (ว่าง = ผ่านทุกข้อ)
+
+    ใช้ซ้ำได้หลังคนแก้ไข (คำนวณคำเตือนใหม่จากเนื้อหาปัจจุบัน) — ไม่แก้ค่าที่คนตั้งใจใส่ ยกเว้นล้างวันที่/เวลาที่อ่านไม่ได้
+    """
+    warnings: list[dict] = []
+
+    def warn(code: str, path: str, message: str):
+        warnings.append({"code": code, "path": path, "message": message})
+
+    shingles = transcript_shingles(source_texts)
+
+    def check_evidence(path: str, evidence: list[str], required: bool, what: str):
+        if not evidence:
+            if required:
+                warn("no_evidence", path, f"{what}ไม่มีข้อความอ้างอิงจาก transcript — ตรวจสอบว่าเกิดขึ้นจริง")
+            return None
+        scores = [grounding_score(e, shingles) for e in evidence]
+        ok = all(s >= GROUNDED_THRESHOLD for s in scores)
+        if not ok:
+            warn("ungrounded", path, f"{what}อ้างอิงข้อความที่หาไม่เจอใน transcript (อาจเป็นข้อมูลที่ AI แต่งขึ้น)")
+        return ok
+
+    summary = _clean_str(content.get("summary")) or ""
+    if not summary:
+        warn("empty_summary", "summary", "ไม่มีสรุปภาพรวมการประชุม")
+
+    agenda = []
+    for i, a in enumerate(content.get("agenda") or []):
+        item = {
+            "title": _clean_str(a.get("title")) or "",
+            "discussion": _clean_str(a.get("discussion")) or "",
+            "resolution": _clean_str(a.get("resolution")),
+            "evidence": _clean_evidence(a.get("evidence")),
+        }
+        if not item["title"]:
+            warn("agenda_title_missing", f"agenda[{i}].title", f"วาระที่ {i + 1} ไม่มีชื่อวาระ")
+        item["grounded"] = check_evidence(
+            f"agenda[{i}].resolution", item["evidence"], required=bool(item["resolution"]),
+            what=f"มติของวาระที่ {i + 1} ",
+        )
+        agenda.append(item)
+    if not agenda:
+        warn("no_agenda", "agenda", "ไม่พบวาระการประชุมที่ AI สกัดได้ — ตรวจสอบ transcript หรือเพิ่มวาระเอง")
+
+    actions = []
+    for i, a in enumerate(content.get("action_items") or []):
+        item = {
+            "description": _clean_str(a.get("description")) or "",
+            "assignee": _clean_str(a.get("assignee")),
+            "due_date": _clean_str(a.get("due_date")),
+            "due_time": _norm_time(a.get("due_time")),
+            "due_time_end": _norm_time(a.get("due_time_end")),
+            "evidence": _clean_evidence(a.get("evidence")),
+        }
+        for key in ("action_item_id", "calendar_synced", "google_calendar_event_id"):   # ข้อมูลของแถวที่มีอยู่แล้ว ส่งต่อไว้
+            if key in a:
+                item[key] = a[key]
+        label = f"งานที่ {i + 1}"
+        if not item["description"]:
+            warn("action_description_missing", f"action_items[{i}].description", f"{label}ไม่มีรายละเอียด")
+
+        if item["assignee"]:
+            matched = match_participant_name(item["assignee"], participants)
+            if matched:
+                item["assignee"] = matched
+            else:
+                warn("assignee_unknown", f"action_items[{i}].assignee",
+                     f"{label}: ผู้รับผิดชอบ \"{item['assignee']}\" ไม่อยู่ในรายชื่อผู้เข้าร่วม")
+        else:
+            warn("assignee_missing", f"action_items[{i}].assignee", f"{label}ยังไม่ระบุผู้รับผิดชอบ")
+
+        if item["due_date"]:
+            try:
+                d = datetime.date.fromisoformat(item["due_date"])
+                if meeting_date and d < meeting_date:
+                    warn("date_before_meeting", f"action_items[{i}].due_date",
+                         f"{label}: กำหนดส่ง {d} อยู่ก่อนวันประชุม {meeting_date}")
+            except ValueError:
+                warn("bad_date", f"action_items[{i}].due_date",
+                     f"{label}: วันที่ \"{item['due_date']}\" อ่านไม่ได้ จึงล้างค่าให้ (ระบุใหม่ด้วยตนเอง)")
+                item["due_date"] = None
+        for key, label_t in (("due_time", "เวลา"), ("due_time_end", "เวลาสิ้นสุด")):
+            if item[key] == "INVALID":
+                warn("bad_time", f"action_items[{i}].{key}", f"{label}: {label_t}อ่านไม่ได้ จึงล้างค่าให้")
+                item[key] = None
+        if item["due_time"] and item["due_time_end"] and item["due_time_end"] <= item["due_time"]:
+            warn("time_order", f"action_items[{i}].due_time_end", f"{label}: เวลาสิ้นสุดไม่หลังเวลาเริ่ม")
+        if (item["due_time"] or item["due_time_end"]) and not item["due_date"]:
+            warn("time_without_date", f"action_items[{i}].due_date", f"{label}: มีเวลาแต่ไม่มีวันที่")
+
+        item["grounded"] = check_evidence(
+            f"action_items[{i}].evidence", item["evidence"], required=True, what=f"{label} "
+        )
+        actions.append(item)
+
+    return {
+        "summary": summary,
+        "agenda": agenda,
+        "other_matters": _clean_str(content.get("other_matters")),
+        "action_items": actions,
+        "warnings": warnings,
+    }
+
+
+# ── เตรียม prompt / แบ่ง transcript ──
+
+def load_prompt(name: str) -> str:
+    return (PROMPT_DIR / f"{name}.md").read_text(encoding="utf-8")
+
+
+def fill(template: str, **values: str) -> str:
+    """แทนที่ {ชื่อ} ในครั้งเดียว (ไม่ใช้ str.format เพราะ transcript อาจมีวงเล็บปีกกา)
+    ข้อความที่ถูกใส่เข้าไปจะไม่ถูกแทนซ้ำ — เช่น ชื่อผู้เข้าร่วมที่เป็น "{transcript}" ไม่ทำให้ transcript ทะลักมาโผล่ในรายชื่อ
+    """
+    return re.sub(r"\{(\w+)\}", lambda m: values.get(m.group(1), m.group(0)), template)
+
+
+def format_participants(participants: list[dict]) -> str:
+    if not participants:
+        return "(ไม่ได้ระบุรายชื่อผู้เข้าร่วม — ให้ assignee เป็น null ทุกรายการ)"
+    return "\n".join(f"- {p['display_name']} ({_ROLE_LABEL.get(p['role'], p['role'])})" for p in participants)
+
+
+def format_transcript(rows: list[dict]) -> str:
+    return "\n".join(f"[{r['spoken_at']:%H:%M}] {r['display_name']}: {r['text']}" for r in rows)
+
+
+def split_chunks(rows: list[dict], limit: int) -> list[list[dict]]:
+    """แบ่งรายการช่วงคำพูดเป็นก้อนๆ ไม่เกิน limit ตัวอักษร ตัดที่ขอบของช่วงคำพูดเท่านั้น (ไม่ตัดกลางประโยค)"""
+    chunks, cur, size = [], [], 0
+    for r in rows:
+        n = len(r["text"]) + len(r["display_name"]) + 12
+        if cur and size + n > limit:
+            chunks.append(cur)
+            cur, size = [], 0
+        cur.append(r)
+        size += n
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+# ── เรียก Gemini ──
+
+def _gemini_generate() -> Callable:
+    """คืนฟังก์ชัน generate(prompt, schema|None) -> ข้อความที่ Gemini ตอบ (พร้อม retry)"""
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("ยังไม่ได้ตั้งค่า GEMINI_API_KEY ใน .env")
+    from google import genai
+    from google.genai import errors, types
 
-    rows = db.get_transcript(meeting_id)
-    if not rows:
-        raise ValueError("ไม่มี transcript สำหรับการประชุมนี้ (meeting_id ไม่ถูกต้อง หรือยังไม่มีคำบรรยาย final)")
-    transcript_text = "\n".join(f"{r['display_name']}: {r['text']}" for r in rows)
-
-    ref_date = _meeting_reference_date(meeting_id)
-    prompt = _PROMPT.format(
-        weekday=_THAI_WEEKDAYS[ref_date.weekday()],
-        date=ref_date.strftime("%Y-%m-%d"),
-        transcript=transcript_text,
-    )
-
+    # SDK มี retry ในตัวอยู่แล้ว ปิดไว้เพื่อไม่ให้ซ้อนกับ retry ของเราด้านล่าง (เดิมรอเป็นนาทีตอน Google โหลดสูง)
     client = genai.Client(
         api_key=api_key,
-        http_options=types.HttpOptions(timeout=_REQUEST_TIMEOUT_MS, retry_options=_NO_SDK_RETRY),
+        http_options=types.HttpOptions(
+            timeout=_REQUEST_TIMEOUT_MS, retry_options=types.HttpRetryOptions(attempts=1)
+        ),
     )
-    response = _generate_with_retry(client, prompt)
-    result = json.loads(response.text)
 
-    summary_id = db.insert_summary(meeting_id, result["executive_summary"], _MODEL)
-    for item in result.get("action_items", []):
-        db.insert_action_item(
-            summary_id,
-            item.get("description", ""),
-            item.get("assignee"),
-            item.get("due_date"),
-            item.get("due_time"),
-            item.get("due_time_end"),
+    def generate(prompt: str, schema=None) -> str:
+        if schema is not None:
+            config = types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema)
+        else:
+            config = types.GenerateContentConfig()
+        for attempt in range(1, _MAX_RETRIES + 1):
+            try:
+                return client.models.generate_content(model=_MODEL, contents=prompt, config=config).text
+            except errors.ServerError:       # 5xx: ฝั่ง Google โหลดสูงชั่วคราว
+                if attempt == _MAX_RETRIES:
+                    raise
+                time.sleep(_RETRY_DELAY_SEC * 2 ** (attempt - 1))
+            except errors.ClientError as e:  # 429 โควต้า/ความถี่ รอแล้วลองใหม่ได้ ส่วน 4xx อื่นๆ ผิดที่เราเอง ไม่ลองซ้ำ
+                if getattr(e, "code", None) != 429 or attempt == _MAX_RETRIES:
+                    raise
+                time.sleep(_RATE_LIMIT_DELAY_SEC * attempt)
+
+    return generate
+
+
+def _parse_body(raw: str) -> MinutesBodyAI:
+    return MinutesBodyAI.model_validate_json(raw)
+
+
+def generate_minutes_content(
+    rows: list[dict],
+    participants: list[dict],
+    meeting_title: str | None,
+    meeting_date: datetime.datetime,
+    generate: Callable | None = None,
+) -> dict:
+    """transcript ที่ตรวจแล้ว -> เนื้อหารายงานที่ผ่าน validate_minutes แล้ว (มี warnings)
+
+    generate ฉีดเข้ามาได้ (ไว้ทดสอบโดยไม่เรียก Gemini จริง) ค่าเริ่มต้นคือ Gemini
+    """
+    if not rows:
+        raise ValueError("ไม่มี transcript สำหรับการประชุมนี้ (หรือถูกลบหมดแล้ว)")
+    generate = generate or _gemini_generate()
+
+    transcript = format_transcript(rows)
+    date_str = meeting_date.strftime("%Y-%m-%d")
+    parts_text = format_participants(participants)
+
+    if len(transcript) <= SINGLE_PASS_CHARS:
+        source_label, source_title, source = "transcript", "Transcript", transcript
+    else:
+        # ประชุมยาว: สกัดบันทึกย่อทีละช่วงก่อน (ข้อความอ้างอิงในบันทึกคัดลอกตรงตัว) แล้วเรียบเรียงจากบันทึกทั้งหมด
+        chunks = split_chunks(rows, CHUNK_CHARS)
+        map_tpl = load_prompt(MAP_PROMPT_NAME)
+        notes = []
+        for i, chunk in enumerate(chunks, start=1):
+            notes.append(f"=== ช่วงที่ {i}/{len(chunks)} ===\n" + generate(fill(
+                map_tpl, part=str(i), total=str(len(chunks)), date=date_str,
+                participants=parts_text, transcript=format_transcript(chunk),
+            )))
+        source_label, source_title, source = (
+            "บันทึกย่อ", "บันทึกย่อที่สกัดจากทุกช่วงของ transcript (เรียงตามเวลา ข้อความอ้างอิงในบันทึกคัดลอกมาตรงตัวจาก transcript)",
+            "\n\n".join(notes),
         )
 
-    return db.get_summary(meeting_id)
+    prompt = fill(
+        load_prompt(PROMPT_NAME),
+        meeting_title=meeting_title or "(ไม่ได้ระบุ)",
+        weekday=_THAI_WEEKDAYS[meeting_date.weekday()],
+        date=date_str,
+        participants=parts_text,
+        source_label=source_label,
+        source_title=source_title,
+        transcript=source,
+    )
+
+    body = None
+    for attempt in (1, 2):   # AI ตอบนอก schema (หายาก) ลองใหม่หนึ่งครั้งก่อนยอมแพ้
+        try:
+            body = _parse_body(generate(prompt, MinutesBodyAI))
+            break
+        except (ValidationError, json.JSONDecodeError, TypeError):
+            if attempt == 2:
+                raise ValueError("AI ตอบกลับรูปแบบที่ไม่ถูกต้อง ลองสร้างรายงานใหม่อีกครั้ง")
+    return validate_minutes(
+        body.model_dump(), participants, [r["text"] for r in rows], meeting_date.date()
+    )
+
+
+# ── ประกอบเข้ากับ DB ──
+
+def for_storage(content: dict) -> dict:
+    """เนื้อหาเฉพาะส่วนที่เก็บลงฐานข้อมูล (คำเตือนและเครื่องหมาย grounded คำนวณสดทุกครั้ง ไม่เก็บ)"""
+    return {
+        "summary": content.get("summary") or "",
+        "other_matters": content.get("other_matters"),
+        "agenda": [
+            {k: a.get(k) for k in ("title", "discussion", "resolution", "evidence")} for a in content.get("agenda") or []
+        ],
+        "action_items": [
+            {k: it.get(k) for k in ("description", "assignee", "due_date", "due_time", "due_time_end", "evidence")}
+            for it in content.get("action_items") or []
+        ],
+    }
+
+
+def generate_for_meeting(meeting_id: int, generate: Callable | None = None) -> dict:
+    """ให้ AI ร่างรายงานของการประชุม แล้วเลื่อนสถานะเป็น draft — ถ้ามีฉบับร่างอยู่แล้วจะถูกแทนที่ (รายงาน 1 ฉบับต่อ 1 ประชุม
+    ตาม SA) รายงานที่อนุมัติแล้วเขียนทับไม่ได้ ต้องยกเลิกการอนุมัติ (db.reopen_report) ก่อน
+    ต้องยืนยัน transcript แล้วเท่านั้น (transcript_verified) หรือกำลังแก้ร่างอยู่ (draft)
+    """
+    meeting = db.get_meeting(meeting_id)
+    if not meeting:
+        raise ValueError("ไม่พบการประชุมนี้")
+    if meeting["status"] not in ("transcript_verified", "draft"):
+        raise ValueError("ต้องตรวจทานและกด \"ยืนยัน transcript\" ก่อน จึงจะให้ AI สร้างรายงานได้")
+
+    rows = db.get_transcript(meeting_id)
+    participants = db.list_speakers(meeting_id)
+    content = generate_minutes_content(
+        rows, participants, meeting.get("title"),
+        meeting.get("started_at") or datetime.datetime.now(), generate,
+    )
+    stored = for_storage(content)
+    saved = db.save_report(meeting_id, stored, _MODEL, PROMPT_NAME, ai_snapshot=stored)
+    db.set_meeting_status(meeting_id, "draft")
+    return {**saved, "content": content}

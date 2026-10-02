@@ -1,0 +1,21 @@
+{
+  "synthetic": true,
+  "title": "ประชุมโครงการ (เคสตัวอย่าง)",
+  "date": "2026-10-01",
+  "participants": [
+    {"display_name": "สมชาย ใจดี", "role": "chair"},
+    {"display_name": "Alice", "role": "secretary"},
+    {"display_name": "Bob", "role": "attendee"}
+  ],
+  "expected": {
+    "agenda": [
+      {"topic": ["งบประมาณ", "เซิร์ฟเวอร์"], "resolution": ["อนุมัติ", ["สองหมื่น", "20,000", "20000"]]},
+      {"topic": ["กำหนดส่ง", "ความคืบหน้า"], "resolution": null},
+      {"topic": ["ห้องประชุม", "นำเสนอ"], "resolution": null}
+    ],
+    "action_items": [
+      {"keywords": ["เปรียบเทียบ", "ราคา"], "assignee": "Bob", "due_date": "2026-10-05"},
+      {"keywords": ["รายงาน", "ความก้าวหน้า"], "assignee": "Alice", "due_date": "2026-10-09"}
+    ]
+  }
+}

@@ -4,3 +4,9 @@ venv/
 .venv/
 __pycache__/
 calendar_token.json
+ui_smoke_out/
+evaluation/results/
+soak_*.csv
+.bot_token
+.streamlit/secrets.toml
+*.sql

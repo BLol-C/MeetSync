@@ -1,317 +1,294 @@
 """
-เว็บแอปโลคอลสำหรับ MeetSync — วางลิงก์ Google Meet แล้วดู transcript แบบเรียลไทม์
+บริการบอทของ MeetSync (FastAPI) — ทำหน้าที่เดียว: คุมบอทที่เข้าห้อง Google Meet และบันทึกคำบรรยายลงฐานข้อมูล
+หน้าเว็บทั้งหมดอยู่ที่ Streamlit (streamlit_app.py) ซึ่งเรียกบริการนี้ผ่าน botclient.py
 
-รัน:  venv\\Scripts\\python.exe -m uvicorn app:app --port 8000
-เปิด: http://localhost:8000
+แยกเป็นคนละโปรเซสโดยตั้งใจ: บอทต้องอยู่ในห้องประชุมได้นาน 1 ชั่วโมงขึ้นไป ต่อให้หน้าเว็บรีโหลด/ค้าง/ถูกปิดไปแล้วบอทก็ไม่หยุด
+
+รัน:  venv\\Scripts\\python.exe -m uvicorn app:app --host 127.0.0.1 --port 8000   (หรือใช้ run.ps1 เปิดทั้งสองส่วนพร้อมกัน)
+
+ความปลอดภัย: ทุกคำขอ /bot/* ต้องมีโทเคนลับ (botclient.get_token) และรับเฉพาะเครื่องเดียวกัน ผู้ใช้ที่ส่งมาในเฮดเดอร์
+ถูกตรวจสิทธิ์รายการประชุมทุกครั้ง (เจ้าของ หรือประธาน/เลขาตามอีเมล)
 """
 
 import asyncio
 import contextlib
-import pathlib
+import secrets
+import time
+import urllib.parse
+from collections import OrderedDict, deque
 
 from dotenv import load_dotenv
 
 load_dotenv()  # ต้องโหลดก่อน import db เพราะ db.py อ่าน env ตอน import (module level)
 
-import os
+from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.responses import RedirectResponse
+from itsdangerous import BadSignature, SignatureExpired
+from pydantic import BaseModel
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
-from starlette.middleware.sessions import SessionMiddleware
-
-import auth
+import botclient
 import calendar_auth
-import calendar_sync
 import db
-import pdf_report
-import summarizer
-from meet_engine import MEET_URL_RE, MeetCaptionEngine
+from meet_engine import MeetCaptionEngine
 
-HERE = pathlib.Path(__file__).parent
-INDEX_HTML = (HERE / "frontend.html").read_text(encoding="utf-8")
+_ROW_MAP_MAX = 500     # จำนวนแถวคำบรรยายล่าสุดที่จำ segment_id ไว้ (แถวเก่ากว่านี้ไม่กลับมา final ซ้ำแล้ว)
+_LIVE_ROWS_MAX = 150   # จำนวนแถวคำบรรยายสดที่เก็บให้หน้าเว็บอ่าน
+_STATUS_MAX = 30
 
-LOGIN_HTML = """
-<!doctype html><html lang="th"><head><meta charset="utf-8">
-<title>เข้าสู่ระบบ — MeetSync</title>
-<style>
-body{margin:0;background:#0f1115;color:#e6e8ec;font:15px/1.55 "Segoe UI",Tahoma,system-ui,sans-serif;
-  display:flex;align-items:center;justify-content:center;height:100vh}
-.box{background:#171a21;border:1px solid #2a2f3a;border-radius:12px;padding:32px 40px;text-align:center}
-h1{font-size:18px;margin:0 0 18px}
-a.btn{display:inline-block;background:#4c8dff;color:#fff;text-decoration:none;font-weight:600;
-  padding:10px 20px;border-radius:8px}
-a.btn:hover{background:#3a6fd8}
-</style></head><body>
-<div class="box"><h1>MeetSync</h1><a class="btn" href="/auth/login">เข้าสู่ระบบด้วย Google</a></div>
-</body></html>
-"""
+_engine: MeetCaptionEngine | None = None
+_db_ready = False
+_current_meeting_id: int | None = None
+_last_meeting_id: int | None = None   # การประชุมของรอบล่าสุด (คงไว้หลังหยุด เพื่อให้ผู้จัดการยังเห็นสถานะ/ข้อผิดพลาดของรอบนั้น)
+_run_owner_id: int | None = None   # user_id ของคนที่สั่งเริ่มบอทรอบนี้
+_last_error: str | None = None
+_seq_no = 0
+_segment_by_row: OrderedDict[int, int] = OrderedDict()   # id แถวคำบรรยาย (จาก JS) -> segment_id ใน DB
+                                                          # กันไม่ให้คนพูดยาวคนเดียวถูกบันทึกเป็นหลายแถวซ้ำ ๆ
+_live_rows: OrderedDict[int, dict] = OrderedDict()       # คำบรรยายล่าสุด (รวมที่ยังไม่ final) ให้หน้าเว็บแสดงสด
+_status_log: deque = deque(maxlen=_STATUS_MAX)
+_save_queue: asyncio.Queue | None = None    # คิวเขียน segment ลง DB (ประมวลผลทีละอัน ตามลำดับ)
+_save_worker: asyncio.Task | None = None
+_finalize_lock = asyncio.Lock()
 
 
 @contextlib.asynccontextmanager
 async def _lifespan(_app: FastAPI):
     global _db_ready
     try:
-        db.init_schema()
+        await asyncio.to_thread(db.init_schema)
         _db_ready = True
-    except Exception as e:  # noqa: BLE001 — DB ต่อไม่ได้ก็ให้แอปทำงานต่อแบบเดิมได้ (แค่ไม่บันทึกลง DB)
+    except Exception as e:  # noqa: BLE001 — DB ต่อไม่ได้ก็ให้บริการเปิดอยู่ (หน้าเว็บจะเห็นจาก /health)
         _db_ready = False
-        _broadcast({"type": "status", "text": f"⚠️ เชื่อมต่อฐานข้อมูลไม่สำเร็จ (จะไม่บันทึกลง DB): {e!r}"})
+        _log(f"⚠️ เชื่อมต่อฐานข้อมูลไม่สำเร็จ: {e!r}")
     yield
-    if _engine:
-        await _engine.stop()
+    await _finalize()
 
 
-app = FastAPI(lifespan=_lifespan)
-app.add_middleware(SessionMiddleware, secret_key=os.environ["SESSION_SECRET"])
-
-_queues: set[asyncio.Queue] = set()
-_history: list[dict] = []          # status + caption(final) ล่าสุด สำหรับ client ที่เพิ่งต่อ
-_engine: MeetCaptionEngine | None = None
-_db_ready = False
-_current_meeting_id: int | None = None
-_seq_no = 0
-_segment_by_row: dict[int, int] = {}   # id ของแถวคำบรรยาย (จาก JS) -> segment_id ใน DB
-                                        # กันไม่ให้คนพูดยาวคนเดียวถูกบันทึกเป็นหลายแถวซ้ำ ๆ
+app = FastAPI(lifespan=_lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
 
-def _save_segment(ev: dict):
-    """บันทึกช่วงคำพูดที่ final แล้วลง MySQL — ล้มเหลวได้โดยไม่ทำ engine/เว็บล่ม
+def _log(text: str):
+    _status_log.append({"t": time.strftime("%H:%M:%S"), "text": text})
 
-    แถวคำบรรยายเดียวกัน (ev["id"]) อาจ final ซ้ำหลายครั้งระหว่างที่คนคนเดิมพูดต่อ
+
+# ── บันทึก transcript ลง DB (นอก event loop) ──
+
+def _persist_segment(meeting_id: int, row_id: int | None, name: str, text: str):
+    """เขียน segment ลง MySQL — รันใน thread (PyMySQL เป็น sync ห้ามเรียกบน event loop)
+
+    แถวคำบรรยายเดียวกัน (row_id) อาจ final ซ้ำหลายครั้งระหว่างที่คนคนเดิมพูดต่อ
     (เช่น หยุดหายใจ/เว้นจังหวะเกิน 1.5 วิ) — ครั้งแรก insert แถวใหม่ ครั้งต่อ ๆ ไป update
     แถวเดิมด้วยข้อความที่ยาวขึ้น แทนที่จะ insert ซ้ำ
+
+    เรียกจาก worker ตัวเดียวเท่านั้น จึงแตะ _seq_no/_segment_by_row ได้โดยไม่ต้องล็อก
     """
     global _seq_no
-    if not _db_ready or _current_meeting_id is None:
+    segment_id = _segment_by_row.get(row_id)
+    if segment_id is not None:
+        db.update_segment(segment_id, text)
         return
-    name = ev.get("name")
-    text = (ev.get("text") or "").strip()
-    row_id = ev.get("id")
-    if not name or name == "(raw)" or not text:
-        return
-    try:
-        segment_id = _segment_by_row.get(row_id)
-        if segment_id is not None:
-            db.update_segment(segment_id, text)
+    speaker_id = db.get_or_create_speaker(meeting_id, name)
+    _seq_no += 1
+    segment_id = db.insert_segment(meeting_id, speaker_id, _seq_no, text)
+    if row_id is not None:
+        _segment_by_row[row_id] = segment_id
+        while len(_segment_by_row) > _ROW_MAP_MAX:
+            _segment_by_row.popitem(last=False)
+
+
+async def _save_worker_loop(q: asyncio.Queue):
+    while True:
+        item = await q.get()
+        try:
+            await asyncio.to_thread(_persist_segment, *item)
+        except Exception as e:  # noqa: BLE001 — เขียน DB พลาดต้องไม่ทำให้ worker/บริการล่ม
+            _log(f"⚠️ บันทึกลง DB ไม่สำเร็จ: {e!r}")
+        finally:
+            q.task_done()
+
+
+def _handle_event(ev: dict):
+    """รับ event จากเอนจินบอท: เก็บไว้ให้หน้าเว็บอ่านสด และส่งคำบรรยายที่ final เข้าคิวเขียน DB"""
+    global _last_error
+    kind = ev.get("type")
+    if kind == "status":
+        _log(ev.get("text", ""))
+    elif kind == "error":
+        _last_error = ev.get("text", "")
+        _log("ผิดพลาด: " + _last_error)
+    elif kind == "caption":
+        name, text = ev.get("name"), (ev.get("text") or "").strip()
+        if not name or name == "(raw)" or not text:
             return
-        speaker_id = db.get_or_create_speaker(_current_meeting_id, name)
-        _seq_no += 1
-        segment_id = db.insert_segment(_current_meeting_id, speaker_id, _seq_no, text)
-        if row_id is not None:
-            _segment_by_row[row_id] = segment_id
-    except Exception as e:  # noqa: BLE001
-        _broadcast({"type": "status", "text": f"⚠️ บันทึกลง DB ไม่สำเร็จ: {e!r}"})
+        row_id = ev.get("id")
+        _live_rows[row_id] = {"id": row_id, "name": name, "text": text, "final": bool(ev.get("final"))}
+        _live_rows.move_to_end(row_id)
+        while len(_live_rows) > _LIVE_ROWS_MAX:
+            _live_rows.popitem(last=False)
+        if ev.get("final") and _db_ready and _current_meeting_id is not None and _save_queue is not None:
+            _save_queue.put_nowait((_current_meeting_id, row_id, name, text))
 
 
-def _broadcast(ev: dict):
-    if ev.get("type") == "status" or (ev.get("type") == "caption" and ev.get("final")):
-        _history.append(ev)
-        if len(_history) > 1500:
-            del _history[:750]
-    if ev.get("type") == "caption" and ev.get("final"):
-        _save_segment(ev)
+def _on_engine_event(engine: MeetCaptionEngine, ev: dict):
+    if engine is not _engine:
+        return  # event ตกค้างจากบอทตัวเก่าที่ถูกแทนไปแล้ว
     if ev.get("type") == "ended":
-        ev = {"type": "state", "running": False}
-        _history.append(ev)
-    for q in list(_queues):
-        q.put_nowait(ev)
-
-
-async def _start(url: str):
-    global _engine, _current_meeting_id, _seq_no
-    if not MEET_URL_RE.match(url):
-        _broadcast({"type": "error", "text": "ลิงก์ไม่ถูกต้อง (ต้องเป็น https://meet.google.com/xxx-xxxx-xxx)"})
+        # บอทจบเอง (ประชุมจบ/เบราว์เซอร์ปิด/error) -> ปิดประชุมใน DB ให้เรียบร้อย
+        asyncio.get_running_loop().create_task(_finalize(only_if_engine=engine))
         return
-    if _engine and _engine.is_running():
-        await _engine.stop()
-    _history.clear()
-    _broadcast({"type": "cleared"})
-    _broadcast({"type": "state", "running": True})
-
-    _current_meeting_id = None
-    _seq_no = 0
-    _segment_by_row.clear()
-    if _db_ready:
-        try:
-            _current_meeting_id = db.create_meeting(url)
-        except Exception as e:  # noqa: BLE001
-            _broadcast({"type": "status", "text": f"⚠️ สร้างบันทึกการประชุมใน DB ไม่สำเร็จ: {e!r}"})
-
-    _engine = MeetCaptionEngine(on_event=_broadcast)
-    _engine.start(url)
+    _handle_event(ev)
 
 
-async def _stop():
-    global _engine, _current_meeting_id
-    if _engine:
-        await _engine.stop()
-        _engine = None
-    ended_meeting_id = _current_meeting_id
-    if _db_ready and _current_meeting_id is not None:
-        try:
-            db.end_meeting(_current_meeting_id)
-        except Exception as e:  # noqa: BLE001
-            _broadcast({"type": "status", "text": f"⚠️ ปิดบันทึกการประชุมใน DB ไม่สำเร็จ: {e!r}"})
+async def _finalize(only_if_engine: MeetCaptionEngine | None = None):
+    """หยุดบอท รอเขียน transcript ที่ค้างคิวให้ครบ แล้วปิดประชุมใน DB — เรียกซ้ำได้โดยไม่เสียหาย"""
+    global _engine, _current_meeting_id, _save_queue, _save_worker
+    async with _finalize_lock:
+        if only_if_engine is not None and _engine is not only_if_engine:
+            return  # มีคนสั่งหยุด/เริ่มใหม่ไปก่อนแล้ว — อย่าไปปิดการประชุมรอบใหม่
+        if _engine is None and _current_meeting_id is None and _save_worker is None:
+            return
+        if _engine:
+            await _engine.stop()
+            _engine = None
+        if _save_queue is not None:
+            await _save_queue.join()
+        if _save_worker is not None:
+            _save_worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await _save_worker
+        _save_queue = None
+        _save_worker = None
+        ended_meeting_id = _current_meeting_id
+        if _db_ready and ended_meeting_id is not None:
+            try:
+                await asyncio.to_thread(db.end_meeting, ended_meeting_id)
+            except Exception as e:  # noqa: BLE001
+                _log(f"⚠️ ปิดบันทึกการประชุมใน DB ไม่สำเร็จ: {e!r}")
         _current_meeting_id = None
-    _broadcast({"type": "state", "running": False})
-    if ended_meeting_id is not None:
-        _broadcast({"type": "meeting_ended", "meeting_id": ended_meeting_id})
+        _log("บอทหยุดแล้ว — ไปตรวจทาน transcript ได้")
 
 
-@app.get("/")
-async def index(request: Request) -> HTMLResponse:
-    if not request.session.get("user"):
-        return RedirectResponse("/login")
-    return HTMLResponse(INDEX_HTML)
+# ── ยืนยันตัวตน ──
 
-
-@app.get("/login")
-async def login_page() -> HTMLResponse:
-    return HTMLResponse(LOGIN_HTML)
-
-
-@app.get("/auth/login")
-async def auth_login():
-    return RedirectResponse(auth.build_login_url())
-
-
-@app.get("/auth/login/callback")
-async def auth_login_callback(request: Request, code: str):
-    info = await asyncio.to_thread(auth.exchange_login_code, code)
-    if _db_ready:
-        await asyncio.to_thread(
-            db.upsert_user, info["google_sub"], info["email"], info["name"], info["picture"]
-        )
-    request.session["user"] = {
-        "email": info["email"],
-        "name": info["name"],
-        "picture": info["picture"],
-    }
-    return RedirectResponse("/")
-
-
-@app.get("/logout")
-async def logout(request: Request):
-    request.session.clear()
-    return RedirectResponse("/login")
-
-
-@app.get("/me")
-async def me(request: Request) -> dict:
-    user = request.session.get("user")
-    if not user:
-        raise HTTPException(status_code=401, detail="ยังไม่ได้เข้าสู่ระบบ")
-    return user
-
-
-@app.get("/meetings")
-async def list_meetings() -> list[dict]:
-    if not _db_ready:
-        raise HTTPException(status_code=503, detail="ฐานข้อมูลไม่พร้อม")
-    return await asyncio.to_thread(db.list_meetings)
-
-
-@app.get("/meetings/{meeting_id}/transcript.txt")
-async def download_transcript(meeting_id: int) -> PlainTextResponse:
-    if not _db_ready:
-        raise HTTPException(status_code=503, detail="ฐานข้อมูลไม่พร้อม")
-    meeting = await asyncio.to_thread(db.get_meeting, meeting_id)
-    if not meeting:
-        raise HTTPException(status_code=404, detail="ไม่พบการประชุมนี้")
-    rows = await asyncio.to_thread(db.get_transcript, meeting_id)
-    lines = [f"[{r['spoken_at']:%H:%M:%S}] {r['display_name']}: {r['text']}" for r in rows]
-    body = "\n".join(lines) + ("\n" if lines else "")
-    return PlainTextResponse(
-        body,
-        headers={"Content-Disposition": f'attachment; filename="meet-transcript-{meeting_id}.txt"'},
-    )
-
-
-@app.get("/meetings/{meeting_id}/summary.pdf")
-async def download_summary_pdf(meeting_id: int) -> Response:
-    if not _db_ready:
-        raise HTTPException(status_code=503, detail="ฐานข้อมูลไม่พร้อม")
-    meeting = await asyncio.to_thread(db.get_meeting, meeting_id)
-    if not meeting:
-        raise HTTPException(status_code=404, detail="ไม่พบการประชุมนี้")
-    summary = await asyncio.to_thread(db.get_summary, meeting_id)
-    if not summary:
-        raise HTTPException(status_code=404, detail="การประชุมนี้ยังไม่ได้สรุป")
-    pdf_bytes = await asyncio.to_thread(pdf_report.build_summary_pdf, meeting, summary)
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="meeting-summary-{meeting_id}.pdf"'},
-    )
-
-
-@app.post("/meetings/{meeting_id}/summarize")
-async def summarize_meeting(meeting_id: int, regenerate: bool = False) -> dict:
-    if not _db_ready:
-        raise HTTPException(status_code=503, detail="ฐานข้อมูลไม่พร้อม สรุปไม่ได้")
+def identity(
+    x_bot_token: str = Header(default=""),
+    x_user_id: str = Header(default=""),
+    x_user_email: str = Header(default=""),
+) -> dict:
+    if not secrets.compare_digest(x_bot_token or "", botclient.get_token()):
+        raise HTTPException(status_code=401, detail="โทเคนบริการบอทไม่ถูกต้อง")
     try:
-        if regenerate:
-            await asyncio.to_thread(db.delete_summary, meeting_id)
-        return await asyncio.to_thread(summarizer.summarize_meeting, meeting_id)
-    except (RuntimeError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"เรียก Gemini ไม่สำเร็จ: {e!r}")
+        user_id = int(x_user_id)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="ไม่ทราบผู้ใช้")
+    return {"user_id": user_id, "email": urllib.parse.unquote(x_user_email) or None}
 
 
-@app.get("/auth/google")
-async def auth_google():
-    return RedirectResponse(calendar_auth.build_auth_url())
+def _is_running() -> bool:
+    return bool(_engine and _engine.is_running())
+
+
+async def _manager_of(meeting_id: int, user: dict) -> dict | None:
+    meeting = await asyncio.to_thread(db.get_meeting, meeting_id)
+    if meeting and await asyncio.to_thread(db.is_meeting_manager, meeting, user["user_id"], user["email"]):
+        return meeting
+    return None
+
+
+# ── เส้นทาง ──
+
+class StartIn(BaseModel):
+    meeting_id: int
+
+
+@app.get("/health")
+async def health() -> dict:
+    return {"ok": True, "db": _db_ready, "running": _is_running()}
+
+
+@app.post("/bot/start")
+async def bot_start(body: StartIn, user: dict = Depends(identity)) -> dict:
+    """เริ่มบอท (หรือกลับมาบันทึกต่อหลังบอทหลุด) สำหรับการประชุมที่ตั้งค่าไว้แล้ว"""
+    global _engine, _current_meeting_id, _last_meeting_id, _seq_no, _run_owner_id, _save_queue, _save_worker, _last_error
+    if not _db_ready:
+        raise HTTPException(status_code=503, detail="ฐานข้อมูลไม่พร้อม เริ่มบอทไม่ได้")
+    meeting = await _manager_of(body.meeting_id, user)
+    if meeting is None:
+        raise HTTPException(status_code=404, detail="ไม่พบการประชุมนี้")
+    if _is_running() and _current_meeting_id != body.meeting_id:
+        raise HTTPException(status_code=409, detail="บอทกำลังบันทึกการประชุมอื่นอยู่ — หยุดอันนั้นก่อน")
+    if _is_running():
+        raise HTTPException(status_code=409, detail="บอทกำลังบันทึกการประชุมนี้อยู่แล้ว")
+
+    await _finalize()   # เก็บกวาดรอบก่อนหน้า (ถ้ามีค้าง) ให้เรียบร้อย
+    if not await asyncio.to_thread(db.begin_recording, body.meeting_id):
+        raise HTTPException(status_code=409, detail="เริ่มบันทึกการประชุมนี้ไม่ได้ (ผ่านขั้นตรวจทาน transcript ไปแล้ว)")
+
+    _seq_no = await asyncio.to_thread(db.max_sequence_no, body.meeting_id)   # บันทึกต่อ: ลำดับไม่ชนของเดิม
+    _segment_by_row.clear()
+    _live_rows.clear()
+    _status_log.clear()
+    _last_error = None
+    _run_owner_id = user["user_id"]
+    _current_meeting_id = _last_meeting_id = body.meeting_id
+    _save_queue = asyncio.Queue()
+    _save_worker = asyncio.create_task(_save_worker_loop(_save_queue))
+
+    engine: MeetCaptionEngine = MeetCaptionEngine(on_event=lambda ev: _on_engine_event(engine, ev))
+    _engine = engine
+    engine.start(meeting["meet_url"])
+    _log("กำลังเริ่มบอท…")
+    return {"ok": True}
+
+
+@app.post("/bot/stop")
+async def bot_stop(user: dict = Depends(identity)) -> dict:
+    if _current_meeting_id is not None and not await _manager_of(_current_meeting_id, user):
+        raise HTTPException(status_code=403, detail="บอทนี้กำลังบันทึกการประชุมของคนอื่น — หยุดไม่ได้")
+    await _finalize()
+    return {"ok": True}
+
+
+@app.get("/bot/state")
+async def bot_state(user: dict = Depends(identity)) -> dict:
+    """สถานะบอทและคำบรรยายสด — เห็นรายละเอียดเฉพาะผู้จัดการของการประชุมที่กำลังบันทึก (คนอื่นเห็นแค่ว่าบอทไม่ว่าง)"""
+    running = _is_running()
+    visible = _last_meeting_id is not None and bool(await _manager_of(_last_meeting_id, user))
+    if not visible:
+        return {"running": running, "mine": False, "meeting_id": None, "rows": [], "status": [], "error": None}
+    return {
+        "running": running,
+        "mine": True,
+        "meeting_id": _last_meeting_id,
+        "rows": list(_live_rows.values()),
+        "status": list(_status_log),
+        "error": _last_error,
+    }
+
+
+# ── เชื่อม Google Calendar (OAuth) — ไม่ใช้ session ใช้โทเคนที่เซ็นแล้วระบุตัวผู้ใช้ ──
+
+def _safe_return(url: str) -> str:
+    """ปลายทางหลังเชื่อมเสร็จต้องเป็นหน้าเว็บของเราเท่านั้น (กัน open redirect)"""
+    return url if url.startswith(botclient.UI_URL) else botclient.UI_URL
+
+
+@app.get("/calendar/connect")
+async def calendar_connect(t: str):
+    try:
+        data = botclient.read_calendar_token(t, max_age=600)
+    except (BadSignature, SignatureExpired):
+        raise HTTPException(status_code=400, detail="ลิงก์เชื่อม Calendar ไม่ถูกต้องหรือหมดอายุ — กลับไปกดปุ่มเชื่อมต่อใหม่")
+    return RedirectResponse(calendar_auth.build_auth_url(t, login_hint=data.get("em")))
 
 
 @app.get("/auth/google/callback")
-async def auth_google_callback(code: str):
-    await asyncio.to_thread(calendar_auth.exchange_code, code)
-    return RedirectResponse("/")
-
-
-@app.get("/calendar/status")
-async def calendar_status() -> dict:
-    return {"connected": calendar_auth.is_connected()}
-
-
-@app.post("/action-items/{action_item_id}/sync-to-calendar")
-async def sync_action_item(action_item_id: int) -> dict:
+async def calendar_callback(code: str | None = None, state: str | None = None):
     try:
-        event_id = await asyncio.to_thread(calendar_sync.sync_action_item, action_item_id)
-        return {"google_calendar_event_id": event_id}
-    except (RuntimeError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"เขียนลง Calendar ไม่สำเร็จ: {e!r}")
-
-
-@app.websocket("/ws")
-async def ws(sock: WebSocket):
-    await sock.accept()
-    q: asyncio.Queue = asyncio.Queue()
-    _queues.add(q)
-
-    async def pump():
-        while True:
-            ev = await q.get()
-            await sock.send_json(ev)
-
-    pump_task = asyncio.create_task(pump())
-    try:
-        for ev in _history[-600:]:
-            await sock.send_json(ev)
-        await sock.send_json({"type": "state", "running": bool(_engine and _engine.is_running())})
-
-        while True:
-            msg = await sock.receive_json()
-            action = msg.get("action")
-            if action == "start":
-                await _start((msg.get("url") or "").strip())
-            elif action == "stop":
-                await _stop()
-    except WebSocketDisconnect:
-        pass
-    finally:
-        pump_task.cancel()
-        _queues.discard(q)
+        data = botclient.read_calendar_token(state or "", max_age=900)
+    except (BadSignature, SignatureExpired):
+        raise HTTPException(status_code=400, detail="การเชื่อม Calendar ไม่ถูกต้องหรือหมดอายุ — ลองใหม่อีกครั้ง")
+    if not code:
+        raise HTTPException(status_code=400, detail="Google ไม่ได้ส่งรหัสยืนยันกลับมา (ยกเลิกการอนุญาตหรือเปล่า?)")
+    await asyncio.to_thread(calendar_auth.exchange_code, code, data["uid"])
+    return RedirectResponse(_safe_return(data["ret"]))

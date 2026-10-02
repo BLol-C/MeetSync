@@ -1,0 +1,26 @@
+{
+  "synthetic": true,
+  "title": "ประชุมซ้อมระบบ (บทพูดจำลอง)",
+  "date": "2026-10-03",
+  "participants": [
+    {"display_name": "ต้น", "role": "chair"},
+    {"display_name": "ฟ้า", "role": "secretary"},
+    {"display_name": "บอล", "role": "attendee"},
+    {"display_name": "แพร", "role": "attendee", "attendance": "absent"}
+  ],
+  "expected": {
+    "agenda": [
+      {"topic": ["ความคืบหน้า", ["deploy", "ดีพลอย", "เครื่องทดสอบ"]], "resolution": null},
+      {"topic": ["งบ", ["api", "เอพีไอ"]], "resolution": ["อนุมัติ", ["สามพัน", "3,000", "3000"]]},
+      {"topic": ["ซ้อม", "นำเสนอ"], "resolution": ["ซ้อม", "16"]},
+      {"topic": [["database", "ฐานข้อมูล", "เดตาเบส"], ["cloud", "คลาวด์"]], "resolution": null}
+    ],
+    "action_items": [
+      {"keywords": ["ใบขอเบิก", "งบ"], "assignee": "ฟ้า", "due_date": "2026-10-12"},
+      {"keywords": ["สไลด์", "เตรียม"], "assignee": "บอล", "due_date": "2026-10-07"},
+      {"keywords": ["ซ้อม", "นำเสนอ"], "assignee": "ต้น", "due_date": "2026-10-16"},
+      {"keywords": ["ราคา", ["cloud", "คลาวด์"]], "assignee": "บอล", "due_date": "2026-10-14"},
+      {"keywords": [["อัปเดต", "อัพเดต", "ปรับปรุง"], "เอกสาร"], "assignee": "ฟ้า", "due_date": null}
+    ]
+  }
+}
