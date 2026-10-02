@@ -14,9 +14,10 @@ import argparse
 import datetime
 import json
 import pathlib
+import re
 import sys
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT =pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from dotenv import load_dotenv  # noqa: E402
@@ -42,12 +43,15 @@ LABELS = {
 }
 
 
+_TIME_PREFIX = re.compile(r"^\[[^\]]*\]\s*")   # "[10:02:15–10:02:40] " ที่ไฟล์ .txt ส่งออกจากหน้าตรวจ transcript ใส่นำหน้า
+
+
 def load_case(path: pathlib.Path) -> dict:
     cfg = json.loads((path / "case.json").read_text(encoding="utf-8"))
     when = datetime.datetime.fromisoformat(cfg["date"] + "T09:00:00")
     rows = []
     for i, line in enumerate((path / "transcript.txt").read_text(encoding="utf-8").splitlines()):
-        line = line.strip()
+        line = _TIME_PREFIX.sub("", line.strip())
         if not line or ":" not in line:
             continue
         name, text = line.split(":", 1)

@@ -94,6 +94,33 @@ class MetricTests(unittest.TestCase):
         self.assertIsNone(avg["date_accuracy"])
 
 
+class ScriptMeetingCaseTests(unittest.TestCase):
+    """เคสบทพูดจำลอง (evaluation/cases/script_meeting_th) ต้องโหลดได้และเฉลยสอดคล้องกัน"""
+
+    def test_script_case_loads_with_the_expected_shape(self):
+        case = run_eval.load_case(CASE_DIR.parent / "script_meeting_th")
+        self.assertEqual(len(case["expected"]["agenda"]), 4)
+        self.assertEqual(len(case["expected"]["action_items"]), 5)
+        names = {r["display_name"] for r in case["rows"]}
+        self.assertEqual(names, {"ต้น", "ฟ้า", "บอล"})                     # แพรไม่มา จึงไม่พูด
+        absent = [p for p in case["participants"] if p.get("attendance") == "absent"]
+        self.assertEqual([p["display_name"] for p in absent], ["แพร"])
+        assignees = {a["assignee"] for a in case["expected"]["action_items"]}
+        self.assertLessEqual(assignees, {p["display_name"] for p in case["participants"]})   # ผู้รับผิดชอบต้องอยู่ในรายชื่อ
+        self.assertEqual([a["resolution"] is None for a in case["expected"]["agenda"]], [True, False, False, True])
+
+    def test_exported_transcript_with_time_prefix_loads(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d)
+            (p / "case.json").write_text(json.dumps({"date": "2026-10-03", "participants": [], "expected": {}}), encoding="utf-8")
+            (p / "transcript.txt").write_text(
+                "[10:02:15–10:02:40] ต้น: สวัสดีครับ เวลา 10:30 นะครับ\n[10:02:50] ฟ้า: ค่ะ\n", encoding="utf-8")
+            rows = run_eval.load_case(p)["rows"]
+        self.assertEqual([(r["display_name"], r["text"]) for r in rows],
+                         [("ต้น", "สวัสดีครับ เวลา 10:30 นะครับ"), ("ฟ้า", "ค่ะ")])
+
+
 class CaseFileTests(unittest.TestCase):
     def test_example_case_loads(self):
         self.assertTrue(CASE["synthetic"])
