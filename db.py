@@ -82,11 +82,25 @@ CREATE TABLE IF NOT EXISTS action_items (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
-# ตารางเก่าที่สร้างไปแล้วก่อนมี due_time (CREATE TABLE IF NOT EXISTS ข้างบนจะไม่เพิ่มคอลัมน์ใหม่ให้)
-_MIGRATIONS = [
-    "ALTER TABLE action_items ADD COLUMN due_time TIME NULL",
-    "ALTER TABLE action_items ADD COLUMN due_time_end TIME NULL",
+# Migration แบบมีเวอร์ชัน (CREATE TABLE IF NOT EXISTS ข้างบนไม่เพิ่มคอลัมน์ใหม่ให้ตารางที่มีอยู่แล้ว)
+# เพิ่มของใหม่ต่อท้ายด้วยเลขเวอร์ชันถัดไปเท่านั้น ห้ามแก้/แทรกของเดิม — เวอร์ชันที่รันแล้วถูกบันทึกใน
+# ตาราง schema_migrations และจะไม่รันซ้ำ
+_MIGRATIONS: list[tuple[int, list[str]]] = [
+    (1, ["ALTER TABLE action_items ADD COLUMN due_time TIME NULL"]),
+    (2, ["ALTER TABLE action_items ADD COLUMN due_time_end TIME NULL"]),
+    (3, [
+        "ALTER TABLE meetings ADD COLUMN owner_user_id INT NULL",
+        "ALTER TABLE meetings ADD CONSTRAINT fk_meetings_owner FOREIGN KEY (owner_user_id) "
+        "REFERENCES users(user_id) ON DELETE SET NULL",
+    ]),
 ]
+
+# error ที่แปลว่า "ของนี้มีอยู่แล้ว" — เกิดกับ DB เก่าที่ถูก ALTER ไปแล้วก่อนมีระบบ schema_migrations
+_ALREADY_APPLIED_ERRORS = {
+    1060,  # Duplicate column name
+    1061,  # Duplicate key name
+    1826,  # Duplicate foreign key constraint name
+}
 
 
 def _fmt_time(value) -> str | None:
@@ -120,12 +134,26 @@ def init_schema():
                 statement = statement.strip()
                 if statement:
                     cur.execute(statement)
-            for statement in _MIGRATIONS:
-                try:
-                    cur.execute(statement)
-                except pymysql.err.OperationalError as e:
-                    if e.args[0] != 1060:  # 1060 = Duplicate column name (migration ทำไปแล้ว)
-                        raise
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS schema_migrations (
+                       version    INT PRIMARY KEY,
+                       applied_at DATETIME NOT NULL
+                   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+            )
+            cur.execute("SELECT version FROM schema_migrations")
+            applied = {row["version"] for row in cur.fetchall()}
+            for version, statements in _MIGRATIONS:
+                if version in applied:
+                    continue
+                for statement in statements:
+                    try:
+                        cur.execute(statement)
+                    except (pymysql.err.OperationalError, pymysql.err.InternalError) as e:
+                        if e.args[0] not in _ALREADY_APPLIED_ERRORS:
+                            raise
+                cur.execute(
+                    "INSERT INTO schema_migrations (version, applied_at) VALUES (%s, NOW())", (version,)
+                )
     finally:
         conn.close()
 
@@ -147,13 +175,14 @@ def upsert_user(google_sub: str, email: str, name: str | None, picture: str | No
         conn.close()
 
 
-def create_meeting(meet_url: str) -> int:
+def create_meeting(meet_url: str, owner_user_id: int) -> int:
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO meetings (meet_url, started_at, status) VALUES (%s, NOW(), 'in_progress')",
-                (meet_url,),
+                """INSERT INTO meetings (meet_url, started_at, status, owner_user_id)
+                   VALUES (%s, NOW(), 'in_progress', %s)""",
+                (meet_url, owner_user_id),
             )
             return cur.lastrowid
     finally:
@@ -220,8 +249,8 @@ def update_segment(segment_id: int, text: str):
         conn.close()
 
 
-def list_meetings(limit: int = 50) -> list[dict]:
-    """รายการการประชุมล่าสุด พร้อมสรุปย่อ (ถ้ามี) สำหรับหน้า "การประชุมที่ผ่านมา\""""
+def list_meetings(owner_user_id: int, limit: int = 50) -> list[dict]:
+    """รายการการประชุมล่าสุดของผู้ใช้คนนี้ พร้อมสรุปย่อ (ถ้ามี) สำหรับหน้า "การประชุมที่ผ่านมา\""""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -230,9 +259,10 @@ def list_meetings(limit: int = 50) -> list[dict]:
                           s.executive_summary
                    FROM meetings m
                    LEFT JOIN summaries s ON s.meeting_id = m.meeting_id
+                   WHERE m.owner_user_id = %s
                    ORDER BY m.started_at DESC
                    LIMIT %s""",
-                (limit,),
+                (owner_user_id, limit),
             )
             return cur.fetchall()
     finally:
@@ -244,7 +274,8 @@ def get_meeting(meeting_id: int) -> dict | None:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT meeting_id, meet_url, started_at, ended_at, status FROM meetings WHERE meeting_id = %s",
+                """SELECT meeting_id, meet_url, started_at, ended_at, status, owner_user_id
+                   FROM meetings WHERE meeting_id = %s""",
                 (meeting_id,),
             )
             return cur.fetchone()
@@ -354,6 +385,25 @@ def get_action_item(action_item_id: int) -> dict | None:
                 (action_item_id,),
             )
             return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def get_action_item_owner(action_item_id: int) -> int | None:
+    """user_id เจ้าของการประชุมที่ action item นี้อยู่ (None ถ้าไม่พบ item หรือประชุมไม่มีเจ้าของ)"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT m.owner_user_id
+                   FROM action_items a
+                   JOIN summaries s ON s.summary_id = a.summary_id
+                   JOIN meetings m ON m.meeting_id = s.meeting_id
+                   WHERE a.action_item_id = %s""",
+                (action_item_id,),
+            )
+            row = cur.fetchone()
+            return row["owner_user_id"] if row else None
     finally:
         conn.close()
 

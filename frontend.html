@@ -182,12 +182,18 @@ function setStage(stage) {
   summarizeBtn.hidden = stage === "summary"; // สรุปได้แค่ครั้งเดียวต่อการประชุม พอสรุปแล้วซ่อนปุ่มทิ้ง
 }
 
+// escape ข้อความที่มาจากภายนอก (ผล AI / ชื่อใน Meet / ข้อมูลจาก DB) ก่อนแทรกใน innerHTML
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
 async function loadUserBadge() {
   try {
     const res = await fetch("/me");
     if (res.status === 401) { window.location = "/login"; return; }
     const user = await res.json();
-    userBadgeEl.innerHTML = `${user.picture ? `<img src="${user.picture}">` : ""}${user.name} · <a href="/logout">ออกจากระบบ</a>`;
+    userBadgeEl.innerHTML = `${user.picture ? `<img src="${esc(user.picture)}">` : ""}${esc(user.name)} · <a href="/logout">ออกจากระบบ</a>`;
   } catch {
     userBadgeEl.textContent = "";
   }
@@ -263,7 +269,7 @@ function upsert(ev) {
 }
 
 function connect() {
-  const ws = new WebSocket(`ws://${location.host}/ws`);
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
   ws.onopen = () => { dot.classList.remove("err"); statusEl.textContent = "เชื่อมต่อแล้ว"; };
   ws.onclose = () => {
     dot.classList.add("err"); dot.classList.remove("on");
@@ -293,10 +299,10 @@ function buildActionItemsHtml(actionItems) {
         : `<button class="calBtn" data-action-item-id="${it.action_item_id}">ส่งไป Calendar</button>`;
     }
     let when = "";
-    if (it.due_date) when = ` (กำหนด ${it.due_date}${it.due_time ? " เวลา " + it.due_time + " น." : ""})`;
+    if (it.due_date) when = ` (กำหนด ${esc(it.due_date)}${it.due_time ? " เวลา " + esc(it.due_time) + " น." : ""})`;
     return `
-    <div class="item">• ${it.description}
-      <span class="meta">${it.assignee ? " — " + it.assignee : ""}${when}</span>
+    <div class="item">• ${esc(it.description)}
+      <span class="meta">${it.assignee ? " — " + esc(it.assignee) : ""}${when}</span>
       ${calBtn}
     </div>`;
   }).join("") || `<div class="item meta">— ไม่มี action item —</div>`;
@@ -307,7 +313,7 @@ function renderSummary(data) {
     <h2>สรุปการประชุม
       <button class="calBtn" id="regenBtn" data-meeting-id="${data.meeting_id ?? ""}">สรุปใหม่</button>
     </h2>
-    <div class="item">${data.executive_summary}</div>${buildActionItemsHtml(data.action_items)}`;
+    <div class="item">${esc(data.executive_summary)}</div>${buildActionItemsHtml(data.action_items)}`;
   summaryPanel.hidden = false;
   if (data.meeting_id != null) {
     pdfBtn.href = `/meetings/${data.meeting_id}/summary.pdf`;
@@ -396,12 +402,12 @@ async function loadPastMeetings() {
     }
     const rows = meetings.map(m => `
       <div class="item pastRow" data-id="${m.meeting_id}" data-has-summary="${m.executive_summary ? "true" : "false"}">
-        <span class="meta">${fmtDate(m.started_at)} — ${m.meet_url.replace("https://meet.google.com/", "")}</span>
-        <div class="topic">${m.executive_summary || "ยังไม่ได้สรุป — คลิกเพื่อดูข้อความดิบ"}</div>
+        <span class="meta">${fmtDate(m.started_at)} — ${esc(m.meet_url.replace("https://meet.google.com/", ""))}</span>
+        <div class="topic">${m.executive_summary ? esc(m.executive_summary) : "ยังไม่ได้สรุป — คลิกเพื่อดูข้อความดิบ"}</div>
       </div>`).join("");
     pastPanel.innerHTML = `${PAST_HEADER}${rows}`;
   } catch (e) {
-    pastPanel.innerHTML = `${PAST_HEADER}<div class="item meta">โหลดไม่สำเร็จ: ${e.message}</div>`;
+    pastPanel.innerHTML = `${PAST_HEADER}<div class="item meta">โหลดไม่สำเร็จ: ${esc(e.message)}</div>`;
   }
 }
 
@@ -429,7 +435,7 @@ function renderPastDetail(data) {
       <button class="calBtn" data-regen-id="${data.meeting_id ?? ""}">สรุปใหม่</button>
       <button class="closeBtn" id="pastCloseBtn" type="button">✕</button>
     </h2>
-    <div class="item">${data.executive_summary}</div>
+    <div class="item">${esc(data.executive_summary)}</div>
     ${buildActionItemsHtml(data.action_items)}
     <div class="row-actions">${txtLink}${pdfLink}</div>
     <div class="sectionTitle">ข้อความดิบ (transcript)</div>

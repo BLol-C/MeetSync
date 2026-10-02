@@ -37,8 +37,9 @@ def _flow() -> Flow:
     )
 
 
-def build_login_url() -> str:
-    auth_url, _ = _flow().authorization_url(access_type="online", prompt="select_account")
+def build_login_url(state: str) -> str:
+    """state ต้องเป็นค่าสุ่มที่ผู้เรียกเก็บใน session แล้วตรวจซ้ำตอน callback (กัน CSRF)"""
+    auth_url, _ = _flow().authorization_url(access_type="online", prompt="select_account", state=state)
     return auth_url
 
 

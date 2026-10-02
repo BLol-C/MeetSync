@@ -41,8 +41,9 @@ def _flow() -> Flow:
     )
 
 
-def build_auth_url() -> str:
-    auth_url, _ = _flow().authorization_url(access_type="offline", prompt="consent")
+def build_auth_url(state: str) -> str:
+    """state ต้องเป็นค่าสุ่มที่ผู้เรียกเก็บใน session แล้วตรวจซ้ำตอน callback (กัน CSRF)"""
+    auth_url, _ = _flow().authorization_url(access_type="offline", prompt="consent", state=state)
     return auth_url
 
 
