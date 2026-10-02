@@ -269,6 +269,44 @@ class UiTests(TempDbCase):
         self.assertFalse(any(b.key == f"approve_{mid}" for b in at.button))
         self.assertTrue(any(b.key == f"reopen_rep_{mid}" for b in at.button))
 
+    def test_calendar_card_shows_clear_sent_status(self):
+        """กดส่งเข้า Calendar แล้วต้องเห็นสถานะ "ส่งเรียบร้อยแล้ว" ในการ์ดเอง และเห็นต่อเนื่องเมื่อเปิดหน้าใหม่"""
+        import calendar_sync
+        mid = self.meeting("approved")               # fake_ai: งาน 1 มีวันที่, งาน 2 ไม่มีวันที่
+        sent = []
+
+        def fake_sync(item_id, user_id, service=None):
+            sent.append(item_id)
+            db.mark_action_item_synced(item_id, "evt-" + str(item_id))
+            return "evt"
+
+        with mock.patch.object(service, "calendar_connected", lambda user: True), \
+                mock.patch.object(calendar_sync, "sync_action_item", fake_sync):
+            at = self.app(m=mid)
+            self.assertTrue(any("ยังไม่ได้ส่งงานเข้า Calendar" in v for v in texts(at.caption)))
+            self.assertTrue(any("ไม่ได้ส่ง (ไม่มีวันที่กำหนด)" in v for v in texts(at.caption)))
+            button(at, "ส่งงานทั้งหมดเข้า Calendar").click().run()
+            self.assertEqual(len(sent), 1)                                        # ส่งเฉพาะงานที่มีวันที่
+            self.assertTrue(any("ส่งเข้า Google Calendar เรียบร้อยแล้ว 1 รายการ" in v for v in texts(at.success)))
+            self.assertTrue(any("ส่งเข้า Google Calendar แล้วครบ 1/1" in v for v in texts(at.success)))
+            self.assertTrue(button(at, "ส่งงานทั้งหมดเข้า Calendar").disabled)  # ส่งครบแล้ว กดซ้ำไม่ได้
+            at = self.app(m=mid)                                                  # เปิดหน้าใหม่ภายหลัง ยังเห็นสถานะ
+            self.assertTrue(any("แล้วครบ 1/1" in v for v in texts(at.success)))
+
+    def test_calendar_card_reports_failures_clearly(self):
+        import calendar_sync
+        mid = self.meeting("approved")
+
+        def broken(item_id, user_id, service=None):
+            raise RuntimeError("Google ปฏิเสธคำขอ")
+
+        with mock.patch.object(service, "calendar_connected", lambda user: True), \
+                mock.patch.object(calendar_sync, "sync_action_item", broken):
+            at = self.app(m=mid)
+            button(at, "ส่งงานทั้งหมดเข้า Calendar").click().run()
+            self.assertTrue(any("ส่งไม่สำเร็จ" in v and "Google ปฏิเสธคำขอ" in v for v in texts(at.error)))
+            self.assertFalse(any("เรียบร้อยแล้ว" in v for v in texts(at.success)))   # ไม่บอกว่าสำเร็จถ้าไม่สำเร็จ
+
     def test_after_editing_transcript_of_an_approved_report_ai_can_regenerate(self):
         """อนุมัติแล้ว -> ยกเลิกอนุมัติ -> กลับไปแก้ transcript -> ยืนยันใหม่ ต้องมีปุ่มให้ AI ร่างใหม่ (เคยไม่มีปุ่ม ค้างอยู่)"""
         mid = self.meeting("approved")

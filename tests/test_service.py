@@ -436,16 +436,16 @@ class ServiceTests(TempDbCase):
                 service.sync_action_item(self.other, first)
             self.assertEqual(cm.exception.kind, "not_found")
 
-    def test_calendar_item_without_a_date_is_reported_not_guessed(self):
+    def test_calendar_item_without_a_date_is_skipped_not_guessed(self):
         mid = self.draft()                                                       # งานที่สองไม่มีวันที่
         service.approve_report(self.owner, mid, confirm_warnings=True)
         fake = FakeCalendar()
         with mock.patch.object(calendar_sync, "build", lambda *a, **k: fake), \
              mock.patch.object(calendar_sync.calendar_auth, "get_credentials", lambda uid: object()):
             results = service.sync_all(self.owner, mid)
-        self.assertEqual(sorted(r["ok"] for r in results), [False, True])
-        self.assertEqual(len(fake.inserted), 1)
-        self.assertIn("ยังไม่มีกำหนดวัน", next(r for r in results if not r["ok"])["error"])
+        self.assertEqual([r["ok"] for r in results], [True])                     # ข้ามเฉย ๆ ไม่นับเป็นความล้มเหลว
+        self.assertEqual(len(fake.inserted), 1)                                  # ไม่เดาวันให้งานที่ไม่มีวัน
+        self.assertEqual(fake.inserted[0][0]["summary"].count("ติดต่อห้องประชุม"), 0)
 
     def test_calendar_not_connected_is_a_readable_error(self):
         mid = self.draft()

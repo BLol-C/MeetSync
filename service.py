@@ -442,6 +442,8 @@ def sync_all(user: dict, meeting_id: int) -> list[dict]:
         if it["calendar_synced"]:
             results.append({**entry, "ok": True, "already": True})
             continue
+        if not it.get("due_date"):   # ไม่มีวันที่ = ไม่มีอะไรให้ลงปฏิทิน ข้ามเฉย ๆ ไม่นับเป็นความล้มเหลว
+            continue
         try:
             sync_action_item(user, it["action_item_id"])
             results.append({**entry, "ok": True})
