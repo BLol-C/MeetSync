@@ -1,0 +1,117 @@
+"""หน้าสร้างการประชุมใหม่: ข้อมูลหัวรายงาน + ผู้เข้าร่วมและบทบาท (บอทยังไม่ถูกสั่ง — สั่งที่หน้าการประชุม)"""
+
+import pandas as pd
+import streamlit as st
+
+import service
+from service import ServiceError
+from ui import common
+from ui.common import ATT_BY_LABEL, ROLE_BY_LABEL, clean_str
+
+PEOPLE_COLS = ["ชื่อ", "อีเมล", "บทบาท", "การเข้าร่วม"]
+
+
+def _default_people() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"ชื่อ": "", "อีเมล": "", "บทบาท": "ประธาน", "การเข้าร่วม": "เข้าร่วม"},
+            {"ชื่อ": "", "อีเมล": "", "บทบาท": "เลขา", "การเข้าร่วม": "เข้าร่วม"},
+        ],
+        columns=PEOPLE_COLS,
+    )
+
+
+def people_from_df(df: pd.DataFrame) -> list[dict]:
+    people = []
+    for rec in df.to_dict("records"):
+        name = clean_str(rec.get("ชื่อ"))
+        if not name:
+            continue
+        people.append({
+            "display_name": name,
+            "email": clean_str(rec.get("อีเมล")) or None,
+            "role": ROLE_BY_LABEL.get(clean_str(rec.get("บทบาท")), "attendee"),
+            "attendance": ATT_BY_LABEL.get(clean_str(rec.get("การเข้าร่วม")), "invited"),
+        })
+    return people
+
+
+def people_column_config() -> dict:
+    return {
+        "ชื่อ": st.column_config.TextColumn("ชื่อ", help="ตรงกับชื่อที่แสดงใน Google Meet", required=False, width="medium"),
+        "อีเมล": st.column_config.TextColumn("อีเมล", help="ใช้เชิญเข้า Calendar และให้ประธาน/เลขาเข้าอนุมัติรายงานได้", width="medium"),
+        "บทบาท": st.column_config.SelectboxColumn("บทบาท", options=list(ROLE_BY_LABEL), default="ผู้เข้าร่วม", required=True),
+        "การเข้าร่วม": st.column_config.SelectboxColumn("การเข้าร่วม", options=list(ATT_BY_LABEL), default="ยังไม่ยืนยัน", required=True),
+    }
+
+
+def _create(user: dict, payload: dict, force: bool = False):
+    dups = service.meetings_with_url(user, payload["meet_url"])
+    if dups and not force:
+        st.session_state["_dup_pending"] = {"payload": payload, "dups": dups}
+        st.rerun()
+    try:
+        meeting_id = service.create_meeting(user, **payload)
+    except ServiceError as e:
+        st.error(str(e))
+        return
+    st.session_state.pop("_dup_pending", None)
+    common.flash("success", "สร้างการประชุมแล้ว — ตรวจรายชื่อผู้เข้าร่วม แล้วไปแท็บ “② บอท” เพื่อเริ่มบอทเมื่อถึงเวลาประชุม")
+    common.go("meeting", meeting_id)
+
+
+def _render_duplicate_choice(user: dict):
+    pending = st.session_state["_dup_pending"]
+    st.title("สร้างการประชุมใหม่")
+    st.warning(
+        f"คุณมีการประชุมที่ใช้ลิงก์ Google Meet นี้อยู่แล้ว {len(pending['dups'])} รายการ — "
+        "ห้องเดิมที่ใช้ประชุมซ้ำได้ แต่ถ้าตั้งใจจะใช้ข้อมูลเดิมต่อ ให้เปิดอันเดิมแทนการสร้างใหม่ เพื่อไม่ให้มีรายการซ้ำกัน"
+    )
+    for d in pending["dups"][:5]:
+        with st.container(border=True):
+            a, b = st.columns([5, 1.2], vertical_alignment="center")
+            a.markdown(f"**{common.md_escape(d['title'] or '(ไม่ได้ตั้งชื่อ)')}**  \n"
+                       f"{common.STATUS_LABEL.get(d['status'], d['status'])} · {common.thai_date(d['started_at'])}")
+            if b.button("เปิดอันนี้", key=f"dup_open_{d['meeting_id']}"):
+                st.session_state.pop("_dup_pending", None)
+                common.go("meeting", d["meeting_id"])
+    c1, c2 = st.columns(2)
+    if c1.button("สร้างการประชุมใหม่อยู่ดี", type="primary", width="stretch"):
+        _create(user, pending["payload"], force=True)
+    if c2.button("ยกเลิก", width="stretch"):
+        st.session_state.pop("_dup_pending", None)
+        st.rerun()
+
+
+def render(user: dict):
+    if "_dup_pending" in st.session_state:
+        _render_duplicate_choice(user)
+        return
+
+    st.title("สร้างการประชุมใหม่")
+    st.caption("กรอกข้อมูลที่จะปรากฏในหัวรายงานการประชุม และรายชื่อผู้เข้าร่วมพร้อมบทบาท — แก้ไขภายหลังได้")
+    with st.form("new_meeting"):
+        url = st.text_input("ลิงก์ Google Meet *", placeholder="https://meet.google.com/abc-defg-hij")
+        c1, c2 = st.columns(2)
+        title = c1.text_input("ชื่อเรื่องการประชุม", help="เว้นว่างได้ ระบบจะตั้งชื่อให้จากวันและเวลา")
+        org = c2.text_input("หน่วยงาน", placeholder="เช่น ภาควิชาวิทยาการคอมพิวเตอร์")
+        no = c1.text_input("ครั้งที่", placeholder="เช่น 3/2569")
+        venue = c2.text_input("สถานที่", placeholder="เช่น ห้องประชุม 2 / ออนไลน์ (Google Meet)")
+        st.markdown("##### ผู้เข้าร่วมและบทบาท")
+        st.caption("ใส่ชื่อ **ตรงกับชื่อที่แสดงใน Google Meet** เพื่อให้ระบบจับคู่คนพูดกับรายชื่อนี้ให้อัตโนมัติ "
+                   "(ประธานและเลขามีได้อย่างละ 1 คน) ใส่อีเมลประธาน/เลขาเพื่อให้เข้ามาตรวจและอนุมัติด้วยบัญชี Google ของตนได้ "
+                   "— กดปุ่ม ＋ ใต้ตารางเพื่อเพิ่มแถว")
+        people_df = st.data_editor(
+            _default_people(), key="new_people", num_rows="dynamic", hide_index=True,
+            column_config=people_column_config(), width="stretch",
+        )
+        submitted = st.form_submit_button("สร้างการประชุม", type="primary")
+
+    if submitted:
+        if not url.strip():
+            st.error("ต้องใส่ลิงก์ Google Meet")
+            return
+        _create(user, {
+            "meet_url": url, "title": title, "org_name": org, "meeting_no": no, "venue": venue,
+            "people": people_from_df(people_df),
+        })
