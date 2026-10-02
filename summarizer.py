@@ -25,12 +25,14 @@ import db
 
 HERE = pathlib.Path(__file__).parent
 PROMPT_DIR = HERE / "prompts"
-PROMPT_NAME = os.environ.get("MINUTES_PROMPT", "minutes_v1")          # ชื่อไฟล์ใน prompts/ (ไม่รวม .md)
+PROMPT_NAME = os.environ.get("MINUTES_PROMPT", "minutes_v2")          # ชื่อไฟล์ใน prompts/ (ไม่รวม .md)
+                                                                      # v2: ห้ามข้ามหัวข้อที่ไม่มีข้อสรุป + เขียนปี พ.ศ. ในเนื้อความ
+                                                                      # (v1 ยังเก็บไว้ให้ไล่ย้อนรายงานที่เคยสร้างด้วย v1 ได้)
 MAP_PROMPT_NAME = os.environ.get("MINUTES_MAP_PROMPT", "minutes_map_v1")
 
 _MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
-_MAX_RETRIES = 3
-_RETRY_DELAY_SEC = 5
+_MAX_RETRIES = 4
+_RETRY_DELAY_SEC = 5            # รอ 5, 10, 20 วินาที (ทวีคูณ) ระหว่างความพยายามที่ 1->2->3->4 ตอน Google โหลดสูงชั่วคราว
 _RATE_LIMIT_DELAY_SEC = 15
 _REQUEST_TIMEOUT_MS = 120_000   # รายงานยาว + ประชุมนาน ใช้เวลาตอบมากกว่าสรุปสั้นๆ แบบเดิม
 
@@ -238,7 +240,7 @@ def validate_minutes(
             warn("time_without_date", f"action_items[{i}].due_date", f"{label}: มีเวลาแต่ไม่มีวันที่")
 
         item["grounded"] = check_evidence(
-            f"action_items[{i}].evidence", item["evidence"], required=True, what=f"{label}"
+            f"action_items[{i}].evidence", item["evidence"], required=True, what=f"{label} "
         )
         actions.append(item)
 
@@ -318,7 +320,7 @@ def _gemini_generate() -> Callable:
             except errors.ServerError:       # 5xx: ฝั่ง Google โหลดสูงชั่วคราว
                 if attempt == _MAX_RETRIES:
                     raise
-                time.sleep(_RETRY_DELAY_SEC)
+                time.sleep(_RETRY_DELAY_SEC * 2 ** (attempt - 1))
             except errors.ClientError as e:  # 429 โควต้า/ความถี่ รอแล้วลองใหม่ได้ ส่วน 4xx อื่นๆ ผิดที่เราเอง ไม่ลองซ้ำ
                 if getattr(e, "code", None) != 429 or attempt == _MAX_RETRIES:
                     raise

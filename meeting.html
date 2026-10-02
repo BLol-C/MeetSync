@@ -11,6 +11,7 @@
     --danger: #ff5c5c; --ok: #37c978; --warn: #f5b83d;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }   /* กฎ display ของคลาสอื่น (เช่น .seg { display: grid }) ต้องไม่ทับ hidden */
   body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.55 "Segoe UI", Tahoma, system-ui, sans-serif; }
   header { padding: 12px 18px; border-bottom: 1px solid var(--line); display: flex; gap: 12px; align-items: center;
     flex-wrap: wrap; background: var(--panel); position: sticky; top: 0; z-index: 5; }
@@ -67,6 +68,8 @@
   .agenda { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 10px; background: var(--panel2); }
   .agenda .head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
   .agenda .head .no { font-weight: 600; color: var(--accent); white-space: nowrap; }
+  .times { display: flex; gap: 4px; align-items: center; min-width: 230px; }
+  .times input { min-width: 0; }
   .evid { font-size: 12px; color: var(--muted); margin-top: 4px; }
   .evid .ok { color: var(--ok); } .evid .bad { color: var(--warn); }
   .flag { border-color: var(--warn) !important; }
@@ -119,6 +122,7 @@ let segments = [];
 let activeTab = "setup";
 let draftParticipants = [{ display_name: "", email: "", role: "chair", attendance: "present" },
                          { display_name: "", email: "", role: "secretary", attendance: "present" }];  // ใช้เฉพาะหน้า "new"
+let draftMeeting = {};       // ข้อมูลหัวฟอร์มที่พิมพ์ค้างไว้ในหน้า "new" (กันหายตอนวาดหน้าใหม่)
 
 function toast(msg, kind = "ok") {
   const t = $("#toast");
@@ -235,7 +239,8 @@ function participantRowHtml(p, i, locked) {
 
 function renderSetup() {
   const root = $("#tab-setup");
-  const m = state?.meeting || {};
+  if (isNew && $("#f_url")) draftMeeting = { ...draftMeeting, ...readSetupFields() };   // เก็บสิ่งที่พิมพ์ค้างไว้ก่อนวาดใหม่
+  const m = isNew ? draftMeeting : (state?.meeting || {});
   const st = m.status;
   const locked = st === "approved";
   const parts = isNew ? draftParticipants : state.participants;
@@ -539,8 +544,8 @@ function actionRowHtml(a, i, ro, saved) {
       ${(a.evidence || []).map(e => ` “${esc(e)}”`).join("")}</div></td>
     <td><select data-k="assignee" class="${flagCls(`action_items[${i}].assignee`)}" ${ro ? "disabled" : ""}>${opts.join("")}</select></td>
     <td><input type="date" data-k="due_date" value="${esc(a.due_date || "")}" class="${flagCls(`action_items[${i}].due_date`)}" ${ro ? "disabled" : ""}></td>
-    <td><input type="time" data-k="due_time" value="${esc(a.due_time || "")}" ${ro ? "disabled" : ""}> –
-        <input type="time" data-k="due_time_end" value="${esc(a.due_time_end || "")}" class="${flagCls(`action_items[${i}].due_time_end`)}" ${ro ? "disabled" : ""}></td>
+    <td><div class="times"><input type="time" data-k="due_time" value="${esc(a.due_time || "")}" ${ro ? "disabled" : ""}><span>–</span>
+        <input type="time" data-k="due_time_end" value="${esc(a.due_time_end || "")}" class="${flagCls(`action_items[${i}].due_time_end`)}" ${ro ? "disabled" : ""}></div></td>
     <td>${ro ? (saved ? (saved.calendar_synced ? '<span class="badge ok">อยู่ใน Calendar</span>' : "") : "") : `<button class="danger small" data-act="del-action" type="button">ลบ</button>`}</td>
   </tr>`;
 }
