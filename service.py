@@ -344,6 +344,17 @@ def generate_report(user: dict, meeting_id: int, generate=None) -> dict:
     return {"summary_id": saved["summary_id"], "warnings": saved["content"]["warnings"]}
 
 
+def keep_existing_report(user: dict, meeting_id: int) -> None:
+    """แก้ transcript แล้วแต่ไม่ต้องการให้ AI ร่างใหม่: ใช้รายงานฉบับเดิม (รวมสิ่งที่คนแก้ไว้) ต่อ แล้วไปตรวจ/อนุมัติได้เลย
+    คำเตือนคำนวณสดกับ transcript ล่าสุดอยู่แล้ว (เช่น หลักฐานที่อ้างอิงแต่ถูกแก้/ลบไป จะขึ้นเตือนก่อนอนุมัติ)"""
+    meeting = meeting_for(user, meeting_id)
+    _require_status(meeting, "transcript_verified", hint="ใช้รายงานเดิมต่อได้หลังยืนยัน transcript ที่แก้ใหม่เท่านั้น")
+    if not db.get_report(meeting_id):
+        raise ServiceError("ยังไม่มีรายงานให้ใช้ต่อ — ให้ AI ร่างรายงานก่อน", "conflict")
+    if not db.set_meeting_status(meeting_id, "draft"):
+        raise ServiceError("เปลี่ยนสถานะไม่ได้", "conflict")
+
+
 def save_report_draft(user: dict, meeting_id: int, content: dict) -> dict:
     """บันทึกที่คนแก้ในรายงานฉบับร่าง (ตรวจและคำนวณคำเตือนใหม่ให้) — อนุมัติแล้วแก้ไม่ได้"""
     meeting = meeting_for(user, meeting_id)

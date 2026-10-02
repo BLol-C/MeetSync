@@ -327,7 +327,8 @@ def render(user: dict, detail: dict):
                     st.markdown(f"- {w['message']}")
 
     if status == "transcript_verified":
-        st.info("แก้และยืนยัน transcript ใหม่แล้ว — รายงานด้านล่างสร้างจากข้อความเดิม กด “ให้ AI ร่างใหม่” เพื่อสร้างจาก transcript ล่าสุด")
+        st.info("แก้และยืนยัน transcript ใหม่แล้ว — รายงานด้านล่างสร้างจากข้อความเดิม เลือกได้ว่าจะ “ให้ AI ร่างใหม่” จาก transcript ล่าสุด "
+                "(สิ่งที่คุณแก้ในรายงานจะถูกแทนที่) หรือ “ใช้รายงานเดิมต่อ” เพื่อแก้เองและอนุมัติ (ระบบจะเตือนถ้าหลักฐานอ้างอิงไม่ตรงกับ transcript ใหม่)")
 
     rev = _rev(mid)
     st.subheader("สรุปภาพรวม")
@@ -393,8 +394,16 @@ def render(user: dict, detail: dict):
             else:
                 _approve_dialog(user, mid, cleaned["warnings"] + view["header_warnings"])
     elif status == "transcript_verified":
-        if b1.button("✨ ให้ AI ร่างใหม่", key=f"regen_{mid}", type="primary"):
+        if b1.button("✨ ให้ AI ร่างใหม่", key=f"regen_{mid}"):
             _regenerate_dialog(user, mid)
+        if b2.button("➡ ใช้รายงานเดิมต่อ", key=f"keep_{mid}", type="primary"):
+            try:
+                service.keep_existing_report(user, mid)
+            except ServiceError as e:
+                st.error(str(e))
+            else:
+                common.flash("info", "ใช้รายงานเดิมต่อ — ตรวจ แก้ไข และอนุมัติได้เลย")
+                st.rerun()
     elif approved:
         if b1.button("✎ ยกเลิกการอนุมัติเพื่อแก้", key=f"reopen_rep_{mid}"):
             _reopen_dialog(user, mid)

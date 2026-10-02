@@ -269,6 +269,32 @@ class UiTests(TempDbCase):
         self.assertFalse(any(b.key == f"approve_{mid}" for b in at.button))
         self.assertTrue(any(b.key == f"reopen_rep_{mid}" for b in at.button))
 
+    def test_after_editing_transcript_can_keep_existing_report_and_approve(self):
+        """แก้ transcript เล็กน้อยแล้วไม่ต้องร่างใหม่: ใช้รายงานเดิมต่อ แล้วอนุมัติได้เลย โดยสิ่งที่คนแก้ไว้ไม่หาย"""
+        mid = self.meeting("draft")
+        content = service.get_report_view(self.user, mid)["report"]["content"]
+        content["summary"] = "สรุปที่คนแก้เอง"
+        service.save_report_draft(self.user, mid, content)
+        service.reopen_transcript(self.user, mid)
+        service.verify_transcript(self.user, mid)
+        at = self.app(m=mid)
+        self.assertFalse(any(b.key == f"approve_{mid}" for b in at.button))        # ยังอนุมัติจากสถานะนี้ไม่ได้
+        next(b for b in at.button if b.key == f"keep_{mid}").click().run()
+        self.assertEqual(db.get_meeting(mid)["status"], "draft")
+        self.assertEqual(db.get_report(mid)["content"]["summary"], "สรุปที่คนแก้เอง")   # ไม่ถูก AI เขียนทับ
+        at = self.app(m=mid)
+        self.assertTrue(any(b.key == f"approve_{mid}" for b in at.button))
+        service.approve_report(self.user, mid, confirm_warnings=True)
+        self.assertEqual(db.get_meeting(mid)["status"], "approved")
+
+    def test_keep_existing_report_needs_a_report_and_verified_transcript(self):
+        mid = self.meeting("transcript_verified")                                   # ยังไม่มีรายงาน
+        with self.assertRaises(service.ServiceError):
+            service.keep_existing_report(self.user, mid)
+        mid2 = self.meeting("transcript_review")
+        with self.assertRaises(service.ServiceError):
+            service.keep_existing_report(self.user, mid2)
+
     def test_calendar_card_shows_clear_sent_status(self):
         """กดส่งเข้า Calendar แล้วต้องเห็นสถานะ "ส่งเรียบร้อยแล้ว" ในการ์ดเอง และเห็นต่อเนื่องเมื่อเปิดหน้าใหม่"""
         import calendar_sync
