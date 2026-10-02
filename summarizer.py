@@ -414,8 +414,8 @@ def for_storage(content: dict) -> dict:
 
 
 def generate_for_meeting(meeting_id: int, generate: Callable | None = None) -> dict:
-    """ให้ AI ร่างรายงานของการประชุม แล้วเลื่อนสถานะเป็น draft — ถ้ามีฉบับร่างค้างอยู่จะถูกแทนที่ (ไม่มีร่างเก่าซ้อนกัน)
-    ถ้าฉบับล่าสุดอนุมัติแล้ว (กำลังแก้ต่อ) ต้องผ่าน db.revise_report ก่อน ไม่ใช่ที่นี่
+    """ให้ AI ร่างรายงานของการประชุม แล้วเลื่อนสถานะเป็น draft — ถ้ามีฉบับร่างอยู่แล้วจะถูกแทนที่ (รายงาน 1 ฉบับต่อ 1 ประชุม
+    ตาม SA) รายงานที่อนุมัติแล้วเขียนทับไม่ได้ ต้องยกเลิกการอนุมัติ (db.reopen_report) ก่อน
     ต้องยืนยัน transcript แล้วเท่านั้น (transcript_verified) หรือกำลังแก้ร่างอยู่ (draft)
     """
     meeting = db.get_meeting(meeting_id)

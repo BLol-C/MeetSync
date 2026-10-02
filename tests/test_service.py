@@ -111,7 +111,7 @@ class ServiceTests(TempDbCase):
             lambda: service.generate_report(self.other, mid, generate=fake_ai), lambda: service.build_pdf(self.other, mid),
             lambda: service.add_person(self.other, mid, "x"), lambda: service.update_meeting(self.other, mid, title="แฮ็ก"),
             lambda: service.delete_meeting(self.other, mid), lambda: service.get_report_view(self.other, mid),
-            lambda: service.approve_report(self.other, mid), lambda: service.revise_report(self.other, mid),
+            lambda: service.approve_report(self.other, mid), lambda: service.reopen_report(self.other, mid),
         ]
         for call in calls:
             with self.assertRaises(ServiceError) as cm:
@@ -310,7 +310,7 @@ class ServiceTests(TempDbCase):
         mid = self.draft()
         service.generate_report(self.owner, mid, generate=fake_ai)
         service.generate_report(self.owner, mid, generate=fake_ai)
-        self.assertEqual([v["version"] for v in service.get_report_view(self.owner, mid)["versions"]], [1])
+        self.assertEqual(self.rows("SELECT COUNT(*) n FROM summaries WHERE meeting_id=%s", (mid,))[0]["n"], 1)   # รายงาน 1 ฉบับต่อ 1 ประชุม
 
     def test_ai_failures_are_reported_in_plain_language(self):
         mid = self.verified()
@@ -388,15 +388,21 @@ class ServiceTests(TempDbCase):
         with self.assertRaises(ServiceError):
             service.build_pdf(self.owner, self.new_meeting())                    # ยังไม่มีรายงาน
 
-    def test_revise_creates_new_version_and_keeps_the_approved_one(self):
+    def test_reopen_lets_an_approved_report_be_fixed_and_approved_again(self):
         mid = self.draft()
         with self.assertRaises(ServiceError):
-            service.revise_report(self.owner, mid)                               # ยังไม่อนุมัติ
+            service.reopen_report(self.owner, mid)                               # ยังไม่อนุมัติ
         service.approve_report(self.owner, mid, confirm_warnings=True)
-        self.assertEqual(service.revise_report(self.owner, mid)["version"], 2)
+        service.reopen_report(self.owner, mid)
         view = service.get_report_view(self.owner, mid)
-        self.assertEqual((view["meeting"]["status"], view["report"]["version"], view["report"]["approved"]), ("draft", 2, False))
-        self.assertEqual([(v["version"], v["approved_at"] is not None) for v in view["versions"]], [(1, True), (2, False)])
+        self.assertEqual((view["meeting"]["status"], view["report"]["approved"], view["editable"]), ("draft", False, True))
+        content = view["report"]["content"]
+        content["summary"] = "สรุปที่แก้หลังยกเลิกการอนุมัติ"
+        service.save_report_draft(self.owner, mid, content)
+        service.approve_report(self.owner, mid, confirm_warnings=True)
+        final = service.get_report_view(self.owner, mid)
+        self.assertEqual((final["report"]["approved"], final["report"]["content"]["summary"]), (True, "สรุปที่แก้หลังยกเลิกการอนุมัติ"))
+        self.assertEqual(self.rows("SELECT COUNT(*) n FROM summaries WHERE meeting_id=%s", (mid,))[0]["n"], 1)
 
     # ── Calendar ──
 

@@ -325,7 +325,7 @@ def _validated(meeting: dict, content: dict) -> dict:
 
 
 def get_report_view(user: dict, meeting_id: int) -> dict:
-    """ทุกอย่างที่หน้ารายงานต้องใช้: รายงานล่าสุด (พร้อมคำเตือนที่คำนวณสด), ส่วนหัว, เวอร์ชัน, สิทธิ์แก้"""
+    """ทุกอย่างที่หน้ารายงานต้องใช้: รายงาน (พร้อมคำเตือนที่คำนวณสด), ส่วนหัวรายงาน, สิทธิ์แก้"""
     meeting = meeting_for(user, meeting_id)
     report = db.get_report(meeting_id)
     people = db.list_speakers(meeting_id)
@@ -340,7 +340,6 @@ def get_report_view(user: dict, meeting_id: int) -> dict:
         "report": report,
         "header": header,
         "header_warnings": report_data.header_warnings(header),
-        "versions": db.list_report_versions(meeting_id),
         "editable": meeting["status"] == "draft",
         "can_generate": meeting["status"] in ("transcript_verified", "draft"),
         "people": people,
@@ -358,7 +357,7 @@ def generate_report(user: dict, meeting_id: int, generate=None) -> dict:
         raise ServiceError(str(e), "invalid")
     except Exception as e:  # noqa: BLE001 — ปัญหาฝั่ง Gemini (โหลดสูง/โควต้า/เครือข่าย)
         raise ServiceError(f"เรียก Gemini ไม่สำเร็จ: {e}", "unavailable")
-    return {"summary_id": saved["summary_id"], "version": saved["version"], "warnings": saved["content"]["warnings"]}
+    return {"summary_id": saved["summary_id"], "warnings": saved["content"]["warnings"]}
 
 
 def save_report_draft(user: dict, meeting_id: int, content: dict) -> dict:
@@ -403,13 +402,12 @@ def approve_report(user: dict, meeting_id: int, confirm_warnings: bool = False) 
         raise ServiceError("อนุมัติไม่ได้ (สถานะเปลี่ยนไปแล้ว)", "conflict")
 
 
-def revise_report(user: dict, meeting_id: int) -> dict:
-    """รายงานที่อนุมัติแล้วต้องแก้: สร้างเวอร์ชันใหม่ (ฉบับร่าง) จากฉบับล่าสุด เวอร์ชันที่อนุมัติยังอยู่ในประวัติ"""
+def reopen_report(user: dict, meeting_id: int) -> None:
+    """รายงานที่อนุมัติแล้วต้องแก้: ยกเลิกการอนุมัติ กลับเป็นฉบับร่างเพื่อแก้ แล้วอนุมัติใหม่
+    (เนื้อหาและสถานะส่ง Calendar ของงานที่ไม่ถูกแก้คงเดิม จึงไม่ส่งซ้ำ)"""
     meeting_for(user, meeting_id)
-    saved = db.revise_report(meeting_id)
-    if not saved:
-        raise ServiceError("สร้างเวอร์ชันแก้ไขได้เฉพาะรายงานที่อนุมัติแล้ว", "conflict")
-    return saved
+    if not db.reopen_report(meeting_id):
+        raise ServiceError("ยกเลิกการอนุมัติได้เฉพาะรายงานที่อนุมัติแล้ว", "conflict")
 
 
 def build_pdf(user: dict, meeting_id: int) -> tuple[bytes, str]:

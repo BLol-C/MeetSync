@@ -6,9 +6,9 @@
   speakers             "ผู้เข้าร่วมประชุม" หนึ่งคน = หนึ่งแถว (ชื่อ อีเมล บทบาท การเข้าร่วม) ทั้งคนที่ลงทะเบียนไว้ล่วงหน้า
                        และคนที่พบจากชื่อใน Meet — ไม่แยกเป็นสองตารางอีกต่อไป
   transcript_segments  คำพูดทีละช่วง (เก็บข้อความต้นฉบับไว้เมื่อมีการแก้)
-  summaries            "รายงานการประชุม" หนึ่งเวอร์ชันต่อหนึ่งแถว (approved_at ว่าง = ฉบับร่าง)
-  agenda_items         วาระ/มติของรายงานแต่ละเวอร์ชัน
-  action_items         งานที่ได้รับมอบหมายของรายงานแต่ละเวอร์ชัน (ส่งเข้า Calendar จากตารางนี้)
+  summaries            "รายงานการประชุม" หนึ่งฉบับต่อหนึ่งการประชุม (1:1 ตาม SA) approved_at ว่าง = ฉบับร่าง
+  agenda_items         วาระ/มติของรายงาน
+  action_items         งานที่ได้รับมอบหมายของรายงาน (ส่งเข้า Calendar จากตารางนี้)
   schema_migrations    ตารางเทคนิค เก็บว่ารัน migration ไปถึงเวอร์ชันไหน (ไม่อยู่ใน ER ของระบบ)
 
 ตั้งค่าการเชื่อมต่อผ่าน .env: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
@@ -90,8 +90,7 @@ CREATE TABLE transcript_segments (
 
 CREATE TABLE summaries (
     summary_id         INT AUTO_INCREMENT PRIMARY KEY,
-    meeting_id         INT NOT NULL,
-    version            INT NOT NULL DEFAULT 1,
+    meeting_id         INT NOT NULL UNIQUE,
     executive_summary  TEXT NOT NULL,
     other_matters      TEXT NULL,
     ai_snapshot        LONGTEXT NULL,
@@ -101,7 +100,6 @@ CREATE TABLE summaries (
     edited_at          DATETIME NULL,
     approved_by        INT NULL,
     approved_at        DATETIME NULL,
-    UNIQUE KEY uq_summaries_meeting_version (meeting_id, version),
     FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id) ON DELETE CASCADE,
     CONSTRAINT fk_summaries_approver FOREIGN KEY (approved_by) REFERENCES users(user_id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -233,7 +231,6 @@ _MIGRATIONS: list[tuple[int, object]] = [
         "ALTER TABLE speakers ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT 'attendee'",
         "ALTER TABLE speakers ADD COLUMN attendance VARCHAR(10) NOT NULL DEFAULT 'present'",
         "ALTER TABLE speakers ADD COLUMN source VARCHAR(10) NOT NULL DEFAULT 'meet'",
-        "ALTER TABLE summaries ADD COLUMN version INT NOT NULL DEFAULT 1",
         "ALTER TABLE summaries ADD COLUMN other_matters TEXT NULL",
         "ALTER TABLE summaries ADD COLUMN ai_snapshot LONGTEXT NULL",
         "ALTER TABLE summaries ADD COLUMN prompt_version VARCHAR(20) NULL",
@@ -242,9 +239,6 @@ _MIGRATIONS: list[tuple[int, object]] = [
         "ALTER TABLE summaries ADD CONSTRAINT fk_summaries_approver FOREIGN KEY (approved_by) "
         "REFERENCES users(user_id) ON DELETE SET NULL",
         "ALTER TABLE summaries ADD COLUMN approved_at DATETIME NULL",
-        "ALTER TABLE summaries ADD UNIQUE KEY uq_summaries_meeting_version (meeting_id, version)",
-        # index เดิมที่ห้าม meeting_id ซ้ำ ต้องออกก่อนย้ายข้อมูล (หนึ่งประชุมมีได้หลายเวอร์ชันของรายงาน)
-        "ALTER TABLE summaries DROP INDEX meeting_id",
         "CREATE TABLE IF NOT EXISTS agenda_items ("
         "agenda_item_id INT AUTO_INCREMENT PRIMARY KEY, summary_id INT NOT NULL, order_no INT NOT NULL, "
         "title VARCHAR(255) NOT NULL, discussion TEXT NULL, resolution TEXT NULL, evidence TEXT NULL, "
@@ -280,7 +274,7 @@ _ALREADY_APPLIED_ERRORS = {
 MEETING_STATUSES = ("scheduled", "recording", "transcript_review", "transcript_verified", "draft", "approved")
 _STATUS_TRANSITIONS: dict[str, set[str]] = {
     # workflow: scheduled -> recording -> transcript_review -> transcript_verified -> draft -> approved
-    # approved = ล็อก ไม่ย้อนผ่าน set_meeting_status (แก้ต้องผ่าน revise_report ที่สร้างเวอร์ชันใหม่)
+    # approved = ล็อก ไม่ย้อนผ่าน set_meeting_status (ถ้าต้องแก้ ต้องผ่าน reopen_report ที่ยกเลิกการอนุมัติ แล้วอนุมัติใหม่หลังแก้)
     # transcript_review -> recording = กลับมาบันทึกต่อหลังบอทหลุดกลางประชุม
     "scheduled": {"recording"},
     "recording": {"transcript_review"},
@@ -348,50 +342,65 @@ def _table_exists(cur, table: str) -> bool:
 
 
 def init_schema():
-    """สร้างตารางทั้งหมด (ฐานข้อมูลเปล่า) หรืออัปเกรดฐานข้อมูลเดิมให้เป็นโครงสร้างปัจจุบัน — เรียกตอนแอปสตาร์ท"""
+    """สร้างตารางทั้งหมด (ฐานข้อมูลเปล่า) หรืออัปเกรดฐานข้อมูลเดิมให้เป็นโครงสร้างปัจจุบัน — เรียกตอนแอปสตาร์ท
+
+    ทั้งหน้าเว็บและบริการบอทเรียกฟังก์ชันนี้ตอนเริ่ม ถ้าเปิดพร้อมกันครั้งแรกหลังอัปเกรด ต้องไม่ย้ายข้อมูลซ้ำสองรอบ
+    (ข้อมูลซ้ำคือปัญหาที่ migration นี้มีไว้แก้) จึงใช้ล็อกของ MySQL ให้ทำทีละโปรเซส โปรเซสที่มาทีหลังรอจนเสร็จ
+    แล้วเห็นว่าทุกเวอร์ชันถูกรันแล้วและไม่ทำอะไรซ้ำ
+    """
     conn = get_connection()
+    lock = f"meetsync_migrate_{DB_NAME}"
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """CREATE TABLE IF NOT EXISTS schema_migrations (
-                       version    INT PRIMARY KEY,
-                       applied_at DATETIME NOT NULL
-                   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
-            )
-            if not _table_exists(cur, "meetings"):
-                # ฐานข้อมูลเปล่า: สร้างโครงสร้างสุดท้ายตรงๆ แล้วบันทึกว่าครบทุกเวอร์ชัน
-                for statement in _SCHEMA.split(";"):
-                    if statement.strip():
-                        cur.execute(statement)
-                for version, _ in _MIGRATIONS:
-                    cur.execute(
-                        "INSERT INTO schema_migrations (version, applied_at) VALUES (%s, NOW())", (version,)
-                    )
-                return
-            cur.execute("SELECT version FROM schema_migrations")
-            applied = {row["version"] for row in cur.fetchall()}
-        for version, steps in _MIGRATIONS:
-            if version in applied:
-                continue
-            if isinstance(steps, _Dml):
-                with _tx() as tcur:
-                    steps.fn(tcur)
-                    tcur.execute(
-                        "INSERT INTO schema_migrations (version, applied_at) VALUES (%s, NOW())", (version,)
-                    )
-                continue
+            cur.execute("SELECT GET_LOCK(%s, 120) AS ok", (lock,))
+            if cur.fetchone()["ok"] != 1:
+                raise RuntimeError("รออีกโปรเซสที่กำลังอัปเกรดฐานข้อมูลนานเกินไป (เกิน 120 วินาที)")
+        try:
+            _init_schema_locked(conn)
+        finally:
             with conn.cursor() as cur:
-                for statement in steps:
-                    try:
-                        cur.execute(statement)
-                    except (pymysql.err.OperationalError, pymysql.err.InternalError, pymysql.err.ProgrammingError) as e:
-                        if e.args[0] not in _ALREADY_APPLIED_ERRORS:
-                            raise
-                cur.execute(
-                    "INSERT INTO schema_migrations (version, applied_at) VALUES (%s, NOW())", (version,)
-                )
+                cur.execute("SELECT RELEASE_LOCK(%s)", (lock,))
     finally:
         conn.close()
+
+
+def _init_schema_locked(conn):
+    """ส่วนที่ต้องรันทีละโปรเซส (เรียกหลังได้ล็อกแล้วเท่านั้น)"""
+    record = "INSERT INTO schema_migrations (version, applied_at) VALUES (%s, NOW())"
+    with conn.cursor() as cur:
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS schema_migrations (
+                   version    INT PRIMARY KEY,
+                   applied_at DATETIME NOT NULL
+               ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+        )
+        if not _table_exists(cur, "meetings"):
+            # ฐานข้อมูลเปล่า: สร้างโครงสร้างสุดท้ายตรงๆ แล้วบันทึกว่าครบทุกเวอร์ชัน
+            for statement in _SCHEMA.split(";"):
+                if statement.strip():
+                    cur.execute(statement)
+            for version, _ in _MIGRATIONS:
+                cur.execute(record, (version,))
+            return
+        cur.execute("SELECT version FROM schema_migrations")
+        applied = {row["version"] for row in cur.fetchall()}
+
+    for version, steps in _MIGRATIONS:
+        if version in applied:
+            continue
+        if isinstance(steps, _Dml):
+            with _tx() as tcur:           # ย้ายข้อมูล + บันทึกเวอร์ชันในทรานแซกชันเดียว
+                steps.fn(tcur)
+                tcur.execute(record, (version,))
+            continue
+        with conn.cursor() as cur:
+            for statement in steps:
+                try:
+                    cur.execute(statement)
+                except (pymysql.err.OperationalError, pymysql.err.InternalError, pymysql.err.ProgrammingError) as e:
+                    if e.args[0] not in _ALREADY_APPLIED_ERRORS:
+                        raise
+            cur.execute(record, (version,))
 
 
 def _json_list(value) -> list[str]:
@@ -464,62 +473,51 @@ def _move_data_to_sa_tables(cur):
                 (p["display_name"], alias, p["email"], p["role"], p["attendance"], target["speaker_id"]),
             )
 
-    # 3) minutes -> summaries + agenda_items (+ action_items ย้ายไปผูกกับ summary เดิมของมัน)
-    cur.execute("SELECT summary_id, meeting_id FROM summaries")
-    legacy = {}
-    for r in cur.fetchall():
-        legacy[r["meeting_id"]] = r["summary_id"]    # สรุปแบบ SA เดิม = เวอร์ชัน 1 (ฉบับร่าง ยังไม่ผ่านการอนุมัติ)
-
+    # 3) minutes -> summaries (+ agenda_items): รายงานหนึ่งฉบับต่อหนึ่งการประชุมตาม SA (summaries 1:1 meetings)
+    #    เก็บฉบับล่าสุดของแต่ละการประชุม — ฉบับอนุมัติเก่า/ร่างที่ถูกแทนที่แล้วไม่ถูกย้าย
+    #    ถ้าประชุมนั้นมีสรุปแบบ SA เดิมอยู่แล้ว รายงานใหม่แทนที่มัน (เหมือนการสร้างสรุปใหม่ regenerate ใน SA)
     if _table_exists(cur, "minutes"):
+        cur.execute("SELECT summary_id, meeting_id FROM summaries")
+        existing = {r["meeting_id"]: r["summary_id"] for r in cur.fetchall()}
         cur.execute("SELECT * FROM minutes ORDER BY meeting_id, version")
-        by_meeting: dict[int, list[dict]] = {}
+        latest: dict[int, dict] = {}
+        all_ids: dict[int, list[int]] = {}
         for m in cur.fetchall():
-            by_meeting.setdefault(m["meeting_id"], []).append(m)
-        for mid, rows in by_meeting.items():
-            approved_versions = [r["version"] for r in rows if r["status"] == "approved"]
-            last_approved = max(approved_versions) if approved_versions else 0
-            # เก็บทุกเวอร์ชันที่อนุมัติ + ฉบับร่างล่าสุด (ถ้าใหม่กว่าฉบับอนุมัติ) — ฉบับร่างเก่าที่ถูกแทนที่แล้วไม่เก็บ
-            keep = [r for r in rows if r["status"] == "approved" or r["version"] > last_approved]
-            if keep and keep[-1]["status"] != "approved":
-                keep = [r for r in keep if r["status"] == "approved"] + [keep[-1]]
-            offset = 1 if mid in legacy else 0
-            for new_version, m in enumerate(keep, start=1 + offset):
-                content = json.loads(m["content"])
-                approved = m["status"] == "approved"
+            latest[m["meeting_id"]] = m          # เวอร์ชันหลังทับเวอร์ชันก่อน
+            all_ids.setdefault(m["meeting_id"], []).append(m["minutes_id"])
+        for mid, m in latest.items():
+            content = json.loads(m["content"])
+            approved = m["status"] == "approved"
+            fields = (content.get("summary") or "", content.get("other_matters"), m["ai_content"], m["model_used"],
+                      m["prompt_version"], m["created_at"], m["edited_at"],
+                      m["approved_by"] if approved else None,
+                      (m["approved_at"] or m["created_at"]) if approved else None)
+            # แถวงานเดิมที่เคยส่ง Calendar แล้ว (ของทุกเวอร์ชันของประชุมนี้) — ไว้ส่งต่อสถานะให้งานที่ไม่เปลี่ยน ไม่ส่งซ้ำ
+            placeholders = ",".join(["%s"] * len(all_ids[mid]))
+            cur.execute(f"SELECT * FROM action_items WHERE minutes_id IN ({placeholders})", tuple(all_ids[mid]))
+            carry = list(cur.fetchall())
+            for r in carry:
+                r["_key"] = (r["description"], r["assignee"], str(r["due_date"]) if r["due_date"] else None,
+                             _fmt_time(r["due_time"]), _fmt_time(r["due_time_end"]))
+            if mid in existing:
+                sid = existing[mid]
+                cur.execute(
+                    """UPDATE summaries SET executive_summary = %s, other_matters = %s, ai_snapshot = %s,
+                              model_used = %s, prompt_version = %s, generated_at = %s, edited_at = %s,
+                              approved_by = %s, approved_at = %s WHERE summary_id = %s""",
+                    (*fields, sid),
+                )
+                cur.execute("DELETE FROM action_items WHERE summary_id = %s", (sid,))   # งานของสรุปเดิมถูกแทนที่
+            else:
                 cur.execute(
                     """INSERT INTO summaries
-                       (meeting_id, version, executive_summary, other_matters, ai_snapshot, model_used,
-                        prompt_version, generated_at, edited_at, approved_by, approved_at)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                    (mid, new_version, content.get("summary") or "", content.get("other_matters"), m["ai_content"],
-                     m["model_used"], m["prompt_version"], m["created_at"], m["edited_at"],
-                     m["approved_by"] if approved else None,
-                     (m["approved_at"] or m["created_at"]) if approved else None),
+                       (meeting_id, executive_summary, other_matters, ai_snapshot, model_used, prompt_version,
+                        generated_at, edited_at, approved_by, approved_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (mid, *fields),
                 )
                 sid = cur.lastrowid
-                for i, a in enumerate(content.get("agenda") or [], start=1):
-                    cur.execute(
-                        """INSERT INTO agenda_items (summary_id, order_no, title, discussion, resolution, evidence)
-                           VALUES (%s, %s, %s, %s, %s, %s)""",
-                        (sid, i, (a.get("title") or "")[:255], a.get("discussion"), a.get("resolution"),
-                         _dump_list(a.get("evidence"))),
-                    )
-                cur.execute("SELECT COUNT(*) AS n FROM action_items WHERE minutes_id = %s", (m["minutes_id"],))
-                if cur.fetchone()["n"]:
-                    # ฉบับที่อนุมัติแล้ว: action item เป็นแถวอยู่แล้ว (มีสถานะส่ง Calendar) — ย้ายไปผูกกับรายงานใหม่
-                    cur.execute(
-                        "UPDATE action_items SET summary_id = %s, minutes_id = NULL WHERE minutes_id = %s",
-                        (sid, m["minutes_id"]),
-                    )
-                else:
-                    for it in content.get("action_items") or []:
-                        cur.execute(
-                            """INSERT INTO action_items
-                               (summary_id, description, assignee, due_date, due_time, due_time_end, evidence)
-                               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                            (sid, it.get("description") or "", it.get("assignee"), it.get("due_date") or None,
-                             it.get("due_time") or None, it.get("due_time_end") or None, _dump_list(it.get("evidence"))),
-                        )
+            _insert_report_rows(cur, sid, content, carry)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1189,7 +1187,7 @@ def _report_row_to_dict(cur, row: dict) -> dict:
     cur.execute("SELECT COALESCE(name, email) AS n FROM users WHERE user_id = %s", (row["approved_by"],))
     approver = cur.fetchone()
     return {
-        "summary_id": sid, "meeting_id": row["meeting_id"], "version": row["version"],
+        "summary_id": sid, "meeting_id": row["meeting_id"],
         "approved": row["approved_at"] is not None, "approved_at": row["approved_at"],
         "approved_by": row["approved_by"], "approved_by_name": approver["n"] if approver else None,
         "model_used": row["model_used"], "prompt_version": row["prompt_version"],
@@ -1201,29 +1199,13 @@ def _report_row_to_dict(cur, row: dict) -> dict:
 
 
 def get_report(meeting_id: int) -> dict | None:
-    """รายงานเวอร์ชันล่าสุดของการประชุม (None ถ้ายังไม่มี) — approved = อนุมัติแล้ว"""
+    """รายงานของการประชุม (หนึ่งฉบับต่อหนึ่งการประชุม ตาม SA) — None ถ้ายังไม่มี; approved = อนุมัติแล้ว"""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM summaries WHERE meeting_id = %s ORDER BY version DESC LIMIT 1", (meeting_id,))
+            cur.execute("SELECT * FROM summaries WHERE meeting_id = %s", (meeting_id,))
             row = cur.fetchone()
             return _report_row_to_dict(cur, row) if row else None
-    finally:
-        conn.close()
-
-
-def list_report_versions(meeting_id: int) -> list[dict]:
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """SELECT s.summary_id, s.version, s.generated_at, s.approved_at,
-                          COALESCE(u.name, u.email) AS approved_by_name
-                   FROM summaries s LEFT JOIN users u ON u.user_id = s.approved_by
-                   WHERE s.meeting_id = %s ORDER BY s.version""",
-                (meeting_id,),
-            )
-            return list(cur.fetchall())
     finally:
         conn.close()
 
@@ -1232,20 +1214,18 @@ def save_report(
     meeting_id: int, content: dict, model_used: str | None = None, prompt_version: str | None = None,
     ai_snapshot: dict | None = None,
 ) -> dict:
-    """บันทึกรายงานที่ AI ร่างใหม่ — ถ้ามีฉบับร่างค้างอยู่จะแทนที่ในที่เดิม (ไม่มีร่างเก่าค้างซ้อนกัน)
-    ถ้าล่าสุดอนุมัติไปแล้วจะสร้างเวอร์ชันถัดไป คืน {summary_id, version}
+    """บันทึกรายงานที่ AI ร่างใหม่ — ถ้ามีฉบับร่างอยู่แล้วจะถูกแทนที่ในแถวเดิม (สร้างสรุปใหม่ regenerate ตาม SA)
+    รายงานที่อนุมัติแล้วเขียนทับไม่ได้ (ต้อง reopen_report ก่อน) คืน {summary_id}
     """
     snapshot = json.dumps(ai_snapshot if ai_snapshot is not None else content, ensure_ascii=False)
     with _tx() as cur:
-        cur.execute(
-            "SELECT summary_id, version, approved_at FROM summaries WHERE meeting_id = %s "
-            "ORDER BY version DESC LIMIT 1 FOR UPDATE",
-            (meeting_id,),
-        )
+        cur.execute("SELECT summary_id, approved_at FROM summaries WHERE meeting_id = %s FOR UPDATE", (meeting_id,))
         last = cur.fetchone()
         fields = (content.get("summary") or "", content.get("other_matters") or None, snapshot, model_used, prompt_version)
-        if last and last["approved_at"] is None:
-            sid, version = last["summary_id"], last["version"]
+        if last and last["approved_at"] is not None:
+            raise ValueError("รายงานอนุมัติแล้ว — ต้องยกเลิกการอนุมัติก่อนจึงจะสร้างใหม่ได้")
+        if last:
+            sid = last["summary_id"]
             cur.execute(
                 """UPDATE summaries SET executive_summary = %s, other_matters = %s, ai_snapshot = %s,
                           model_used = %s, prompt_version = %s, generated_at = NOW(), edited_at = NULL
@@ -1255,16 +1235,15 @@ def save_report(
             cur.execute("DELETE FROM agenda_items WHERE summary_id = %s", (sid,))
             cur.execute("DELETE FROM action_items WHERE summary_id = %s", (sid,))
         else:
-            version = (last["version"] + 1) if last else 1
             cur.execute(
                 """INSERT INTO summaries
-                   (meeting_id, version, executive_summary, other_matters, ai_snapshot, model_used, prompt_version, generated_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())""",
-                (meeting_id, version, *fields),
+                   (meeting_id, executive_summary, other_matters, ai_snapshot, model_used, prompt_version, generated_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, NOW())""",
+                (meeting_id, *fields),
             )
             sid = cur.lastrowid
         _insert_report_rows(cur, sid, content)
-        return {"summary_id": sid, "version": version}
+        return {"summary_id": sid}
 
 
 def update_report_content(summary_id: int, content: dict) -> bool:
@@ -1286,13 +1265,12 @@ def update_report_content(summary_id: int, content: dict) -> bool:
 
 
 def approve_report(meeting_id: int, user_id: int | None) -> bool:
-    """อนุมัติรายงานฉบับร่างล่าสุด: รายงาน -> อนุมัติ และการประชุม -> approved (ทั้งคู่หรือไม่มีเลย)
+    """อนุมัติรายงานฉบับร่าง: รายงาน -> อนุมัติ และการประชุม -> approved (ทั้งคู่หรือไม่มีเลย)
     คืน False ถ้าการประชุมไม่ได้อยู่ในสถานะ draft หรือไม่มีฉบับร่างให้อนุมัติ
     """
     with _tx() as cur:
         cur.execute(
-            """SELECT summary_id FROM summaries WHERE meeting_id = %s AND approved_at IS NULL
-               ORDER BY version DESC LIMIT 1 FOR UPDATE""",
+            "SELECT summary_id FROM summaries WHERE meeting_id = %s AND approved_at IS NULL FOR UPDATE",
             (meeting_id,),
         )
         row = cur.fetchone()
@@ -1308,28 +1286,19 @@ def approve_report(meeting_id: int, user_id: int | None) -> bool:
         return True
 
 
-def revise_report(meeting_id: int) -> dict | None:
-    """แก้รายงานที่อนุมัติแล้ว: สร้างเวอร์ชันใหม่ (ฉบับร่าง) คัดลอกจากฉบับล่าสุดมาแก้ต่อ ส่วนเวอร์ชันที่อนุมัติ
-    ยังอยู่ครบในประวัติ ประชุมกลับเป็น draft — คืน {summary_id, version} หรือ None ถ้าประชุมไม่ได้อยู่สถานะ approved
+def reopen_report(meeting_id: int) -> bool:
+    """ยกเลิกการอนุมัติเพื่อแก้รายงาน: รายงานกลับเป็นฉบับร่าง (ล้างผู้อนุมัติ/เวลาอนุมัติ) และการประชุมกลับเป็น draft
+    เนื้อหาและสถานะส่ง Calendar ของแต่ละงานคงเดิม (งานที่ไม่ถูกแก้จึงไม่ถูกส่งซ้ำ) ต้องอนุมัติใหม่หลังแก้
+    คืน False ถ้าการประชุมไม่ได้อยู่ในสถานะ approved
     """
     with _tx() as cur:
         cur.execute("UPDATE meetings SET status = 'draft' WHERE meeting_id = %s AND status = 'approved'", (meeting_id,))
         if cur.rowcount != 1:
-            return None
-        cur.execute("SELECT * FROM summaries WHERE meeting_id = %s ORDER BY version DESC LIMIT 1", (meeting_id,))
-        last = cur.fetchone()
-        content = _report_row_to_dict(cur, last)["content"]
-        carry = _existing_action_rows(cur, last["summary_id"])
+            return False
         cur.execute(
-            """INSERT INTO summaries
-               (meeting_id, version, executive_summary, other_matters, ai_snapshot, model_used, prompt_version, generated_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())""",
-            (meeting_id, last["version"] + 1, content["summary"], content["other_matters"], last["ai_snapshot"],
-             last["model_used"], last["prompt_version"]),
+            "UPDATE summaries SET approved_by = NULL, approved_at = NULL WHERE meeting_id = %s", (meeting_id,)
         )
-        sid = cur.lastrowid
-        _insert_report_rows(cur, sid, content, carry)   # งานที่ส่ง Calendar ไปแล้วและไม่ถูกแก้ ไม่ถูกส่งซ้ำ
-        return {"summary_id": sid, "version": last["version"] + 1}
+        return True
 
 
 # ─────────────────────────────────────────────────────────────────────────────

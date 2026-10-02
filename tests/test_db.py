@@ -110,9 +110,9 @@ class MigrationTests(TempDbCase):
         self.assertEqual((sp_row["display_name"], sp_row["source"], sp_row["attendance"], sp_row["segment_count"]),
                          ("สมชาย", "meet", "present", 1))
         self.assertEqual(db.get_transcript(finished)[0]["text"], "สวัสดีครับ")
-        # สรุปเดิมของ SA = รายงานเวอร์ชัน 1 ที่ยังเป็นฉบับร่าง และงานเดิมยังผูกอยู่
+        # สรุปเดิมของ SA = รายงานฉบับร่าง (ยังไม่เคยผ่านการอนุมัติ) และงานเดิมยังผูกอยู่
         report = db.get_report(finished)
-        self.assertEqual((report["version"], report["approved"]), (1, False))
+        self.assertFalse(report["approved"])
         self.assertEqual(report["content"]["summary"], "สรุปเดิม")
         self.assertEqual([(a["description"], a["assignee"], a["due_date"]) for a in report["content"]["action_items"]],
                          [("ส่งรายงาน", "สมชาย", "2026-10-30")])
@@ -184,6 +184,22 @@ class MigrationTests(TempDbCase):
         old.insert_action_item(sid, "งานเดิมของ C", None, None)
         old.insert_minutes(c, {"summary": "ร่างใหม่ของ C", "other_matters": None, "agenda": [], "action_items": []}, "gemini", "minutes_v2")
 
+        # ประชุม D: อนุมัติแล้ว ส่ง Calendar ไปหนึ่งงาน แล้วกด "สร้างเวอร์ชันแก้ไข" (ร่างใหม่ซ้อนบนฉบับที่อนุมัติ)
+        d = old.create_meeting_setup(uid, meet_url=URL, title="ประชุม D")
+        old.begin_recording(d)
+        sd = old.get_or_create_speaker(d, "คน D")
+        old.insert_segment(d, sd, 1, "ข้อความ D")
+        old.end_meeting(d)
+        old.set_meeting_status(d, "transcript_verified")
+        old.set_meeting_status(d, "draft")
+        d_items = [{"description": "งาน D", "assignee": None, "due_date": "2026-11-01", "due_time": None,
+                    "due_time_end": None, "evidence": []}]
+        old.insert_minutes(d, {"summary": "ฉบับอนุมัติของ D", "other_matters": None, "agenda": [], "action_items": d_items},
+                           "gemini", "minutes_v2")
+        old.approve_minutes(d, uid, d_items)
+        old.mark_action_item_synced(old.list_minutes_action_items(old.get_latest_minutes(d)["minutes_id"])[0]["action_item_id"], "evt-d")
+        old.revise_minutes(d)
+
         db.init_schema()
         db.init_schema()   # idempotent
 
@@ -205,9 +221,8 @@ class MigrationTests(TempDbCase):
         self.assertEqual((people["Zed"]["source"], people["Zed"]["attendance"]), ("meet", "present"))
         self.assertEqual(len(db.get_transcript(a)), 4)
 
-        # A: รายงานเหลือฉบับอนุมัติฉบับเดียว (ร่างเก่าที่ถูกแทนที่ไม่ตามมา) งานและสถานะส่ง Calendar ย้ายตามมา
-        versions = db.list_report_versions(a)
-        self.assertEqual([(v["version"], v["approved_at"] is not None) for v in versions], [(1, True)])
+        # A: รายงานหนึ่งฉบับต่อประชุมตาม SA (ร่างเก่าที่ถูกแทนที่ไม่ตามมา) งานและสถานะส่ง Calendar ย้ายตามมา
+        self.assertEqual(self.rows("SELECT COUNT(*) n FROM summaries WHERE meeting_id=%s", (a,))[0]["n"], 1)
         rep = db.get_report(a)
         self.assertTrue(rep["approved"])
         self.assertEqual(rep["approved_by_name"], "เจ้าของ")
@@ -219,16 +234,65 @@ class MigrationTests(TempDbCase):
 
         # B: ร่างเดียวย้ายมาพร้อมงาน
         rep_b = db.get_report(b)
-        self.assertEqual((rep_b["version"], rep_b["approved"], rep_b["content"]["summary"]), (1, False, "ร่าง B"))
+        self.assertEqual((rep_b["approved"], rep_b["content"]["summary"]), (False, "ร่าง B"))
         self.assertEqual([i["description"] for i in rep_b["content"]["action_items"]], ["งาน B"])
 
-        # C: สรุปเดิมเป็นเวอร์ชัน 1 ร่างใหม่เป็นเวอร์ชัน 2 ไม่ชนกัน
-        self.assertEqual([v["version"] for v in db.list_report_versions(c)], [1, 2])
-        self.assertEqual(db.get_report(c)["content"]["summary"], "ร่างใหม่ของ C")
+        # C: มีสรุปแบบ SA เดิมและรายงานใหม่ -> รายงานใหม่แทนที่ (เหมือนสร้างสรุปใหม่) เหลือแถวเดียว ไม่มีงานเดิมค้าง
+        self.assertEqual(self.rows("SELECT COUNT(*) n FROM summaries WHERE meeting_id=%s", (c,))[0]["n"], 1)
+        rep_c = db.get_report(c)
+        self.assertEqual((rep_c["content"]["summary"], rep_c["content"]["action_items"]), ("ร่างใหม่ของ C", []))
+
+        # D: อนุมัติแล้วแก้ต่อเป็นร่าง -> เป็นฉบับร่างฉบับเดียว และงานที่ส่ง Calendar ไปแล้วยังจำได้ (ไม่ส่งซ้ำ)
+        rep_d = db.get_report(d)
+        self.assertFalse(rep_d["approved"])
+        self.assertEqual([(i["description"], i["calendar_synced"], i["google_calendar_event_id"])
+                          for i in rep_d["content"]["action_items"]], [("งาน D", True, "evt-d")])
 
         self.assertEqual(self.rows("SELECT COUNT(*) n FROM action_items WHERE summary_id IS NULL")[0]["n"], 0)
+        self.assertEqual(self.rows("SELECT COUNT(*) n FROM action_items")[0]["n"], 2 + 1 + 0 + 1)   # A สอง, B หนึ่ง, C ไม่มี, D หนึ่ง
         self.assertEqual({r["meeting_id"]: r["status"] for r in self.rows("SELECT meeting_id, status FROM meetings")},
-                         {a: "approved", b: "draft", c: "recording"})
+                         {a: "approved", b: "draft", c: "recording", d: "draft"})
+
+
+    def test_two_processes_starting_at_once_do_not_migrate_twice(self):
+        """หน้าเว็บกับบริการบอทเรียก init_schema() ตอนเริ่มพร้อมกัน — ต้องไม่ย้ายข้อมูลซ้ำสองรอบจนข้อมูลซ้ำ"""
+        import threading
+
+        old = load_old_db(DEV_COMMIT, self.dbname)
+        old.init_schema()
+        uid = old.upsert_user("sub-race", "race@x.com", "R", None)
+        m = old.create_meeting_setup(uid, meet_url=URL)
+        old.add_participant(m, "Alice", "alice@x.com", "chair", "present")
+        old.begin_recording(m)
+        sp = old.get_or_create_speaker(m, "Alice (You)")
+        old.insert_segment(m, sp, 1, "x")
+        old.end_meeting(m)
+        old.set_meeting_status(m, "transcript_verified")
+        old.set_meeting_status(m, "draft")
+        content = {"summary": "สรุป", "other_matters": None, "agenda": [{"title": "ก", "discussion": "", "resolution": None, "evidence": []}],
+                   "action_items": [{"description": "งาน", "assignee": None, "due_date": None, "due_time": None,
+                                     "due_time_end": None, "evidence": []}]}
+        old.insert_minutes(m, content, "gemini", "minutes_v2")
+        old.approve_minutes(m, uid, content["action_items"])
+
+        errors = []
+        barrier = threading.Barrier(4)
+
+        def run():
+            try:
+                barrier.wait()
+                db.init_schema()
+            except Exception as e:  # noqa: BLE001
+                errors.append(repr(e))
+        threads = [threading.Thread(target=run) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=120)
+        self.assertEqual(errors, [])
+        counts = {t: self.rows(f"SELECT COUNT(*) n FROM {t}")[0]["n"] for t in ("speakers", "summaries", "agenda_items", "action_items")}
+        self.assertEqual(counts, {"speakers": 1, "summaries": 1, "agenda_items": 1, "action_items": 1})
+        self.assertEqual(db.list_speakers(m)[0]["meet_alias"], "Alice (You)")
 
 
 class WorkflowTests(TempDbCase):
@@ -468,8 +532,8 @@ class WorkflowTests(TempDbCase):
     def test_report_roundtrip_stores_rows_not_json(self):
         _, mid = self.to_draft()
         saved = db.save_report(mid, self.report_content(), "gemini", "minutes_v2")
-        self.assertEqual(saved["version"], 1)
         rep = db.get_report(mid)
+        self.assertEqual(rep["summary_id"], saved["summary_id"])
         self.assertEqual(rep["content"], {**self.report_content(), "action_items": [
             {**self.report_content()["action_items"][0], "action_item_id": rep["content"]["action_items"][0]["action_item_id"],
              "calendar_synced": False, "google_calendar_event_id": None},
@@ -481,10 +545,10 @@ class WorkflowTests(TempDbCase):
 
     def test_regenerating_replaces_the_working_draft_instead_of_stacking(self):
         _, mid = self.to_draft()
-        db.save_report(mid, self.report_content(summary="รอบแรก"))
+        first = db.save_report(mid, self.report_content(summary="รอบแรก"))
         again = db.save_report(mid, self.report_content(summary="รอบสอง", agenda=[]))
-        self.assertEqual(again["version"], 1)
-        self.assertEqual([v["version"] for v in db.list_report_versions(mid)], [1])        # ไม่มีร่างเก่าค้าง
+        self.assertEqual(again["summary_id"], first["summary_id"])                          # แถวเดิม ไม่มีร่างเก่าค้าง
+        self.assertEqual(self.rows("SELECT COUNT(*) n FROM summaries WHERE meeting_id=%s", (mid,))[0]["n"], 1)
         rep = db.get_report(mid)
         self.assertEqual((rep["content"]["summary"], rep["content"]["agenda"]), ("รอบสอง", []))
         self.assertEqual(self.rows("SELECT COUNT(*) n FROM agenda_items WHERE summary_id=%s", (rep["summary_id"],))[0]["n"], 0)
@@ -522,33 +586,37 @@ class WorkflowTests(TempDbCase):
         self.assertFalse(db.approve_report(mid, uid))
         self.assertEqual(db.get_report(mid)["content"]["summary"], "สรุป")
 
-    def test_revise_creates_new_version_and_keeps_the_approved_one(self):
+    def test_reopen_clears_approval_but_keeps_content_and_calendar_flags(self):
         uid, mid = self.to_draft()
-        self.assertIsNone(db.revise_report(mid))                                 # ยังไม่อนุมัติ
+        self.assertFalse(db.reopen_report(mid))                                  # ยังไม่อนุมัติ
         db.save_report(mid, self.report_content())
         db.mark_action_item_synced(db.get_report(mid)["content"]["action_items"][0]["action_item_id"], "evt-1")
         db.approve_report(mid, uid)
-        revised = db.revise_report(mid)
-        self.assertEqual(revised["version"], 2)
+        with self.assertRaises(ValueError):                                      # อนุมัติแล้วเขียนทับด้วยรายงานใหม่ไม่ได้
+            db.save_report(mid, self.report_content(summary="แอบสร้างใหม่"))
+        self.assertTrue(db.reopen_report(mid))
         self.assertEqual(db.get_meeting(mid)["status"], "draft")
         rep = db.get_report(mid)
-        self.assertEqual((rep["version"], rep["approved"]), (2, False))
+        self.assertEqual((rep["approved"], rep["approved_by"], rep["approved_at"]), (False, None, None))
+        self.assertEqual(rep["content"]["summary"], "สรุป")
         self.assertEqual(rep["content"]["agenda"][0]["evidence"], ["ข้อความอ้างอิง"])
         self.assertTrue(rep["content"]["action_items"][0]["calendar_synced"])    # ไม่ส่งซ้ำ
-        self.assertEqual([(v["version"], v["approved_at"] is not None) for v in db.list_report_versions(mid)],
-                         [(1, True), (2, False)])
-        # ให้ AI ร่างใหม่ตอนกำลังแก้เวอร์ชัน 2 -> แทนที่ร่างเดิม ไม่เกิดเวอร์ชัน 3 และเวอร์ชัน 1 ที่อนุมัติไม่ถูกแตะ
-        self.assertEqual(db.save_report(mid, self.report_content(summary="ร่างใหม่"))["version"], 2)
-        self.assertEqual(self.rows("SELECT executive_summary FROM summaries WHERE meeting_id=%s AND version=1", (mid,))[0]["executive_summary"], "สรุป")
+        self.assertEqual(self.rows("SELECT COUNT(*) n FROM summaries WHERE meeting_id=%s", (mid,))[0]["n"], 1)
+        # แก้ได้อีกครั้งและต้องอนุมัติใหม่
+        content = rep["content"]
+        content["summary"] = "สรุปที่แก้หลังยกเลิกการอนุมัติ"
+        self.assertTrue(db.update_report_content(rep["summary_id"], content))
+        self.assertTrue(db.approve_report(mid, uid))
+        self.assertEqual(db.get_report(mid)["content"]["summary"], "สรุปที่แก้หลังยกเลิกการอนุมัติ")
 
     def test_meeting_status_and_report_state_never_disagree(self):
         uid, mid = self.to_draft()
         db.save_report(mid, self.report_content())
+        self.assertEqual((db.get_meeting(mid)["status"], db.get_report(mid)["approved"]), ("draft", False))
         db.approve_report(mid, uid)
-        for status, approved in ((db.get_meeting(mid)["status"], db.get_report(mid)["approved"]),):
-            self.assertEqual((status == "approved"), approved)
-        db.revise_report(mid)
-        self.assertEqual((db.get_meeting(mid)["status"] == "approved"), db.get_report(mid)["approved"])
+        self.assertEqual((db.get_meeting(mid)["status"], db.get_report(mid)["approved"]), ("approved", True))
+        db.reopen_report(mid)
+        self.assertEqual((db.get_meeting(mid)["status"], db.get_report(mid)["approved"]), ("draft", False))
 
     # ── อื่นๆ ──
 
