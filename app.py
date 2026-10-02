@@ -276,10 +276,10 @@ def _safe_return(url: str) -> str:
 @app.get("/calendar/connect")
 async def calendar_connect(t: str):
     try:
-        botclient.read_calendar_token(t, max_age=600)
+        data = botclient.read_calendar_token(t, max_age=600)
     except (BadSignature, SignatureExpired):
         raise HTTPException(status_code=400, detail="ลิงก์เชื่อม Calendar ไม่ถูกต้องหรือหมดอายุ — กลับไปกดปุ่มเชื่อมต่อใหม่")
-    return RedirectResponse(calendar_auth.build_auth_url(t))
+    return RedirectResponse(calendar_auth.build_auth_url(t, login_hint=data.get("em")))
 
 
 @app.get("/auth/google/callback")

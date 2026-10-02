@@ -64,7 +64,9 @@ Redirect URI ที่ต้องเพิ่มใน Google Cloud Console (Au
 - `http://localhost:8501/oauth2callback` — login (Streamlit)
 - `http://localhost:8000/auth/google/callback` — เชื่อมต่อ Calendar
 
-(Enable Calendar API ด้วย) ผู้ใช้ทุกคนต้องกด "เชื่อมต่อ Google Calendar" ครั้งหนึ่ง เพราะ token แยกเก็บรายคนใน DB
+(Enable Calendar API ด้วย) หลังล็อกอินครั้งแรก ระบบจะขึ้นหน้า "อนุญาต Google Calendar" ต่อให้ทันที (Google เลือกบัญชีที่ล็อกอินอยู่ให้เอง กดอนุญาตหนึ่งครั้ง
+ข้ามไปทำทีหลังที่แท็บรายงานได้) token แยกเก็บรายคนใน DB จึงไม่ต้องทำซ้ำ
+ล็อกอินกับ Calendar เป็นสองสิทธิ์แยกกันตามที่ออกแบบไว้ใน Proposal (`st.login` ไม่ส่ง access token ของ Google ให้แอป)
 
 การ login ของ Streamlit อ่านค่าจาก `.streamlit/secrets.toml` ซึ่งสร้างจาก `.env` ด้วย `venv\Scripts\python tools\make_streamlit_secrets.py`
 (`run.cmd` สร้างให้เองถ้ายังไม่มีไฟล์ — ไฟล์นี้ไม่ถูก commit)

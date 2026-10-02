@@ -46,9 +46,13 @@ def _signer() -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(get_token(), salt="calendar-connect")
 
 
-def calendar_connect_token(user_id: int, return_url: str) -> str:
-    """โทเคนที่เซ็นแล้วบอกว่า "ผู้ใช้คนนี้ขอเชื่อม Calendar แล้วให้กลับมาที่หน้านี้" (อายุสั้น) — ใช้เป็น state ของ OAuth ด้วย"""
-    return _signer().dumps({"uid": user_id, "ret": return_url})
+def calendar_connect_token(user_id: int, return_url: str, email: str | None = None) -> str:
+    """โทเคนที่เซ็นแล้วบอกว่า "ผู้ใช้คนนี้ขอเชื่อม Calendar แล้วให้กลับมาที่หน้านี้" (อายุสั้น) — ใช้เป็น state ของ OAuth ด้วย
+    email = อีเมลที่ล็อกอินอยู่ ใช้เป็น login_hint ให้ Google เลือกบัญชีเดียวกัน"""
+    data = {"uid": user_id, "ret": return_url}
+    if email:
+        data["em"] = email
+    return _signer().dumps(data)
 
 
 def read_calendar_token(token: str, max_age: int) -> dict:
@@ -57,7 +61,7 @@ def read_calendar_token(token: str, max_age: int) -> dict:
 
 def calendar_connect_url(user: dict, return_url: str | None = None) -> str:
     return f"{BOT_PUBLIC_URL}/calendar/connect?t=" + urllib.parse.quote(
-        calendar_connect_token(user["user_id"], return_url or UI_URL)
+        calendar_connect_token(user["user_id"], return_url or UI_URL, user.get("email"))
     )
 
 

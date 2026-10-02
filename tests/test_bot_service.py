@@ -236,7 +236,7 @@ class BotServiceTests(TempDbCase):
     def test_calendar_connect_requires_a_valid_signed_token(self):
         self.assertEqual(self.client.get("/calendar/connect", params={"t": "garbage"}).status_code, 400)
         token = botclient.calendar_connect_token(self.owner["user_id"], botclient.UI_URL + "/?m=1")
-        with mock.patch.object(botapp.calendar_auth, "build_auth_url", lambda state: f"https://accounts.google.com/o?state={state}"):
+        with mock.patch.object(botapp.calendar_auth, "build_auth_url", lambda state, login_hint=None: f"https://accounts.google.com/o?state={state}"):
             r = self.client.get("/calendar/connect", params={"t": token}, follow_redirects=False)
         self.assertIn(r.status_code, (302, 307))
         self.assertTrue(r.headers["location"].startswith("https://accounts.google.com/"))

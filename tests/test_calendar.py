@@ -15,6 +15,36 @@ ITEM = {"description": "ส่งรายงาน", "assignee": "Alice", "due_
         "due_time": None, "due_time_end": None}
 
 
+class ConnectLinkTests(unittest.TestCase):
+    """ล็อกอินแล้วเชื่อม Calendar ต่อ: Google ต้องเลือกบัญชีที่ล็อกอินอยู่ให้ (login_hint)"""
+
+    def setUp(self):
+        os.environ.setdefault("GOOGLE_CLIENT_ID", "test-id")
+        os.environ.setdefault("GOOGLE_CLIENT_SECRET", "test-secret")
+
+    def test_auth_url_carries_login_hint(self):
+        import calendar_auth
+        url = calendar_auth.build_auth_url("state123", login_hint="me@example.com")
+        self.assertIn("login_hint=me%40example.com", url)
+        self.assertIn("access_type=offline", url)
+
+    def test_auth_url_without_hint_has_none(self):
+        import calendar_auth
+        self.assertNotIn("login_hint", calendar_auth.build_auth_url("state123"))
+
+    def test_token_round_trip_keeps_email(self):
+        import botclient
+        data = botclient.read_calendar_token(botclient.calendar_connect_token(7, "http://x/", "me@example.com"), 60)
+        self.assertEqual(data, {"uid": 7, "ret": "http://x/", "em": "me@example.com"})
+
+    def test_connect_url_uses_user_email(self):
+        import botclient
+        url = botclient.calendar_connect_url({"user_id": 7, "email": "me@example.com"}, "http://x/")
+        token = url.split("t=", 1)[1]
+        import urllib.parse
+        self.assertEqual(botclient.read_calendar_token(urllib.parse.unquote(token), 60)["em"], "me@example.com")
+
+
 class BuildEventTests(unittest.TestCase):
     def test_all_day_event_end_is_exclusive_next_day(self):
         b = calendar_sync.build_event_body(ITEM)

@@ -11,7 +11,10 @@ import os
 
 import streamlit as st
 
+import botclient
 import db
+import service
+from ui import common
 
 SETUP_HELP = """
 **ยังไม่ได้ตั้งค่าการล็อกอิน Google** — ทำครั้งเดียว:
@@ -95,3 +98,22 @@ def require_login() -> dict:
         render_login()
         st.stop()
     return user
+
+
+def offer_calendar(user: dict):
+    """หลังล็อกอินครั้งแรก ถ้ายังไม่เคยเชื่อม Calendar ให้ขึ้นหน้าชวนเชื่อมทันที (กดอนุญาตหนึ่งครั้ง)
+
+    Google เลือกบัญชีที่ล็อกอินอยู่ให้เอง (login_hint) ผู้ใช้ไม่ต้องเลือกบัญชีใหม่ ข้ามได้ — ไปเชื่อมทีหลังที่แท็บรายงานก็ได้
+    ข้ามในโหมดทดสอบ (ไม่มีบัญชี Google จริง)"""
+    if is_dev() or st.session_state.get("_cal_skip") or service.calendar_connected(user):
+        return
+    st.markdown("# 🎙️ MeetSync")
+    st.subheader("ขั้นตอนสุดท้าย: อนุญาตให้ส่งงานเข้า Google Calendar")
+    st.write(f"ล็อกอินแล้วด้วย **{common.md_escape(user['email'])}** — กดอนุญาตหนึ่งครั้ง ระบบจะส่งงานที่มอบหมายเข้าปฏิทินของบัญชีนี้ "
+             "(ขอสิทธิ์สร้างนัดหมายอย่างเดียว) ทำครั้งเดียว ครั้งต่อไปไม่ต้องทำอีก")
+    col1, col2 = st.columns([2, 1])
+    col1.link_button("อนุญาต Google Calendar", botclient.calendar_connect_url(user, botclient.UI_URL), type="primary")
+    if col2.button("ข้ามไปก่อน"):
+        st.session_state["_cal_skip"] = True
+        st.rerun()
+    st.stop()

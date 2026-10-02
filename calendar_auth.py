@@ -44,9 +44,13 @@ def _flow() -> Flow:
     )
 
 
-def build_auth_url(state: str) -> str:
-    """state ต้องเป็นค่าสุ่มที่ผู้เรียกเก็บใน session แล้วตรวจซ้ำตอน callback (กัน CSRF)"""
-    auth_url, _ = _flow().authorization_url(access_type="offline", prompt="consent", state=state)
+def build_auth_url(state: str, login_hint: str | None = None) -> str:
+    """state ต้องเป็นค่าสุ่มที่ผู้เรียกเก็บใน session แล้วตรวจซ้ำตอน callback (กัน CSRF)
+
+    login_hint = อีเมลที่ล็อกอินเข้า MeetSync อยู่ — Google จะเลือกบัญชีนั้นให้เลย ไม่ต้องเลือกบัญชีซ้ำ
+    (prompt="consent" ยังต้องมี เพื่อให้ได้ refresh token ทุกครั้ง)"""
+    kwargs = {"login_hint": login_hint} if login_hint else {}
+    auth_url, _ = _flow().authorization_url(access_type="offline", prompt="consent", state=state, **kwargs)
     return auth_url
 
 
