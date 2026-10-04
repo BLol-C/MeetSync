@@ -31,6 +31,7 @@ import calendar_auth
 import db
 from meet_engine import MeetCaptionEngine
 
+_SEGMENT_MAX_CHARS = 3000   # ข้อความต่อ 1 segment สูงสุด (ไทย ~3 ไบต์/ตัวอักษร -> ~9KB ปลอดภัยสำหรับ TEXT 64KB)
 _ROW_MAP_MAX = 500     # จำนวนแถวคำบรรยายล่าสุดที่จำ segment_id ไว้ (แถวเก่ากว่านี้ไม่กลับมา final ซ้ำแล้ว)
 _LIVE_ROWS_MAX = 150   # จำนวนแถวคำบรรยายสดที่เก็บให้หน้าเว็บอ่าน
 _STATUS_MAX = 30
@@ -42,7 +43,7 @@ _last_meeting_id: int | None = None   # การประชุมของร�
 _run_owner_id: int | None = None   # user_id ของคนที่สั่งเริ่มบอทรอบนี้
 _last_error: str | None = None
 _seq_no = 0
-_segment_by_row: OrderedDict[int, int] = OrderedDict()   # id แถวคำบรรยาย (จาก JS) -> segment_id ใน DB
+_segment_by_row: OrderedDict[int, tuple] = OrderedDict()   # id แถวคำบรรยาย (จาก JS) -> (segment_id ล่าสุดใน DB, offset)
                                                           # กันไม่ให้คนพูดยาวคนเดียวถูกบันทึกเป็นหลายแถวซ้ำ ๆ
 _live_rows: OrderedDict[int, dict] = OrderedDict()       # คำบรรยายล่าสุด (รวมที่ยังไม่ final) ให้หน้าเว็บแสดงสด
 _status_log: deque = deque(maxlen=_STATUS_MAX)
@@ -73,6 +74,13 @@ def _log(text: str):
 
 # ── บันทึก transcript ลง DB (นอก event loop) ──
 
+def _cut_point(text: str) -> int:
+    """จุดตัดข้อความยาวเป็น segment ถัดไป: ตัดที่ช่องว่างท้าย ๆ ถ้ามี (ไม่หั่นกลางคำ) ไม่งั้นตัดที่ความยาวสูงสุดเลย"""
+    window = text[: _SEGMENT_MAX_CHARS]
+    i = window.rfind(" ", _SEGMENT_MAX_CHARS - 400)
+    return i + 1 if i > 0 else _SEGMENT_MAX_CHARS
+
+
 def _persist_segment(meeting_id: int, row_id: int | None, name: str, text: str):
     """เขียน segment ลง MySQL — รันใน thread (PyMySQL เป็น sync ห้ามเรียกบน event loop)
 
@@ -80,18 +88,35 @@ def _persist_segment(meeting_id: int, row_id: int | None, name: str, text: str):
     (เช่น หยุดหายใจ/เว้นจังหวะเกิน 1.5 วิ) — ครั้งแรก insert แถวใหม่ ครั้งต่อ ๆ ไป update
     แถวเดิมด้วยข้อความที่ยาวขึ้น แทนที่จะ insert ซ้ำ
 
+    คนที่พูดยาวต่อเนื่องไม่หยุดเลย Meet ใช้แถวเดิมตลอด ข้อความสะสมจึงโตไม่จำกัด แต่คอลัมน์ text (TEXT = 64KB) รับได้จำกัด
+    เกิน _SEGMENT_MAX_CHARS ตัวอักษรจึงปิด segment นั้นแล้วเปิด segment ใหม่ต่อให้ (offset = จำนวนตัวอักษรที่อยู่ใน segment ก่อนหน้า)
+
     เรียกจาก worker ตัวเดียวเท่านั้น จึงแตะ _seq_no/_segment_by_row ได้โดยไม่ต้องล็อก
     """
     global _seq_no
-    segment_id = _segment_by_row.get(row_id)
-    if segment_id is not None:
-        db.update_segment(segment_id, text)
+    segment_id, offset = _segment_by_row.get(row_id, (None, 0)) if row_id is not None else (None, 0)
+    rest = text[offset:]
+    if segment_id is not None and not rest:
         return
-    speaker_id = db.get_or_create_speaker(meeting_id, name)
-    _seq_no += 1
-    segment_id = db.insert_segment(meeting_id, speaker_id, _seq_no, text)
+    speaker_id = None
+    while True:
+        last = len(rest) <= _SEGMENT_MAX_CHARS
+        cut = len(rest) if last else _cut_point(rest)
+        if segment_id is None:
+            if speaker_id is None:
+                speaker_id = db.get_or_create_speaker(meeting_id, name)
+            _seq_no += 1
+            segment_id = db.insert_segment(meeting_id, speaker_id, _seq_no, rest[:cut])
+        else:
+            db.update_segment(segment_id, rest[:cut])
+        if row_id is not None:
+            _segment_by_row[row_id] = (segment_id, offset)
+        if last:
+            break
+        offset += cut
+        rest = rest[cut:]
+        segment_id = None       # ที่เหลือไปอยู่ segment ใหม่
     if row_id is not None:
-        _segment_by_row[row_id] = segment_id
         while len(_segment_by_row) > _ROW_MAP_MAX:
             _segment_by_row.popitem(last=False)
 
