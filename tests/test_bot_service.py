@@ -174,6 +174,22 @@ class BotServiceTests(TempDbCase):
         self.assertFalse(after["running"])
         self.assertEqual(len(after["rows"]), 2)              # ผู้จัดการยังเห็นผลของรอบล่าสุดหลังหยุด
 
+    def test_one_endless_monologue_is_split_into_segments_not_lost(self):
+        # คนพูดไม่หยุด Meet ใช้แถวเดียวตลอด ข้อความสะสมยาวเกินคอลัมน์ได้ — ต้องแบ่งเป็นหลาย segment ครบ ไม่ error ไม่หาย
+        mid = self.meeting()
+        word = "สวัสดีครับทุกคน "
+        part1 = word * 150                    # ~2,400 ตัวอักษร: ยังไม่เกินเพดาน
+        long_text = word * 600                # ~9,600 ตัวอักษร: เกินเพดาน 3,000 ตัวอักษรหลายรอบ
+        FakeEngine.script = [cap(1, "Alice", part1), cap(1, "Alice", long_text), cap(1, "Alice", long_text + "จบ")]
+        self.assertEqual(self.start(mid).status_code, 200)
+        self.assertTrue(wait_for(lambda: len(db.get_transcript(mid)) >= 4), len(db.get_transcript(mid)))
+        self.client.post("/bot/stop", headers=self.h(self.owner))
+        segs = db.get_transcript(mid)
+        self.assertTrue(all(len(t["text"]) <= botapp._SEGMENT_MAX_CHARS for t in segs))
+        self.assertEqual("".join(t["text"] for t in segs), long_text + "จบ")      # ต่อกันได้เท่าเดิมเป๊ะ ไม่ซ้ำไม่หาย
+        self.assertEqual([s["sequence_no"] for s in db.list_segments(mid)], list(range(1, len(segs) + 1)))
+        self.assertFalse(any("ไม่สำเร็จ" in s["text"] for s in self.state()["status"]))
+
     def test_bot_ending_by_itself_closes_the_meeting(self):
         mid = self.meeting()
         FakeEngine.script, FakeEngine.auto_end = [cap(1, "Alice", "พูดแล้วประชุมจบ")], True

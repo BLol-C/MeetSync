@@ -11,11 +11,16 @@ event ที่ส่งออก (dict):
 """
 
 import asyncio
+import os
 import re
 
 from playwright.async_api import async_playwright
 
 MEET_PROFILE = ".meet_profile"
+# หน้าต่าง Chrome ของบอท: "hidden" (ค่าเริ่มต้น) = เปิดแล้วย่อเก็บไว้ ไม่เด้งขึ้นมา — อยากดูก็คลิกที่ taskbar (ทดสอบแล้วว่าย่อไว้ Playwright ไม่หน่วงหน้า)
+# "visible" = เปิดเต็มจอเหมือนเดิม — ตั้งผ่านตัวแปร BOT_WINDOW ใน .env
+BOT_WINDOW = os.environ.get("BOT_WINDOW", "hidden").strip().lower()
+HIDDEN_POS = (-2400, -2400)
 
 MEET_URL_RE = re.compile(r"^https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}(\?.*)?$", re.I)
 
@@ -33,7 +38,6 @@ JS_CAPTION_WATCHER = r"""
   const EMIT_THROTTLE_MS = 250;  // ส่ง event "ยังไม่ final" ได้ไม่เกินนี้ต่อแถว (กัน flood ผ่าน CDP/WebSocket)
   const lastRaw = new Map();   // row -> ข้อความดิบล่าสุดที่อ่านจาก DOM
   const commit = new Map();    // row -> ข้อความสะสม (ยาวขึ้นเรื่อย ๆ ไม่มีวันสั้นลง)
-  const liveTail = new Map();  // row -> ส่วนท้ายของ commit ที่มาจาก "raw" ปัจจุบันจริง ๆ (ไม่ใช่ทั้งก้อน raw)
   const lastEmitAt = new Map();  // row -> เวลาที่ส่ง event ไม่ final ล่าสุด
   const timers = new Map();
   const emit = (p) => { try { window.__onCaption(p); } catch (e) {} };
@@ -73,53 +77,46 @@ JS_CAPTION_WATCHER = r"""
     return [...out];
   };
 
-  // Google Meet จะเลื่อนตัดข้อความหน้า ๆ ของแถวคำบรรยายทิ้งเป็นช่วง ๆ ระหว่างที่คนพูดยาว ๆ
-  // อยู่ (sliding window) ฟังก์ชันนี้ต่อข้อความใหม่เข้ากับส่วนที่สะสมไว้แล้ว โดยหาจุดที่
-  // ท้ายข้อความเดิมทับซ้อนกับหน้าข้อความใหม่ยาวที่สุด แล้วต่อเฉพาะส่วนที่ไม่ซ้ำ กันข้อความ
-  // ที่เคยจับได้แล้วหายไปตอน Meet ตัดหน้าทิ้ง
-  // คืนทั้งข้อความที่ต่อแล้ว (next) และ "ส่วนที่ต่อเพิ่มจริง" (tail) — ต้องรู้ tail แยกจาก
-  // incoming ทั้งก้อน เพราะรอบถัดไปถ้าข้อความยาวขึ้นตามปกติ เราต้องลบเฉพาะส่วนที่เคยต่อไว้จริง
-  // ออกก่อน ไม่ใช่ลบทั้ง incoming (ไม่งั้นจะลบผิดขนาดแล้วต่อซ้ำข้อความเดิมเข้าไปอีกรอบ)
-  const overlapAppend = (base, incoming) => {
-    if (!base) return { next: incoming, tail: incoming };
-    if (!incoming) return { next: base, tail: '' };
-    // incoming เป็นเวอร์ชันที่ครอบ base อยู่แล้ว (เช่น ASR แก้คำเดิมเล็กน้อยแล้วโตขึ้น) -> ใช้ incoming ไปเลย
-    if (incoming.includes(base)) return { next: incoming, tail: incoming };
-    if (base.includes(incoming)) return { next: base, tail: '' };
-    const max = Math.min(base.length, incoming.length);
-    for (let k = max; k >= 3; k--) {
-      if (base.slice(-k) === incoming.slice(0, k)) {
-        const tail = incoming.slice(k);
-        return { next: base + tail, tail };
+  // ต่อข้อความล่าสุดที่ Meet แสดงในแถว (raw) เข้ากับของสะสม (base) — Meet ทำได้ 3 อย่างกับข้อความในแถวระหว่างคนพูดยาว ๆ
+  // ที่ทำให้ raw ไม่ใช่ "ของเดิม + ท้ายใหม่" เฉย ๆ: (1) ตัดคำหน้า ๆ ทิ้ง (sliding window) (2) ASR แก้คำที่เคยแสดงไปแล้ว
+  // (3) ทั้งสองอย่างพร้อมกัน วิธีเดิม (เดาว่า raw ขึ้นต้นเหมือนครั้งก่อนหรือเปล่า) พลาดตอน (2)/(3) แล้วต่อ raw ซ้ำท้ายของสะสมทั้งก้อน
+  // วิธีนี้หาว่า raw ทับซ้อนกับของสะสมตรงไหนด้วย "จุดยึด" (ข้อความสั้น ๆ ที่ตรงกันเป๊ะ) แล้วให้ raw ทับตั้งแต่จุดนั้นไปจนจบ
+  // — ส่วนที่ ASR แก้ใหม่จึงได้ข้อความล่าสุดเสมอ และส่วนที่ Meet ตัดทิ้งไปแล้วยังอยู่ครบ ไม่มีทางต่อซ้ำเพราะ raw ไม่เคยถูกต่อท้ายตรง ๆ
+  const ANCHOR = 8;
+  const ANCHOR_SPAN = 400;   // หาจุดยึดจาก 400 ตัวอักษรแรกของ raw เท่านั้น — กันงานบวมเป็นกำลังสองเมื่อข้อความยาวเป็นหมื่นตัว
+  const commonPrefix = (a, b) => {
+    const n = Math.min(a.length, b.length);
+    let i = 0;
+    while (i < n && a[i] === b[i]) i++;
+    return i;
+  };
+  const mergeCommit = (base, raw) => {
+    if (!base) return raw;
+    if (!raw) return base;
+    if (raw.includes(base)) return raw;      // raw ครอบของสะสมทั้งหมด (โตขึ้น/แก้ท้าย) -> ใช้ raw
+    if (base.includes(raw)) return base;     // raw เป็นแค่ช่วงหนึ่งของที่เคยจับไว้แล้ว
+    if (raw.length >= ANCHOR) {
+      // ลองจุดยึดจากหัว raw ก่อน แล้วค่อยขยับไปตามตัวอักษร (กรณีหัว raw เองก็ถูก ASR แก้ด้วย)
+      for (let o = 0; o + ANCHOR <= raw.length && o <= ANCHOR_SPAN; o += 4) {
+        const needle = raw.substr(o, ANCHOR);
+        let best = -1, bestScore = 0;
+        for (let pos = base.indexOf(needle); pos !== -1; pos = base.indexOf(needle, pos + 1)) {
+          // ถ้าวลีเดียวกันโผล่หลายที่ เลือกที่ข้อความต่อจากนั้นตรงกับ raw ยาวที่สุด
+          const score = commonPrefix(base.slice(pos), raw.slice(o));
+          if (score >= bestScore) { best = pos; bestScore = score; }
+        }
+        if (best >= 0 && bestScore >= ANCHOR) return base.slice(0, Math.max(0, best - o)) + raw;
       }
     }
-    // หาจุดทับซ้อนไม่เจอเลย (ASR แก้ข้อความเดิมแบบไม่ใช่แค่ตัดหน้า) — เลือกข้อความที่ยาวกว่าแทน
-    // การต่อกันตรง ๆ เพื่อไม่ให้คำซ้ำวนอยู่ในบรรทัดเดียวกัน (ยอมเสี่ยงหลุดคำเก่าดีกว่าคำซ้ำ)
-    return incoming.length >= base.length
-      ? { next: incoming, tail: incoming }
-      : { next: base, tail: '' };
+    // หาจุดทับซ้อนไม่เจอเลย (ข้อความใหม่ทั้งก้อน/ถูกแก้เกือบหมด) — เลือกที่ยาวกว่า ไม่ต่อกันตรง ๆ
+    // เพื่อไม่ให้คำซ้ำวนอยู่ในบรรทัดเดียว (ยอมเสี่ยงหลุดคำเก่าดีกว่าคำซ้ำ)
+    return raw.length >= base.length ? raw : base;
   };
 
   const updateCommit = (row, raw) => {
-    const prevRaw = lastRaw.get(row) || '';
-    const prevCommit = commit.get(row) || '';
-    const prevTail = liveTail.get(row) || '';
-    let next, tail;
-    if (prevRaw && raw.startsWith(prevRaw)) {
-      // ข้อความยาวขึ้นตามปกติ (ยังไม่ถูกตัดหน้า) -> ลบเฉพาะส่วนที่ต่อไว้จริงครั้งก่อน (prevTail,
-      // ไม่ใช่ prevRaw ทั้งก้อน — ครั้งก่อนอาจเป็นแค่ tail จาก overlapAppend) แล้วต่อก้อนใหม่ทั้งก้อนแทน
-      const base = prevCommit.endsWith(prevTail)
-        ? prevCommit.slice(0, prevCommit.length - prevTail.length)
-        : prevCommit;
-      next = base + raw;
-      tail = raw;
-    } else {
-      // Meet ตัดหน้า/รีเซ็ตข้อความในแถวนี้แล้ว -> ต่อเข้ากับของสะสมเดิมแทนการทับ
-      ({ next, tail } = overlapAppend(prevCommit, raw));
-    }
+    const next = mergeCommit(commit.get(row) || '', raw);
     lastRaw.set(row, raw);
     commit.set(row, next);
-    liveTail.set(row, tail);
     return next;
   };
 
@@ -134,7 +131,6 @@ JS_CAPTION_WATCHER = r"""
     timers.delete(row);
     lastRaw.delete(row);
     commit.delete(row);
-    liveTail.delete(row);
     lastEmitAt.delete(row);
   };
 
@@ -229,6 +225,8 @@ LEFT_ROOM_STRIKES = 3        # ไม่เจอปุ่มวางสาย�
 EVAL_FAIL_STRIKES = 5        # สั่ง JS ในหน้าไม่ได้ติดกันกี่รอบ ถึงถือว่าหน้าตาย
 REGION_GONE_S = 60           # ไม่เห็นกรอบคำบรรยายนานเท่านี้ -> ลองเปิดคำบรรยายใหม่
 SILENCE_WARN_S = 300         # ไม่มีข้อความคำบรรยายใหม่นานเท่านี้ -> เตือน (อาจแค่ไม่มีใครพูด)
+JOIN_WAIT_S = 1200            # รอ host กดอนุญาตเข้าห้องได้นานสุดเท่านี้
+CAPTION_WAIT_S = 1200         # รอจนเปิดคำบรรยายสำเร็จได้นานสุดเท่านี้ (ครอบช่วงรอ host)
 SEQ_BASE_STEP = 1_000_000    # id แถวคำบรรยายของการติดตั้งตัวจับแต่ละรอบเริ่มห่างกันเท่านี้ (กัน id ชนกัน)
 
 
@@ -314,41 +312,94 @@ class MeetCaptionEngine:
         except Exception:  # noqa: BLE001
             return False
 
-    async def _enable_captions(self, page):
+    async def _caption_state(self, page):
+        """ดูสถานะคำบรรยายจากหน้าจอจริง — คืน (สถานะ, ปุ่ม): 'on' | 'off' (มีปุ่มเปิดให้กด) | 'unknown' (ไม่เจอปุ่มเลย)"""
+        try:
+            if await page.evaluate(
+                "() => [...document.querySelectorAll('.a4cQT')].some(el => el.offsetParent !== null)"
+            ):
+                return "on", None
+        except Exception:  # noqa: BLE001
+            pass
         cc = re.compile(r"คำบรรยายแทนเสียง|คำบรรยาย|captions?", re.I)
         off = re.compile(r"^\s*ปิด|turn off", re.I)
-
         try:
             buttons = page.get_by_role("button", name=cc)
-            count = await buttons.count()
-            for i in range(count):
+            first_off = None
+            for i in range(await buttons.count()):
                 btn = buttons.nth(i)
                 label = (await btn.get_attribute("aria-label")) or ""
                 if "ตั้งค่า" in label or "settings" in label.lower():
                     continue
-                if off.search(label):
-                    self._emit(type="status", text=f"คำบรรยายเปิดอยู่แล้ว (ปุ่ม: {label!r})")
-                    return
-                if await btn.is_visible():
-                    await btn.click()
-                    await page.wait_for_timeout(1500)
-                    self._emit(type="status", text=f"กดเปิดคำบรรยายแล้ว (ปุ่ม: {label!r})")
-                    return
-            self._emit(
-                type="status",
-                text=f"⚠️ หาปุ่มคำบรรยายไม่เจอ (เจอปุ่มที่ชื่อใกล้เคียง {count} ปุ่ม) — ลองกด shortcut แทน",
-            )
-        except Exception as e:  # noqa: BLE001
-            self._emit(type="status", text=f"⚠️ หาปุ่มคำบรรยายไม่สำเร็จ: {e!r} — ลองกด shortcut แทน")
+                if off.search(label) or (await btn.get_attribute("aria-pressed")) == "true":
+                    return "on", None
+                if first_off is None:
+                    first_off = btn
+            if first_off is not None:
+                return "off", first_off
+        except Exception:  # noqa: BLE001
+            pass
+        return "unknown", None
 
-        try:
-            await page.mouse.move(640, 700)
-            await page.wait_for_timeout(300)
-            await page.keyboard.press("c")
+    async def _enable_captions(self, page, attempts: int = 3) -> bool:
+        """พยายามเปิดคำบรรยายแล้ว "ตรวจซ้ำจากหน้าจอ" ว่าเปิดจริง — คืน True เฉพาะเมื่อยืนยันได้เท่านั้น
+        (ห้ามรายงานสำเร็จจากการแค่กดปุ่ม: ตอนยังอยู่ห้องรอ/ปุ่มซ่อนอยู่ การกดไม่มีผล)"""
+        for attempt in range(1, attempts + 1):
+            state, btn = await self._caption_state(page)
+            if state == "on":
+                return True
+            try:
+                # แถบปุ่มของ Meet ซ่อนตัวเองเมื่อไม่ขยับเมาส์ — ขยับให้โผล่ก่อนกด
+                await page.mouse.move(640, 650)
+                await page.mouse.move(660, 700)
+                await page.wait_for_timeout(500)
+                if state == "off":
+                    await btn.click(timeout=5000)
+                elif attempt >= 2:
+                    # ไม่เจอปุ่มเลย (เช่น ซ่อนในเมนู ⋮) — ลอง shortcut; ถ้าที่จริงเปิดอยู่แล้วรอบถัดไปจะเห็นและกดกลับให้
+                    await page.keyboard.press("c")
+            except Exception as e:  # noqa: BLE001
+                self._emit(type="status", text=f"⚠️ กดเปิดคำบรรยายไม่สำเร็จ (รอบ {attempt}): {e!r}")
             await page.wait_for_timeout(1500)
-            self._emit(type="status", text="กด shortcut 'c' เพื่อเปิดคำบรรยายแล้ว")
+        state, _ = await self._caption_state(page)
+        return state == "on"
+
+    async def _ensure_captions(self, page, wait_s: float = CAPTION_WAIT_S) -> bool:
+        """วนเปิดคำบรรยายจนยืนยันได้จริง (หรือหมดเวลา) — ครอบกรณี host ยังไม่กดอนุญาต: ยังไม่มีปุ่มคำบรรยายก็รอต่อ"""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + wait_s
+        tries = 0
+        while True:
+            if await self._guard(self._enable_captions(page), timeout=60):
+                self._emit(type="status", text="✅ เข้าห้องแล้วและเปิดคำบรรยายแล้ว (ตรวจยืนยันจากหน้าจอ)")
+                return True
+            tries += 1
+            if loop.time() >= deadline:
+                return False
+            if tries % 5 == 1:
+                self._emit(
+                    type="status",
+                    text="⏳ ยังไม่ได้เข้าห้อง/ยังเปิดคำบรรยายไม่ได้ — ถ้า host ยังไม่กดยอมรับบอท ให้กดยอมรับ (บอทจะลองใหม่เอง)",
+                )
+            await self._guard(asyncio.sleep(3))
+
+    async def _place_window(self, page, visible: bool):
+        """visible=True: แสดงหน้าต่างบอทบนจอ / False: ย่อเก็บไว้ (คลิกที่ taskbar แล้วขึ้นมาที่ตำแหน่งปกติ)
+        ย่อ ไม่ใช่ซ่อนนอกจอ เพราะหน้าต่างนอกจอผู้ใช้เรียกกลับมาเองไม่ได้ — พลาดได้ ไม่กระทบการทำงาน"""
+        try:
+            cdp = await page.context.new_cdp_session(page)
+            win = await cdp.send("Browser.getWindowForTarget")
+            wid = win["windowId"]
+            # ต้องย้ายเข้าจอขณะยังเป็นหน้าต่างปกติก่อน (ย้ายตอนย่ออยู่ไม่ได้) แล้วค่อยย่อทันที — ตอนเปิดบอทหน้าต่างอยู่นอกจอ จึงไม่มีอะไรเด้ง
+            # เต็มจอ (maximized) = ขนาดพอดีกับจอของเครื่องนี้เสมอ และตอนผู้ใช้คลิก taskbar คืนหน้าต่าง Chrome จะกลับมาเป็นเต็มจอเหมือนเดิม
+            await cdp.send("Browser.setWindowBounds", {"windowId": wid, "bounds": {"windowState": "normal"}})
+            await cdp.send("Browser.setWindowBounds", {"windowId": wid, "bounds": {"left": 0, "top": 0, "windowState": "normal"}})
+            await cdp.send("Browser.setWindowBounds", {"windowId": wid, "bounds": {"windowState": "maximized"}})
+            if not visible:
+                await cdp.send("Browser.setWindowBounds", {"windowId": wid, "bounds": {"windowState": "minimized"}})
+            await cdp.detach()
         except Exception as e:  # noqa: BLE001
-            self._emit(type="status", text=f"⚠️ กด shortcut เปิดคำบรรยายไม่สำเร็จ: {e!r}")
+            self._emit(type="status", text=f"⚠️ ย้ายหน้าต่างบอทไม่สำเร็จ: {e!r}")
 
     async def _install_watcher(self, page):
         # id แถวคำบรรยายต้องนับต่อจากรอบก่อนเสมอ: ถ้าหน้าถูกโหลดใหม่ window.__capSeq จะรีเซ็ตเป็น 0
@@ -418,7 +469,7 @@ class MeetCaptionEngine:
                 # หน้าถูกโหลดใหม่ (เช่น Meet รีเฟรชเอง) ตัวจับคำบรรยายหายไป
                 self._emit(type="status", text="⚠️ ตัวจับคำบรรยายหายไป (หน้าถูกโหลดใหม่) — ติดตั้งใหม่")
                 try:
-                    await self._guard(self._enable_captions(page), timeout=60)
+                    await self._guard(self._ensure_captions(page, 120), timeout=150)
                     await self._install_watcher(page)
                 except asyncio.TimeoutError:
                     pass
@@ -432,7 +483,10 @@ class MeetCaptionEngine:
                     text=f"⚠️ ไม่เห็นกรอบคำบรรยายมา {int(region_gap_ms / 1000)} วินาที — ลองเปิดคำบรรยายใหม่",
                 )
                 try:
-                    await self._guard(self._enable_captions(page), timeout=60)
+                    if await self._guard(self._enable_captions(page), timeout=60):
+                        self._emit(type="status", text="✅ เปิดคำบรรยายแล้ว (ตรวจยืนยันจากหน้าจอ)")
+                    else:
+                        self._emit(type="status", text="⚠️ ยังเปิดคำบรรยายไม่สำเร็จ — จะลองใหม่รอบหน้า")
                 except asyncio.TimeoutError:
                     pass
             elif quiet_ms > SILENCE_WARN_S * 1000 and now - last_silence_warn >= SILENCE_WARN_S:
@@ -446,17 +500,25 @@ class MeetCaptionEngine:
     async def _run(self, url: str):
         try:
             async with async_playwright() as pw:
-                self._emit(type="status", text="กำลังเปิดเบราว์เซอร์…")
+                hidden = BOT_WINDOW != "visible"
+                launch_args = ["--use-fake-ui-for-media-stream"]
+                launch_args += (
+                    [f"--window-position={HIDDEN_POS[0]},{HIDDEN_POS[1]}", "--window-size=1280,900"]
+                    if hidden else ["--start-maximized"]
+                )
+                self._emit(type="status", text="กำลังเปิดเบราว์เซอร์…" + (" (ย่อไว้ที่ taskbar — คลิกเพื่อดูได้)" if hidden else ""))
                 context = await pw.chromium.launch_persistent_context(
                     user_data_dir=MEET_PROFILE,
                     headless=False,
-                    args=["--start-maximized", "--use-fake-ui-for-media-stream"],
+                    args=launch_args,
                     no_viewport=True,
                     permissions=["microphone", "camera"],
                     locale="th-TH",
                 )
                 try:
                     page = context.pages[0] if context.pages else await context.new_page()
+                    if hidden:
+                        await self._place_window(page, False)   # หน้าต่างเกิดนอกจอ -> ย้ายเข้าจอแล้วย่อเก็บทันที
                     await page.expose_function(
                         "__onCaption", lambda p: self._emit(type="caption", **p)
                     )
@@ -466,9 +528,11 @@ class MeetCaptionEngine:
                     await page.wait_for_timeout(4000)
 
                     if await self._needs_login(page):
+                        if hidden:
+                            await self._place_window(page, True)
                         self._emit(
                             type="status",
-                            text="ยังไม่ได้ล็อกอิน Google — ล็อกอินในหน้าต่าง Chrome ที่เปิดอยู่",
+                            text="ยังไม่ได้ล็อกอิน Google — ล็อกอินในหน้าต่าง Chrome ที่เปิดขึ้นมา",
                         )
                         for _ in range(100):  # รอสูงสุด ~5 นาที
                             if self._stop.is_set():
@@ -476,6 +540,8 @@ class MeetCaptionEngine:
                             await asyncio.sleep(3)
                             if not await self._needs_login(page):
                                 break
+                        if hidden:
+                            await self._place_window(page, False)
                         await page.goto(url)
                         await page.wait_for_timeout(4000)
 
@@ -489,8 +555,13 @@ class MeetCaptionEngine:
                     try:
                         btn = page.get_by_role("button", name=join_name).first
                         await self._guard(btn.wait_for(state="visible", timeout=30000))
+                        label = ((await btn.get_attribute("aria-label")) or (await btn.inner_text()) or "").strip()
                         await btn.click()
-                        self._emit(type="status", text="ส่งคำขอเข้าร่วมแล้ว — รอหัวหน้าห้องกดยอมรับ…")
+                        if re.search(r"ขอเข้าร่วม|ask to join", label, re.I):
+                            self._emit(type="status", text="ส่งคำขอเข้าร่วมแล้ว — รอหัวหน้าห้องกดยอมรับ…")
+                        else:
+                            # ปุ่ม "เข้าร่วมตอนนี้" = เข้าได้เลย (เช่น เคยได้รับอนุญาตแล้ว) ไม่ต้องรอ host
+                            self._emit(type="status", text="กดเข้าร่วมแล้ว (ไม่ต้องรอ host) — กำลังเข้าห้อง…")
                     except (_Stopped, asyncio.CancelledError):
                         raise
                     except Exception:  # noqa: BLE001
@@ -500,13 +571,19 @@ class MeetCaptionEngine:
                         '[aria-label*="วางสาย"], [aria-label*="ออกจาก"], '
                         '[aria-label*="leave" i], [aria-label*="hang up" i], [jsname="CQyl2b"]'
                     ).first
-                    await self._guard(joined.wait_for(state="visible", timeout=300000))
-                    self._emit(type="status", text="เข้าห้องแล้ว — กำลังเปิดคำบรรยาย")
+                    await self._guard(joined.wait_for(state="visible", timeout=JOIN_WAIT_S * 1000))
+                    self._emit(type="status", text="กำลังตรวจว่าเข้าห้องได้แล้วและเปิดคำบรรยาย…")
 
                     await page.wait_for_timeout(1500)
-                    await self._enable_captions(page)
+                    ok = await self._ensure_captions(page)
                     await self._install_watcher(page)
-                    self._emit(type="status", text="กำลังฟังคำบรรยายแบบเรียลไทม์")
+                    if ok:
+                        self._emit(type="status", text="กำลังฟังคำบรรยายแบบเรียลไทม์")
+                    else:
+                        self._emit(
+                            type="status",
+                            text="⚠️ เปิดคำบรรยายไม่สำเร็จ — ยังไม่ได้ฟังอะไร เปิด CC เองในหน้าต่าง Chrome ของบอท (ปุ่ม CC ด้านล่าง)",
+                        )
 
                     await self._monitor(page, context, joined)
                 finally:
