@@ -6,16 +6,16 @@ import streamlit as st
 import service
 from service import ServiceError
 from ui import common
-from ui.common import ATT_BY_LABEL, ROLE_BY_LABEL, clean_str
+from ui.common import ATT_BY_LABEL, ROLE_BY_LABEL, ROLE_LABEL, clean_str
 
-PEOPLE_COLS = ["ชื่อ", "อีเมล", "บทบาท", "การเข้าร่วม"]
+PEOPLE_COLS = ["ชื่อ", "อีเมล", "บทบาท", "การเข้าร่วม", "สาเหตุที่ไม่มา"]
 
 
 def _default_people() -> pd.DataFrame:
     return pd.DataFrame(
         [
-            {"ชื่อ": "", "อีเมล": "", "บทบาท": "ประธาน", "การเข้าร่วม": "เข้าร่วม"},
-            {"ชื่อ": "", "อีเมล": "", "บทบาท": "เลขา", "การเข้าร่วม": "เข้าร่วม"},
+            {"ชื่อ": "", "อีเมล": "", "บทบาท": "ประธาน", "การเข้าร่วม": "เข้าร่วม", "สาเหตุที่ไม่มา": ""},
+            {"ชื่อ": "", "อีเมล": "", "บทบาท": "เลขา", "การเข้าร่วม": "เข้าร่วม", "สาเหตุที่ไม่มา": ""},
         ],
         columns=PEOPLE_COLS,
     )
@@ -32,6 +32,7 @@ def people_from_df(df: pd.DataFrame) -> list[dict]:
             "email": clean_str(rec.get("อีเมล")) or None,
             "role": ROLE_BY_LABEL.get(clean_str(rec.get("บทบาท")), "attendee"),
             "attendance": ATT_BY_LABEL.get(clean_str(rec.get("การเข้าร่วม")), "invited"),
+            "absence_reason": clean_str(rec.get("สาเหตุที่ไม่มา")) or None,
         })
     return people
 
@@ -40,8 +41,9 @@ def people_column_config() -> dict:
     return {
         "ชื่อ": st.column_config.TextColumn("ชื่อ", help="ตรงกับชื่อที่แสดงใน Google Meet", required=False, width="medium"),
         "อีเมล": st.column_config.TextColumn("อีเมล", help="ใช้เชิญเข้า Calendar และให้ประธาน/เลขาเข้าอนุมัติรายงานได้", width="medium"),
-        "บทบาท": st.column_config.SelectboxColumn("บทบาท", options=list(ROLE_BY_LABEL), default="ผู้เข้าร่วม", required=True),
+        "บทบาท": st.column_config.SelectboxColumn("บทบาท", options=list(ROLE_BY_LABEL), default=ROLE_LABEL["attendee"], required=True),
         "การเข้าร่วม": st.column_config.SelectboxColumn("การเข้าร่วม", options=list(ATT_BY_LABEL), default="ยังไม่ยืนยัน", required=True),
+        "สาเหตุที่ไม่มา": st.column_config.TextColumn("สาเหตุที่ไม่มา", help="เฉพาะผู้ที่ไม่มา — แสดงในวงเล็บท้ายชื่อในรายงาน"),
     }
 
 

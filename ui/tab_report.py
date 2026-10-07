@@ -123,8 +123,13 @@ def _header_card(header: dict):
         a.markdown(f"ประธาน: **{common.md_escape(header['chair'])}**" if header["chair"] else "ประธาน: ⚠ ยังไม่กำหนด")
         b.markdown(f"เลขา: **{common.md_escape(header['secretary'])}**" if header["secretary"] else "เลขา: ⚠ ยังไม่กำหนด")
         a.markdown("ผู้มาประชุม: " + (", ".join(common.md_escape(p["name"]) for p in header["attendees"]) or "— ไม่มี —"))
-        b.markdown("ผู้ไม่มาประชุม: " + (", ".join(common.md_escape(p["name"]) + (" (ยังไม่ยืนยัน)" if p["unconfirmed"] else "")
-                                                   for p in header["absent"]) or "— ไม่มี —"))
+        b.markdown("ผู้ไม่มาประชุม: " + (", ".join(
+            common.md_escape(p["name"])
+            + (f" ({common.md_escape(p['reason'])})" if p.get("reason") else "")
+            + (" (ยังไม่ยืนยัน)" if p["unconfirmed"] else "")
+            for p in header["absent"]) or "— ไม่มี —"))
+        if header.get("guests"):
+            a.markdown("ผู้เข้าร่วมประชุม: " + ", ".join(common.md_escape(p["name"]) for p in header["guests"]))
 
 
 # ── วาระ (การ์ดต่อวาระ แก้ข้อความยาวได้สะดวก) ──

@@ -82,3 +82,4 @@ uvicorn==0.52.4
 watchdog==6.0.0
 watchfiles==1.2.0
 websockets==16.1.1
+uharfbuzz==0.56.3

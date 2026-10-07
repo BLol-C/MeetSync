@@ -8,8 +8,8 @@ from service import ServiceError
 from ui import common
 from ui.common import ATT_BY_LABEL, ATT_LABEL, ROLE_BY_LABEL, ROLE_LABEL, SOURCE_LABEL, clean_str
 
-COLS = ["speaker_id", "ชื่อ", "อีเมล", "บทบาท", "การเข้าร่วม", "ที่มา", "ข้อความที่พูด"]
-VISIBLE = ["ชื่อ", "อีเมล", "บทบาท", "การเข้าร่วม", "ที่มา", "ข้อความที่พูด"]
+COLS = ["speaker_id", "ชื่อ", "อีเมล", "บทบาท", "การเข้าร่วม", "สาเหตุที่ไม่มา", "ที่มา", "ข้อความที่พูด"]
+VISIBLE = ["ชื่อ", "อีเมล", "บทบาท", "การเข้าร่วม", "สาเหตุที่ไม่มา", "ที่มา", "ข้อความที่พูด"]
 
 
 def _rev(mid: int) -> int:
@@ -21,6 +21,7 @@ def _people_df(people: list[dict]) -> pd.DataFrame:
         [{
             "speaker_id": p["speaker_id"], "ชื่อ": p["display_name"], "อีเมล": p["email"] or "",
             "บทบาท": ROLE_LABEL[p["role"]], "การเข้าร่วม": ATT_LABEL[p["attendance"]],
+            "สาเหตุที่ไม่มา": p.get("absence_reason") or "",
             "ที่มา": SOURCE_LABEL.get(p["source"], p["source"]), "ข้อความที่พูด": p["segment_count"],
         } for p in people],
         columns=COLS,
@@ -38,6 +39,7 @@ def people_rows(df: pd.DataFrame) -> list[dict]:
             "email": clean_str(rec.get("อีเมล")),
             "role": ROLE_BY_LABEL.get(clean_str(rec.get("บทบาท")), "attendee"),
             "attendance": ATT_BY_LABEL.get(clean_str(rec.get("การเข้าร่วม")), "invited"),
+            "absence_reason": clean_str(rec.get("สาเหตุที่ไม่มา")),
         })
     return rows
 
@@ -91,8 +93,9 @@ def render(user: dict, detail: dict):
         column_config={
             "ชื่อ": st.column_config.TextColumn("ชื่อ", width="medium"),
             "อีเมล": st.column_config.TextColumn("อีเมล", width="medium", help="ใช้เชิญเข้า Calendar และให้ประธาน/เลขาอนุมัติได้"),
-            "บทบาท": st.column_config.SelectboxColumn("บทบาท", options=list(ROLE_BY_LABEL), default="ผู้เข้าร่วม", required=True),
+            "บทบาท": st.column_config.SelectboxColumn("บทบาท", options=list(ROLE_BY_LABEL), default=ROLE_LABEL["attendee"], required=True),
             "การเข้าร่วม": st.column_config.SelectboxColumn("การเข้าร่วม", options=list(ATT_BY_LABEL), default="ยังไม่ยืนยัน", required=True),
+            "สาเหตุที่ไม่มา": st.column_config.TextColumn("สาเหตุที่ไม่มา", help="แสดงในวงเล็บท้ายชื่อในรายการผู้ไม่มาประชุม เช่น ติดภารกิจ, ลาป่วย"),
             "ที่มา": st.column_config.TextColumn("ที่มา", help="ลงทะเบียนไว้เอง หรือระบบพบชื่อนี้จากคำบรรยายใน Meet"),
             "ข้อความที่พูด": st.column_config.NumberColumn("ข้อความที่พูด", format="%d ช่วง"),
         },

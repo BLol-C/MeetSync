@@ -25,6 +25,19 @@ def thai_datetime(d: datetime.datetime | None) -> str:
     return f"{thai_date(d)} เวลา {d:%H:%M} น."
 
 
+_THAI_WEEKDAYS = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์", "อาทิตย์"]
+
+
+def thai_weekday(d: datetime.date | datetime.datetime | None) -> str | None:
+    """ชื่อวันในสัปดาห์แบบไทย (คำนวณจากวันที่จริง กันกรณีวันกับวันที่ไม่ตรงกัน) เช่น เสาร์"""
+    return _THAI_WEEKDAYS[d.weekday()] if d else None
+
+
+def thai_time(hhmm: str | None) -> str | None:
+    """เวลาแบบรายงานราชการ: 09.00 (ไม่ใช่ 9:00) รับ 'HH:MM' คืน 'HH.MM'"""
+    return hhmm.replace(":", ".") if hhmm else None
+
+
 def _hhmm(d: datetime.datetime | None) -> str | None:
     return f"{d:%H:%M}" if d else None
 
@@ -52,7 +65,7 @@ def header_warnings(header: dict) -> list[dict]:
     return out
 
 
-_ROLE_ORDER = {"chair": 0, "secretary": 1, "attendee": 2}
+_ROLE_ORDER = {"chair": 0, "secretary": 1, "attendee": 2, "guest": 3}
 
 
 def _sorted(people: list[dict]) -> list[dict]:
@@ -62,28 +75,33 @@ def _sorted(people: list[dict]) -> list[dict]:
 def build_header(meeting: dict, participants: list[dict]) -> dict:
     """ข้อมูลส่วนหัวรายงาน
 
-    attendees = ผู้ที่ยืนยันว่าเข้าร่วม (present: มีเสียงพูดในประชุมหรือเลขากำหนดเอง)
-    absent    = ผู้ที่ไม่มา (absent) รวมผู้ที่ยังเป็น invited คือไม่มีหลักฐานว่าเข้าร่วม
+    attendees = "ผู้มาประชุม": กรรมการ/สมาชิกที่ยืนยันว่าเข้าร่วม (present: มีเสียงพูดในประชุมหรือเลขากำหนดเอง)
+    guests    = "ผู้เข้าร่วมประชุม": ผู้ที่ไม่ได้เป็นกรรมการแต่เข้าร่วม (บทบาท guest และ present)
+    absent    = ผู้ที่ไม่มา (absent) รวมผู้ที่ยังเป็น invited คือไม่มีหลักฐานว่าเข้าร่วม ทุกบทบาท พร้อมสาเหตุ (reason)
                 (unconfirmed แยกบอกจำนวนไว้ให้หน้าเว็บเตือนให้เลขายืนยันก่อนอนุมัติ)
     """
     when = meeting.get("started_at") or meeting.get("scheduled_at")
     chair = next((p for p in participants if p["role"] == "chair"), None)
     secretary = next((p for p in participants if p["role"] == "secretary"), None)
-    present = _sorted([p for p in participants if p["attendance"] == "present"])
+    present = _sorted([p for p in participants if p["attendance"] == "present" and p["role"] != "guest"])
+    guests = _sorted([p for p in participants if p["attendance"] == "present" and p["role"] == "guest"])
     absent = _sorted([p for p in participants if p["attendance"] in ("absent", "invited")])
     return {
         "title": meeting.get("title") or "การประชุม",
         "org_name": meeting.get("org_name"),
         "meeting_no": meeting.get("meeting_no"),
         "date_text": thai_date(when),
+        "weekday": thai_weekday(when),
         "start_time": _hhmm(meeting.get("started_at")),
         "end_time": _hhmm(meeting.get("ended_at")),
         "venue": meeting.get("venue"),
         "chair": chair["display_name"] if chair else None,
         "secretary": secretary["display_name"] if secretary else None,
         "attendees": [{"name": p["display_name"], "role": p["role"]} for p in present],
+        "guests": [{"name": p["display_name"], "role": p["role"]} for p in guests],
         "absent": [
-            {"name": p["display_name"], "role": p["role"], "unconfirmed": p["attendance"] == "invited"}
+            {"name": p["display_name"], "role": p["role"], "unconfirmed": p["attendance"] == "invited",
+             "reason": (p.get("absence_reason") or "").strip() or None}
             for p in absent
         ],
         "unconfirmed_count": sum(1 for p in participants if p["attendance"] == "invited"),

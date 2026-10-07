@@ -38,7 +38,7 @@ def default_tab(status: str) -> str:
     return TAB_LABELS[_DEFAULT_TAB.get(status, 0)]
 
 
-ROLE_LABEL = {"chair": "ประธาน", "secretary": "เลขา", "attendee": "ผู้เข้าร่วม"}
+ROLE_LABEL = {"chair": "ประธาน", "secretary": "เลขา", "attendee": "กรรมการ/สมาชิก", "guest": "ผู้เข้าร่วม (ไม่ใช่กรรมการ)"}
 ROLE_BY_LABEL = {v: k for k, v in ROLE_LABEL.items()}
 ATT_LABEL = {"invited": "ยังไม่ยืนยัน", "present": "เข้าร่วม", "absent": "ไม่มา"}
 ATT_BY_LABEL = {v: k for k, v in ATT_LABEL.items()}

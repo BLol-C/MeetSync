@@ -90,7 +90,7 @@ def create_meeting(
         )
         for p in people:
             db.add_speaker(meeting_id, p["display_name"], p.get("email"), p.get("role", "attendee"),
-                           p.get("attendance", "invited"))
+                           p.get("attendance", "invited"), p.get("absence_reason"))
     except ValueError as e:
         raise _value_error(e)
     return meeting_id
@@ -152,11 +152,11 @@ def _person_meeting(user: dict, speaker_id: int) -> tuple[dict, dict]:
 
 
 def add_person(user: dict, meeting_id: int, display_name: str, email: str | None = None,
-               role: str = "attendee", attendance: str = "invited") -> int:
+               role: str = "attendee", attendance: str = "invited", absence_reason: str | None = None) -> int:
     meeting = meeting_for(user, meeting_id)
     _require_status(meeting, *EDITABLE_STATUSES, hint="รายงานที่อนุมัติแล้วแก้รายชื่อไม่ได้")
     try:
-        return db.add_speaker(meeting_id, display_name, email, role, attendance)
+        return db.add_speaker(meeting_id, display_name, email, role, attendance, absence_reason)
     except ValueError as e:
         raise _value_error(e)
 
@@ -172,7 +172,7 @@ def merge_people(user: dict, source_id: int, target_id: int) -> int:
         raise _value_error(e)
 
 
-_PERSON_FIELDS = ("display_name", "email", "role", "attendance")
+_PERSON_FIELDS = ("display_name", "email", "role", "attendance", "absence_reason")
 
 
 def apply_people_table(user: dict, meeting_id: int, rows: list[dict]) -> dict:
@@ -200,7 +200,7 @@ def apply_people_table(user: dict, meeting_id: int, rows: list[dict]) -> dict:
             for f in _PERSON_FIELDS:
                 new = clean(row.get(f))
                 if new != (current[sid][f] or ""):
-                    changes[f] = (new or None) if f == "email" else new
+                    changes[f] = (new or None) if f in ("email", "absence_reason") else new
             if changes:
                 updates.append((sid, changes))
         elif clean(row.get("display_name")):
@@ -225,7 +225,8 @@ def apply_people_table(user: dict, meeting_id: int, rows: list[dict]) -> dict:
     for row in adds:
         try:
             db.add_speaker(meeting_id, row["display_name"], clean(row.get("email")) or None,
-                           clean(row.get("role")) or "attendee", clean(row.get("attendance")) or "invited")
+                           clean(row.get("role")) or "attendee", clean(row.get("attendance")) or "invited",
+                           clean(row.get("absence_reason")) or None)
             result["added"] += 1
         except ValueError as e:
             result["errors"].append(f"{clean(row.get('display_name'))}: {e}")
