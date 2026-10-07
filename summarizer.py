@@ -43,7 +43,7 @@ CHUNK_CHARS = int(os.environ.get("MINUTES_CHUNK_CHARS", "30000"))
 GROUNDED_THRESHOLD = 0.8   # สัดส่วนของข้อความอ้างอิงที่ต้องหาเจอใน transcript ถึงถือว่า "มีที่มาจริง"
 
 _THAI_WEEKDAYS = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์", "อาทิตย์"]
-_ROLE_LABEL = {"chair": "ประธาน", "secretary": "เลขา", "attendee": "ผู้เข้าร่วม"}
+_ROLE_LABEL = {"chair": "ประธาน", "secretary": "เลขา", "attendee": "กรรมการ/สมาชิก", "guest": "ผู้เข้าร่วม (ไม่ใช่กรรมการ)"}
 
 
 # ── schema ที่บังคับให้ Gemini ตอบ ──

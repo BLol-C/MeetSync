@@ -191,6 +191,68 @@ class ServiceTests(TempDbCase):
         self.assertEqual({a["name"] for a in d["header"]["absent"]}, {"Alice", "Bob"})      # ยังไม่ยืนยัน = ไม่มา
         self.assertTrue(any(w["code"] == "unconfirmed_attendance" for w in d["header_warnings"]))
 
+    def test_header_follows_the_form_guests_and_absence_reasons(self):
+        # แบบฟอร์ม: ผู้มาประชุม (กรรมการ) / ผู้เข้าร่วมประชุม (ไม่ใช่กรรมการ) / ผู้ไม่มาประชุม + สาเหตุในวงเล็บ
+        mid = self.new_meeting(people=[
+            {"display_name": "ต้น", "role": "chair", "attendance": "present"},
+            {"display_name": "ฟ้า", "role": "secretary", "attendance": "present"},
+            {"display_name": "แพร", "attendance": "absent", "absence_reason": "ติดภารกิจ"},
+            {"display_name": "คุณสมชาย", "role": "guest", "attendance": "present"},
+            {"display_name": "คุณนิดา", "role": "guest", "attendance": "absent", "absence_reason": "  ลาป่วย  "},
+            {"display_name": "บอล", "attendance": "absent"},
+        ])
+        h = service.get_detail(self.owner, mid)["header"]
+        self.assertEqual([a["name"] for a in h["attendees"]], ["ต้น", "ฟ้า"])            # กรรมการเท่านั้น ไม่ปนผู้เข้าร่วม
+        self.assertEqual([a["name"] for a in h["guests"]], ["คุณสมชาย"])
+        reasons = {a["name"]: a["reason"] for a in h["absent"]}
+        self.assertEqual(reasons, {"แพร": "ติดภารกิจ", "คุณนิดา": "ลาป่วย", "บอล": None})   # ตัดช่องว่าง, ไม่ใส่สาเหตุ = None
+
+    def test_absence_reason_and_guest_role_are_editable_in_the_people_table(self):
+        mid = self.new_meeting()
+        people = {p["display_name"]: p for p in service.get_detail(self.owner, mid)["people"]}
+        rows = [{"speaker_id": p["speaker_id"], "display_name": p["display_name"], "email": p["email"] or "",
+                 "role": p["role"], "attendance": p["attendance"], "absence_reason": p.get("absence_reason") or ""}
+                for p in people.values()]
+        bob = next(r for r in rows if r["display_name"] == "Bob")
+        bob.update(attendance="absent", absence_reason="ลาพักร้อน")
+        alice = next(r for r in rows if r["display_name"] == "Alice")
+        alice.update(role="guest", attendance="present")
+        rows.append({"speaker_id": None, "display_name": "คุณใหม่", "role": "guest", "attendance": "absent",
+                     "absence_reason": "ติดธุระ"})
+        result = service.apply_people_table(self.owner, mid, rows)
+        self.assertEqual(result["errors"], [])
+        h = service.get_detail(self.owner, mid)["header"]
+        self.assertEqual({a["name"]: a["reason"] for a in h["absent"]}, {"Bob": "ลาพักร้อน", "คุณใหม่": "ติดธุระ"})
+        self.assertEqual([a["name"] for a in h["guests"]], ["Alice"])
+
+    def test_pdf_follows_the_meeting_minutes_form(self):
+        import io
+        from pypdf import PdfReader
+        mid = self.new_meeting(people=[
+            {"display_name": "ต้น", "role": "chair", "attendance": "present"},
+            {"display_name": "ฟ้า", "role": "secretary", "attendance": "present"},
+            {"display_name": "แพร", "attendance": "absent", "absence_reason": "ติดภารกิจ"},
+            {"display_name": "คุณสมชาย", "role": "guest", "attendance": "present"},
+        ])
+        meeting = db.get_meeting(mid)
+        content = {"agenda": [{"title": "งบประมาณ", "discussion": "เสนอ 3,000 บาท", "resolution": "อนุมัติ"}],
+                   "other_matters": None, "summary": "สรุป",
+                   "action_items": [{"description": "ทำใบเบิก", "assignee": "ฟ้า", "due_date": "2026-10-12"}]}
+        import pdf_report
+        data = pdf_report.build_minutes_pdf(meeting, db.list_speakers(mid), content)
+        text = "\n".join(pg.extract_text() for pg in PdfReader(io.BytesIO(data)).pages)
+        order = ["ผู้มาประชุม", "ผู้เข้าร่วมประชุม", "ผู้ไม่มาประชุม", "แพร", "ติดภารกิจ", "เริ่มประชุมเวลา", "ประธานกล่าวเปิดการประชุม",
+                 "ระเบียบวาระที่ 1", "เรื่องแจ้งให้ที่ประชุมทราบ", "ระเบียบวาระที่ 2", "เรื่องรับรองรายงานการประชุม", "ระเบียบวาระที่ 3",
+                 "เรื่องสืบเนื่อง", "ระเบียบวาระที่ 4", "เรื่องพิจารณา", "4.1", "4.2", "4.2.1", "งบประมาณ",
+                 "ระเบียบวาระที่ 5", "งานที่ได้รับมอบหมาย", "เลิกประชุมเวลา", "ผู้บันทึกรายงานการประชุม", "ผู้ตรวจรายงานการประชุม"]
+        pos = -1
+        for marker in order:
+            nxt = text.find(marker, pos + 1)
+            self.assertGreater(nxt, pos, f"ไม่พบ/ลำดับผิด: {marker!r}\n{text}")
+            pos = nxt
+        self.assertIn("เมื่อวันที่", text)
+        self.assertNotIn("สรุปภาพรวมการประชุม", text)       # แบบฟอร์มไม่มีส่วนนี้ (ตารางงานเก็บไว้)
+
     def test_meetings_with_same_link_are_reported_before_creating_a_duplicate(self):
         mid = self.new_meeting(meet_url="https://meet.google.com/zzz-zzzz-zzz?authuser=0")
         found = service.meetings_with_url(self.owner, "https://meet.google.com/ZZZ-zzzz-zzz")

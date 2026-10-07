@@ -69,6 +69,7 @@ CREATE TABLE speakers (
     email         VARCHAR(255) NULL,
     role          VARCHAR(20) NOT NULL DEFAULT 'attendee',
     attendance    VARCHAR(10) NOT NULL DEFAULT 'invited',
+    absence_reason VARCHAR(255) NULL,
     source        VARCHAR(10) NOT NULL DEFAULT 'registered',
     UNIQUE KEY uq_speaker (meeting_id, display_name),
     FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id) ON DELETE CASCADE
@@ -261,6 +262,9 @@ _MIGRATIONS: list[tuple[int, object]] = [
         "ALTER TABLE speakers ALTER COLUMN attendance SET DEFAULT 'invited'",
         "ALTER TABLE speakers ALTER COLUMN source SET DEFAULT 'registered'",
     ]),
+    (12, [  # 12: สาเหตุที่ไม่มาประชุม (แสดงในวงเล็บท้ายชื่อในรายงานตามแบบฟอร์ม)
+        "ALTER TABLE speakers ADD COLUMN absence_reason VARCHAR(255) NULL",
+    ]),
 ]
 
 # error ที่แปลว่า "ทำไปแล้ว" — ทำให้รัน migration ซ้ำหลังล้มกลางทางได้ (จงใจให้แคบ ไม่ครอบ error อื่นที่เป็นปัญหาจริง)
@@ -284,7 +288,7 @@ _STATUS_TRANSITIONS: dict[str, set[str]] = {
     "approved": set(),
 }
 
-ROLES = ("chair", "secretary", "attendee")          # ประธาน / เลขา / ผู้เข้าร่วม
+ROLES = ("chair", "secretary", "attendee", "guest")  # ประธาน / เลขา / กรรมการ-สมาชิก (ผู้มาประชุม) / ผู้เข้าร่วม (ไม่ใช่กรรมการ)
 UNIQUE_ROLES = ("chair", "secretary")               # แต่ละการประชุมมีได้คนเดียว
 ATTENDANCE = ("invited", "present", "absent")       # เชิญไว้ (ยังไม่ยืนยัน) / เข้าร่วม / ไม่มา
 
@@ -858,6 +862,7 @@ def add_speaker(
     email: str | None = None,
     role: str = "attendee",
     attendance: str = "invited",
+    absence_reason: str | None = None,
 ) -> int:
     """ลงทะเบียนผู้เข้าร่วม (ก่อนหรือหลังประชุมก็ได้)"""
     display_name = (display_name or "").strip()
@@ -870,9 +875,10 @@ def add_speaker(
             _check_role_free(cur, meeting_id, role)
             try:
                 cur.execute(
-                    """INSERT INTO speakers (meeting_id, display_name, email, role, attendance, source)
-                       VALUES (%s, %s, %s, %s, %s, 'registered')""",
-                    (meeting_id, display_name, (email or "").strip() or None, role, attendance),
+                    """INSERT INTO speakers (meeting_id, display_name, email, role, attendance, absence_reason, source)
+                       VALUES (%s, %s, %s, %s, %s, %s, 'registered')""",
+                    (meeting_id, display_name, (email or "").strip() or None, role, attendance,
+                     (absence_reason or "").strip() or None),
                 )
             except pymysql.err.IntegrityError:
                 raise ValueError(f"มีผู้เข้าร่วมชื่อ \"{display_name}\" ในการประชุมนี้แล้ว")
@@ -902,7 +908,7 @@ def list_speakers(meeting_id: int) -> list[dict]:
                    LEFT JOIN transcript_segments t ON t.speaker_id = s.speaker_id AND t.deleted = FALSE
                    WHERE s.meeting_id = %s
                    GROUP BY s.speaker_id
-                   ORDER BY FIELD(s.role, 'chair', 'secretary', 'attendee'), s.speaker_id""",
+                   ORDER BY FIELD(s.role, 'chair', 'secretary', 'attendee', 'guest'), s.speaker_id""",
                 (meeting_id,),
             )
             return list(cur.fetchall())
@@ -910,7 +916,7 @@ def list_speakers(meeting_id: int) -> list[dict]:
         conn.close()
 
 
-_SPEAKER_EDITABLE = ("display_name", "meet_alias", "email", "role", "attendance")
+_SPEAKER_EDITABLE = ("display_name", "meet_alias", "email", "role", "attendance", "absence_reason")
 
 
 def update_speaker(speaker_id: int, **fields) -> None:
@@ -923,7 +929,7 @@ def update_speaker(speaker_id: int, **fields) -> None:
         fields["display_name"] = (fields["display_name"] or "").strip()
         if not fields["display_name"]:
             raise ValueError("ต้องระบุชื่อผู้เข้าร่วม")
-    for key in ("email", "meet_alias"):
+    for key in ("email", "meet_alias", "absence_reason"):
         if key in fields:
             fields[key] = (fields[key] or "").strip() or None
     _check_person_fields(fields.get("role"), fields.get("attendance"))

@@ -1,0 +1,1 @@
+TH Sarabun New (regular/bold): Thai government font by the Software Industry Promotion Agency (SIPA), distributed free of charge for use and redistribution under the SIPA Thai font licence. Files taken from https://github.com/Phonbopit/sarabun-webfont .
