@@ -385,6 +385,39 @@ class ServiceTests(TempDbCase):
         service.reopen_transcript(self.owner, mid)
         self.assertEqual(service.apply_segments_table(self.owner, mid, rows)["errors"] != [], True)
 
+    def test_verify_turns_unconfirmed_people_into_absent_so_the_database_matches_the_report(self):
+        mid = self.new_meeting()          # Alice พูดในประชุม -> เข้าร่วมเอง, Bob ไม่ได้พูด ยังเป็น "ยังไม่ยืนยัน"
+        self.record(mid)
+        status = {p["display_name"]: p["attendance"] for p in db.list_speakers(mid)}
+        self.assertEqual((status["Alice"], status["Bob"]), ("present", "invited"))
+        out = service.verify_transcript(self.owner, mid)
+        self.assertEqual(out["marked_absent"], ["Bob"])
+        status = {p["display_name"]: p["attendance"] for p in db.list_speakers(mid)}
+        self.assertEqual((status["Alice"], status["Bob"]), ("present", "absent"))
+        header = service.get_detail(self.owner, mid)["header"]
+        absent_in_report = {a["name"] for a in header["absent"]}
+        absent_in_db = {p["display_name"] for p in db.list_speakers(mid) if p["attendance"] == "absent"}
+        self.assertEqual(absent_in_report, absent_in_db)           # ฐานข้อมูลกับรายงานตรงกัน
+        self.assertEqual(header["unconfirmed_count"], 0)
+
+    def test_verify_keeps_explicit_attendance_and_reports_nothing_when_all_are_settled(self):
+        mid = self.new_meeting(people=[
+            {"display_name": "สมชาย ใจดี", "role": "chair", "attendance": "present"},
+            {"display_name": "สมหญิง", "role": "secretary", "attendance": "present"},
+            {"display_name": "Alice", "attendance": "present"},
+            {"display_name": "Bob", "attendance": "absent", "absence_reason": "ลาป่วย"}])
+        self.record(mid)
+        self.assertEqual(service.verify_transcript(self.owner, mid)["marked_absent"], [])
+        bob = next(p for p in db.list_speakers(mid) if p["display_name"] == "Bob")
+        self.assertEqual((bob["attendance"], bob["absence_reason"]), ("absent", "ลาป่วย"))
+
+    def test_approve_also_settles_people_added_after_verification(self):
+        mid = self.draft()
+        service.add_person(self.owner, mid, "Carol")                # เพิ่มทีหลัง ค่าเริ่มต้น = ยังไม่ยืนยัน
+        self.assertEqual(next(p for p in db.list_speakers(mid) if p["display_name"] == "Carol")["attendance"], "invited")
+        service.approve_report(self.owner, mid, confirm_warnings=True)
+        self.assertEqual(next(p for p in db.list_speakers(mid) if p["display_name"] == "Carol")["attendance"], "absent")
+
     def test_verify_lists_unmapped_meet_names(self):
         mid = self.new_meeting()
         self.record(mid)

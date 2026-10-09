@@ -635,6 +635,19 @@ def add_speaker(
         conn.close()
 
 
+def mark_unconfirmed_absent(meeting_id: int) -> list[str]:
+    """ผู้ที่ยังเป็น 'เชิญไว้' (ยังไม่ยืนยัน) หลังประชุมจบ = ไม่มา — เปลี่ยนสถานะในฐานข้อมูลให้ตรงกับที่รายงานแสดง
+    (คนที่พูดในประชุมกลายเป็น 'เข้าร่วม' ไปแล้วตอนบันทึก) คืนชื่อที่ถูกเปลี่ยน เรียงตามลำดับ"""
+    with _tx() as cur:
+        cur.execute("SELECT display_name FROM speakers WHERE meeting_id = %s AND attendance = 'invited' ORDER BY speaker_id",
+                    (meeting_id,))
+        names = [r["display_name"] for r in cur.fetchall()]
+        if names:
+            cur.execute("UPDATE speakers SET attendance = 'absent' WHERE meeting_id = %s AND attendance = 'invited'",
+                        (meeting_id,))
+    return names
+
+
 def get_speaker(speaker_id: int) -> dict | None:
     conn = get_connection()
     try:

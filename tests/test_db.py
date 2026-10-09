@@ -90,6 +90,20 @@ class WorkflowTests(TempDbCase):
 
     # ── สถานะ ──
 
+    def test_mark_unconfirmed_absent_only_touches_invited_people_of_that_meeting(self):
+        uid, mid = self.new_meeting()
+        _, other = self.new_meeting()
+        a = db.add_speaker(mid, "A", attendance="invited")
+        b = db.add_speaker(mid, "B", attendance="present")
+        c = db.add_speaker(mid, "C", attendance="absent", absence_reason="ลา")
+        d = db.add_speaker(mid, "D")                                   # ค่าเริ่มต้น invited
+        x = db.add_speaker(other, "X", attendance="invited")           # อีกการประชุมต้องไม่ถูกแตะ
+        self.assertEqual(db.mark_unconfirmed_absent(mid), ["A", "D"])
+        got = {s: db.get_speaker(s)["attendance"] for s in (a, b, c, d, x)}
+        self.assertEqual(got, {a: "absent", b: "present", c: "absent", d: "absent", x: "invited"})
+        self.assertEqual(db.get_speaker(c)["absence_reason"], "ลา")
+        self.assertEqual(db.mark_unconfirmed_absent(mid), [])         # เรียกซ้ำไม่เปลี่ยนอะไร
+
     def test_setup_then_record_then_end(self):
         uid, mid = self.new_meeting(title="  ประชุม  ", venue="", meeting_no="3/2569")
         m = db.get_meeting(mid)
