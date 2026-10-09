@@ -36,37 +36,6 @@ def segment_rows(df: pd.DataFrame) -> list[dict]:
     return rows
 
 
-def _merge_section(user: dict, people: list[dict], editable: bool):
-    unmapped = [p for p in people if p["source"] == "meet" and p["segment_count"] > 0]
-    if not unmapped:
-        return
-    registered = [p for p in people if p["source"] == "registered"]
-    st.subheader("ชื่อที่พบใน Meet แต่ไม่ตรงกับรายชื่อ")
-    st.caption("ถ้าเป็นคนเดียวกับผู้เข้าร่วมที่ลงทะเบียนไว้ (เช่น Meet แสดงชื่อพ่วงเลขหรือชื่อเล่น) ให้ “รวม” — ข้อความทั้งหมดจะย้ายไปอยู่กับ"
-               "คนที่ถูกต้อง และครั้งหน้าจับคู่ให้เองอัตโนมัติ ถ้าเป็นคนใหม่ที่ไม่ได้ลงทะเบียน ปล่อยไว้ได้ (จะแสดงเป็นผู้มาประชุม)")
-    if not registered:
-        st.info("ยังไม่มีผู้เข้าร่วมที่ลงทะเบียนไว้ให้รวมด้วย — เพิ่มรายชื่อที่แท็บ ① ข้อมูล")
-        return
-    names = {p["speaker_id"]: p["display_name"] for p in registered}
-    for p in unmapped:
-        with st.container(border=True):
-            a, b, c = st.columns([3, 3, 1.2], vertical_alignment="center")
-            a.markdown(f"**{common.md_escape(p['display_name'])}**  \n{p['segment_count']} ช่วง")
-            target = b.selectbox("รวมกับ", options=list(names), format_func=names.get, index=None,
-                                 placeholder="เลือกผู้เข้าร่วมที่ถูกต้อง…", key=f"merge_to_{p['speaker_id']}",
-                                 label_visibility="collapsed", disabled=not editable)
-            if c.button("รวม", key=f"merge_{p['speaker_id']}", disabled=not editable or target is None,
-                        width="stretch"):
-                try:
-                    moved = service.merge_people(user, p["speaker_id"], target)
-                except ServiceError as e:
-                    st.error(str(e))
-                else:
-                    common.flash("success", f"รวมแล้ว: ย้าย {moved} ช่วงไปที่ {names[target]}")
-                    st.session_state[f"rev_segs_{p['meeting_id']}"] = _rev(p["meeting_id"]) + 1
-                    st.rerun()
-
-
 def _unconfirmed_section(user: dict, people: list[dict], editable: bool):
     """ผู้ที่ลงทะเบียนไว้แต่ยังไม่ยืนยันการเข้าร่วม — เลือกว่าตรงกับชื่อไหนที่เห็นใน Meet (บอทอ่านจากห้อง/จากคนที่พูด)
     หรือกำหนดเองว่ามา/ไม่มา; ถ้าไม่ตั้ง ตอนยืนยัน transcript จะถูกบันทึกเป็น "ไม่มา" """
@@ -129,7 +98,6 @@ def render(user: dict, detail: dict):
         st.success("🔒 รายงานอนุมัติแล้ว transcript ถูกล็อก")
 
     people_in_meeting = [{**p, "meeting_id": mid} for p in people]
-    _merge_section(user, people_in_meeting, editable and status != "approved")
     _unconfirmed_section(user, people_in_meeting, editable and status != "approved")
 
     if not segments:

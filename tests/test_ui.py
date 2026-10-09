@@ -257,22 +257,13 @@ class UiTests(TempDbCase):
         next(b for b in at.button if b.key == f"unc_go_{away}").click().run()
         self.assertEqual(db.get_speaker(away)["attendance"], "absent")
 
-    def test_transcript_tab_offers_merging_unregistered_names_and_verify(self):
+    def test_transcript_tab_has_no_manual_merge_section_and_can_verify(self):
         mid = self.meeting("transcript_review")
-        s = db.get_or_create_speaker(mid, "46 Alice Wonderland")             # Meet แสดงชื่อพ่วงเลข ไม่ตรงรายชื่อ
+        s = db.get_or_create_speaker(mid, "46 Alice Wonderland")             # Meet แสดงชื่อพ่วงเลข ไม่ตรงรายชื่อ (จับคู่เองไม่ได้)
         db.insert_segment(mid, s, 3, "ผมคือ Alice เอง")
         at = self.app(m=mid)
-        self.assertTrue(any("ไม่ตรงกับรายชื่อ" in v for v in texts(at.subheader)))
-        select = next(x for x in at.selectbox if x.key == f"merge_to_{s}")
-        alice = next(p for p in db.list_speakers(mid) if p["display_name"] == "Alice")["speaker_id"]
-        select.select(alice).run()
-        next(b for b in at.button if b.key == f"merge_{s}").click().run()
-        people = {p["display_name"]: p for p in db.list_speakers(mid)}
-        self.assertNotIn("46 Alice Wonderland", people)
-        self.assertEqual(people["Alice"]["segment_count"], 2)                  # ข้อความย้ายไปอยู่กับ Alice
-        self.assertEqual(people["Alice"]["meet_alias"], "46 Alice Wonderland")
-
-        at = self.app(m=mid)
+        self.assertFalse(any("ไม่ตรงกับรายชื่อ" in v for v in texts(at.subheader)))
+        self.assertFalse(any(x.key.startswith("merge_") for x in at.selectbox))
         next(b for b in at.button if b.key == f"verify_{mid}").click().run()
         self.assertEqual(db.get_meeting(mid)["status"], "transcript_verified")
 
