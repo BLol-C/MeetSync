@@ -123,6 +123,22 @@ class WorkflowTests(TempDbCase):
         self.assertEqual([(a["title"], a["section"]) for a in db.get_report(cur)["content"]["agenda"]],
                          [("ก", "followup"), ("ไม่ระบุหมวด", "consider_new"), ("หมวดผิด", "consider_new")])
 
+    def test_mark_present_by_names_only_changes_registered_invited_people(self):
+        uid, mid = self.new_meeting()
+        a = db.add_speaker(mid, "ธนาวีร์ บุญเกิด")
+        db.update_speaker(a, meet_alias="46 ธนาวีร์ บุญเกิด")
+        b = db.add_speaker(mid, "Bob")
+        c = db.add_speaker(mid, "Carol", attendance="absent", absence_reason="ลา")
+        d = db.add_speaker(mid, "Dan", attendance="present")
+        before = {r["display_name"] for r in db.list_speakers(mid)}
+        changed = db.mark_present_by_names(mid, ["46 ธนาวีร์ บุญเกิด (You)", "bob", "Carol", "Dan", "คนไม่รู้จัก", ""])
+        self.assertEqual(sorted(changed), sorted(["ธนาวีร์ บุญเกิด", "Bob"]))
+        got = {s: db.get_speaker(s)["attendance"] for s in (a, b, c, d)}
+        self.assertEqual(got, {a: "present", b: "present", c: "absent", d: "present"})   # ที่ตั้ง "ไม่มา" ไว้เองไม่ถูกแตะ
+        self.assertEqual({r["display_name"] for r in db.list_speakers(mid)}, before)       # ไม่สร้างผู้เข้าร่วมใหม่
+        self.assertEqual(db.mark_present_by_names(mid, ["bob"]), [])                       # เรียกซ้ำไม่เปลี่ยนอะไร
+        self.assertEqual(db.mark_present_by_names(mid, []), [])
+
     def test_setup_then_record_then_end(self):
         uid, mid = self.new_meeting(title="  ประชุม  ", venue="", meeting_no="3/2569")
         m = db.get_meeting(mid)

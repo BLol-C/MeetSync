@@ -121,11 +121,21 @@ def _persist_segment(meeting_id: int, row_id: int | None, name: str, text: str):
             _segment_by_row.popitem(last=False)
 
 
+def _persist_participants(meeting_id: int, names: list[str]):
+    """ตั้ง "เข้าร่วม" ให้คนที่อยู่ในห้องและชื่อตรงกับรายชื่อที่ลงทะเบียนไว้ (รันใน thread เดียวกับ worker)"""
+    changed = db.mark_present_by_names(meeting_id, names)
+    if changed:
+        _log("✅ เห็นในห้อง จึงตั้ง \"เข้าร่วม\" ให้: " + ", ".join(changed))
+
+
 async def _save_worker_loop(q: asyncio.Queue):
     while True:
         item = await q.get()
         try:
-            await asyncio.to_thread(_persist_segment, *item)
+            if item and item[0] == "participants":   # งานตั้งสถานะผู้เข้าร่วม ใช้คิว/worker เดียวกับ transcript (เขียน DB ทีละงาน)
+                await asyncio.to_thread(_persist_participants, *item[1:])
+            else:
+                await asyncio.to_thread(_persist_segment, *item)
         except Exception as e:  # noqa: BLE001 — เขียน DB พลาดต้องไม่ทำให้ worker/บริการล่ม
             _log(f"⚠️ บันทึกลง DB ไม่สำเร็จ: {e!r}")
         finally:
@@ -141,6 +151,11 @@ def _handle_event(ev: dict):
     elif kind == "error":
         _last_error = ev.get("text", "")
         _log("ผิดพลาด: " + _last_error)
+    elif kind == "participants":
+        names = [n for n in (ev.get("names") or []) if isinstance(n, str) and n.strip()]
+        _log(f"เห็นผู้เข้าร่วมในห้อง {len(names)} คน")
+        if names and _db_ready and _current_meeting_id is not None and _save_queue is not None:
+            _save_queue.put_nowait(("participants", _current_meeting_id, names))
     elif kind == "caption":
         name, text = ev.get("name"), (ev.get("text") or "").strip()
         if not name or name == "(raw)" or not text:

@@ -174,6 +174,24 @@ class BotServiceTests(TempDbCase):
         self.assertFalse(after["running"])
         self.assertEqual(len(after["rows"]), 2)              # ผู้จัดการยังเห็นผลของรอบล่าสุดหลังหยุด
 
+    def test_people_seen_in_the_room_are_marked_present_even_if_they_never_speak(self):
+        mid = self.meeting(people=("Alice", "Bob", "Carol", "Dan"))
+        db.update_speaker(next(p["speaker_id"] for p in db.list_speakers(mid) if p["display_name"] == "Dan"),
+                          attendance="absent", absence_reason="ลา")            # ผู้ใช้ตั้ง "ไม่มา" ไว้เอง
+        FakeEngine.script = [
+            {"type": "participants", "names": ["Alice (You)", "bob", "Dan", "คนไม่รู้จัก", "", 5]},
+            cap(1, "Alice (You)", "สวัสดี"),
+        ]
+        self.assertEqual(self.start(mid).status_code, 200)
+        self.assertTrue(wait_for(lambda: len(db.get_transcript(mid)) == 1))
+        self.assertTrue(wait_for(lambda: {p["display_name"]: p["attendance"] for p in db.list_speakers(mid)}.get("Bob") == "present"))
+        status = {p["display_name"]: p["attendance"] for p in db.list_speakers(mid)}
+        self.assertEqual(status, {"Alice": "present", "Bob": "present", "Carol": "invited", "Dan": "absent"})
+        self.assertNotIn("คนไม่รู้จัก", status)                                   # ไม่สร้างผู้เข้าร่วมใหม่จากชื่อที่ไม่รู้จัก
+        log = " ".join(s["text"] for s in self.state()["status"])
+        self.assertIn("เห็นผู้เข้าร่วมในห้อง", log)
+        self.assertIn("Bob", log)
+
     def test_one_endless_monologue_is_split_into_segments_not_lost(self):
         # คนพูดไม่หยุด Meet ใช้แถวเดียวตลอด ข้อความสะสมยาวเกินคอลัมน์ได้ — ต้องแบ่งเป็นหลาย segment ครบ ไม่ error ไม่หาย
         mid = self.meeting()

@@ -571,6 +571,25 @@ def _mark_present(cur, speaker_id: int):
     )
 
 
+def mark_present_by_names(meeting_id: int, meet_names: list[str]) -> list[str]:
+    """ชื่อคนที่เห็นในห้อง Meet -> ตั้ง "เข้าร่วม" ให้ผู้เข้าร่วมที่ลงทะเบียนไว้และชื่อตรงกัน (ชื่อ/ชื่อเรียกใน Meet เดียวกับตอนจับผู้พูด)
+    เปลี่ยนเฉพาะที่ยังเป็น 'เชิญไว้' — คนที่ผู้ใช้ตั้ง 'ไม่มา' ไว้เองไม่ถูกเปลี่ยน และไม่สร้างผู้เข้าร่วมใหม่จากชื่อที่ไม่รู้จัก
+    คืนชื่อ (display_name) ของคนที่ถูกเปลี่ยนในรอบนี้"""
+    changed: list[str] = []
+    with _tx() as cur:
+        for name in meet_names or []:
+            speaker_id = _find_speaker_for_name(cur, meeting_id, (name or "").strip()[:100])
+            if speaker_id is None:
+                continue
+            cur.execute(
+                "UPDATE speakers SET attendance = 'present' WHERE speaker_id = %s AND attendance = 'invited'", (speaker_id,)
+            )
+            if cur.rowcount == 1:
+                cur.execute("SELECT display_name FROM speakers WHERE speaker_id = %s", (speaker_id,))
+                changed.append(cur.fetchone()["display_name"])
+    return changed
+
+
 def _find_speaker_for_name(cur, meeting_id: int, meet_name: str) -> int | None:
     """ชื่อที่ Meet แสดง -> ผู้เข้าร่วมที่ตรงกัน (ชื่อ/ชื่อเรียกใน Meet) — ตรงคนเดียวเท่านั้น ชื่อกำกวมไม่เดา"""
     cur.execute(
