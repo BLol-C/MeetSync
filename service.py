@@ -84,11 +84,64 @@ def _check_previous(user: dict, previous_meeting_id, own_id: int | None = None) 
     return pid
 
 
+def roster_of(meeting_id: int) -> list[dict]:
+    """รายชื่อผู้เข้าร่วมที่ลงทะเบียนไว้ของการประชุมหนึ่ง (พร้อมชื่อที่ Meet แสดง) สำหรับคัดลอกไปประชุมถัดไป
+    ไม่รวมคนที่แค่พบจาก Meet และไม่คัดลอกสถานะมา/ไม่มา (ประธาน/เลขาตั้งเป็นเข้าร่วม ที่เหลือยังไม่ยืนยัน)"""
+    return [
+        {"display_name": p["display_name"], "email": p["email"], "role": p["role"], "position": p.get("position"),
+         "meet_alias": p.get("meet_alias"), "attendance": "present" if p["role"] in db.UNIQUE_ROLES else "invited"}
+        for p in db.list_speakers(meeting_id) if p["source"] == "registered"
+    ]
+
+
+def _with_missing_from(existing: list[dict], roster: list[dict]) -> list[dict]:
+    """existing + คนใน roster ที่ยังไม่มี (เทียบชื่อและชื่อใน Meet แบบไม่สนตัวพิมพ์) — ถ้าประธาน/เลขามีคนแล้ว คนจาก roster ลงเป็นผู้เข้าร่วมทั่วไป"""
+    taken = set()
+    roles = set()
+    for x in existing:
+        for key in (x.get("display_name"), x.get("meet_alias")):
+            if (key or "").strip():
+                taken.add(key.strip().casefold())
+        roles.add(x.get("role", "attendee"))
+    merged = list(existing)
+    for r in roster:
+        keys = {k.strip().casefold() for k in (r["display_name"], r.get("meet_alias")) if (k or "").strip()}
+        if keys & taken:        # ชื่อหรือชื่อใน Meet ของคนนี้ตรงกับคนที่มีอยู่แล้ว (คนเดียวกันที่กรอกด้วยชื่ออีกแบบ)
+            continue
+        r = dict(r)
+        if r["role"] in db.UNIQUE_ROLES and r["role"] in roles:
+            r["role"], r["attendance"] = "attendee", "invited"
+        roles.add(r["role"])
+        taken |= keys
+        merged.append(r)
+    return merged
+
+
+def copy_roster_into_meeting(user: dict, meeting_id: int) -> int:
+    """เพิ่มรายชื่อผู้เข้าร่วมจากการประชุมครั้งก่อน (ที่เลือกไว้) ที่ยังไม่มีในการประชุมนี้ คืนจำนวนคนที่เพิ่ม"""
+    meeting = meeting_for(user, meeting_id)
+    _require_status(meeting, *EDITABLE_STATUSES, hint="รายงานที่อนุมัติแล้วแก้รายชื่อไม่ได้")
+    prev = meeting.get("previous_meeting_id")
+    if not prev:
+        raise ServiceError("ยังไม่ได้เลือกการประชุมครั้งก่อน", "invalid")
+    _check_previous(user, prev, meeting_id)
+    existing = [{"display_name": p["display_name"], "meet_alias": p["meet_alias"], "role": p["role"]}
+                for p in db.list_speakers(meeting_id)]
+    added = _with_missing_from(existing, roster_of(prev))[len(existing):]
+    try:
+        for r in added:
+            db.add_speaker(meeting_id, r["display_name"], r["email"], r["role"], r["attendance"],
+                           position=r["position"], meet_alias=r["meet_alias"])
+    except ValueError as e:
+        raise _value_error(e)
+    return len(added)
+
+
 def create_meeting(
     user: dict, *, meet_url: str, title: str | None = None, venue: str | None = None,
     meeting_no: str | None = None, org_name: str | None = None,
     scheduled_at: datetime.datetime | None = None, people: list[dict] | None = None,
-    previous_meeting_id: int | None = None,
+    previous_meeting_id: int | None = None, copy_roster: bool = False,
 ) -> int:
     """สร้างการประชุมพร้อมรายชื่อผู้เข้าร่วมและบทบาท (ยังไม่สั่งบอท) — ตรวจรายชื่อให้ผ่านทั้งหมดก่อนเขียน
     จะได้ไม่เหลือการประชุมครึ่งๆ กลางๆ ถ้ารายการท้ายผิด
@@ -96,6 +149,8 @@ def create_meeting(
     url = check_meet_url(meet_url)
     previous_meeting_id = _check_previous(user, previous_meeting_id)
     people = [p for p in (people or []) if (p.get("display_name") or "").strip()]
+    if copy_roster and previous_meeting_id:   # รายชื่อจากครั้งก่อนเติมเฉพาะคนที่ยังไม่มีในตารางที่กรอก
+        people = _with_missing_from(people, roster_of(previous_meeting_id))
     roles = [p.get("role", "attendee") for p in people]
     for r in db.UNIQUE_ROLES:
         if roles.count(r) > 1:
@@ -113,7 +168,8 @@ def create_meeting(
         )
         for p in people:
             db.add_speaker(meeting_id, p["display_name"], p.get("email"), p.get("role", "attendee"),
-                           p.get("attendance", "invited"), p.get("absence_reason"), p.get("position"))
+                           p.get("attendance", "invited"), p.get("absence_reason"), p.get("position"),
+                           meet_alias=p.get("meet_alias"))
     except ValueError as e:
         raise _value_error(e)
     return meeting_id
@@ -178,11 +234,11 @@ def _person_meeting(user: dict, speaker_id: int) -> tuple[dict, dict]:
 
 def add_person(user: dict, meeting_id: int, display_name: str, email: str | None = None,
                role: str = "attendee", attendance: str = "invited", absence_reason: str | None = None,
-               position: str | None = None) -> int:
+               position: str | None = None, meet_alias: str | None = None) -> int:
     meeting = meeting_for(user, meeting_id)
     _require_status(meeting, *EDITABLE_STATUSES, hint="รายงานที่อนุมัติแล้วแก้รายชื่อไม่ได้")
     try:
-        return db.add_speaker(meeting_id, display_name, email, role, attendance, absence_reason, position)
+        return db.add_speaker(meeting_id, display_name, email, role, attendance, absence_reason, position, meet_alias)
     except ValueError as e:
         raise _value_error(e)
 
@@ -207,7 +263,7 @@ def merge_people(user: dict, source_id: int, target_id: int) -> int:
         raise _value_error(e)
 
 
-_PERSON_FIELDS = ("display_name", "email", "role", "attendance", "absence_reason", "position")
+_PERSON_FIELDS = ("display_name", "email", "role", "attendance", "absence_reason", "position", "meet_alias")
 
 
 def apply_people_table(user: dict, meeting_id: int, rows: list[dict]) -> dict:
@@ -235,7 +291,7 @@ def apply_people_table(user: dict, meeting_id: int, rows: list[dict]) -> dict:
             for f in _PERSON_FIELDS:
                 new = clean(row.get(f))
                 if new != (current[sid][f] or ""):
-                    changes[f] = (new or None) if f in ("email", "absence_reason", "position") else new
+                    changes[f] = (new or None) if f in ("email", "absence_reason", "position", "meet_alias") else new
             if changes:
                 updates.append((sid, changes))
         elif clean(row.get("display_name")):
@@ -261,7 +317,8 @@ def apply_people_table(user: dict, meeting_id: int, rows: list[dict]) -> dict:
         try:
             db.add_speaker(meeting_id, row["display_name"], clean(row.get("email")) or None,
                            clean(row.get("role")) or "attendee", clean(row.get("attendance")) or "invited",
-                           clean(row.get("absence_reason")) or None, clean(row.get("position")) or None)
+                           clean(row.get("absence_reason")) or None, clean(row.get("position")) or None,
+                           meet_alias=clean(row.get("meet_alias")) or None)
             result["added"] += 1
         except ValueError as e:
             result["errors"].append(f"{clean(row.get('display_name'))}: {e}")

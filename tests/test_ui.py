@@ -258,6 +258,16 @@ class UiTests(TempDbCase):
         next(b for b in at.button if b.key == f"unc_go_{away}").click().run()
         self.assertEqual(db.get_speaker(away)["attendance"], "absent")
 
+    def test_setup_tab_has_a_meet_name_column_and_can_copy_the_roster_from_the_previous_meeting(self):
+        prev = self.meeting("approved")
+        mid = service.create_meeting(self.user, meet_url=URL, previous_meeting_id=prev, people=[])
+        at = self.app(m=mid)
+        self.assertIn("ชื่อใน Meet", [c for c in at.dataframe[0].value.columns] if at.dataframe else ["ชื่อใน Meet"])
+        next(b for b in at.button if b.key == f"copy_roster_{mid}").click().run()
+        names = {p["display_name"] for p in db.list_speakers(mid)}
+        self.assertTrue({"สมชาย ใจดี", "สมหญิง", "Alice"} <= names)                         # ผู้เข้าร่วมที่ลงทะเบียนของครั้งก่อนถูกเติม
+        self.assertFalse(any(b.key == f"copy_roster_{mid}" and b.disabled for b in at.button))
+
     def test_transcript_tab_offers_merging_unregistered_names_and_verify(self):
         mid = self.meeting("transcript_review")
         s = db.get_or_create_speaker(mid, "46 Alice Wonderland")             # Meet แสดงชื่อพ่วงเลข ไม่ตรงรายชื่อ
@@ -411,8 +421,8 @@ class TableConversionTests(unittest.TestCase):
             {"speaker_id": float("nan"), "ชื่อ": "คนใหม่", "อีเมล": None, "บทบาท": None, "การเข้าร่วม": None, "สาเหตุที่ไม่มา": float("nan"), "ที่มา": None, "ข้อความที่พูด": None},
         ])
         rows = tab_setup.people_rows(df)
-        self.assertEqual(rows[0], {"speaker_id": 5, "display_name": "สมชาย", "email": "a@x.com", "role": "chair", "attendance": "present", "absence_reason": "", "position": ""})
-        self.assertEqual(rows[1], {"speaker_id": None, "display_name": "คนใหม่", "email": "", "role": "attendee", "attendance": "invited", "absence_reason": "", "position": ""})
+        self.assertEqual(rows[0], {"speaker_id": 5, "display_name": "สมชาย", "meet_alias": "", "email": "a@x.com", "role": "chair", "attendance": "present", "absence_reason": "", "position": ""})
+        self.assertEqual(rows[1], {"speaker_id": None, "display_name": "คนใหม่", "meet_alias": "", "email": "", "role": "attendee", "attendance": "invited", "absence_reason": "", "position": ""})
 
     def test_new_meeting_people_skip_blank_rows(self):
         import pandas as pd
@@ -421,7 +431,7 @@ class TableConversionTests(unittest.TestCase):
         df = pd.DataFrame([{"ชื่อ": "", "อีเมล": "", "บทบาท": "ประธาน", "การเข้าร่วม": "เข้าร่วม"},
                            {"ชื่อ": "Bob", "อีเมล": "", "บทบาท": "เลขา", "การเข้าร่วม": "ไม่มา", "สาเหตุที่ไม่มา": "ลาป่วย", "ตำแหน่ง": " อาจารย์ "}])
         self.assertEqual(new_meeting.people_from_df(df),
-                         [{"display_name": "Bob", "email": None, "role": "secretary", "attendance": "absent", "absence_reason": "ลาป่วย", "position": "อาจารย์"}])
+                         [{"display_name": "Bob", "meet_alias": None, "email": None, "role": "secretary", "attendance": "absent", "absence_reason": "ลาป่วย", "position": "อาจารย์"}])
 
     def test_segment_table_rows(self):
         import pandas as pd

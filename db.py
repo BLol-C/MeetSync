@@ -667,8 +667,9 @@ def add_speaker(
     attendance: str = "invited",
     absence_reason: str | None = None,
     position: str | None = None,
+    meet_alias: str | None = None,
 ) -> int:
-    """ลงทะเบียนผู้เข้าร่วม (ก่อนหรือหลังประชุมก็ได้)"""
+    """ลงทะเบียนผู้เข้าร่วม (ก่อนหรือหลังประชุมก็ได้) meet_alias = ชื่อที่ Meet แสดงของคนนี้ (ถ้ารู้ล่วงหน้า) ไว้จับคู่ผู้พูด/รายชื่อในห้อง"""
     display_name = (display_name or "").strip()
     if not display_name:
         raise ValueError("ต้องระบุชื่อผู้เข้าร่วม")
@@ -679,10 +680,10 @@ def add_speaker(
             _check_role_free(cur, meeting_id, role)
             try:
                 cur.execute(
-                    """INSERT INTO speakers (meeting_id, display_name, email, role, attendance, absence_reason, position, source)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, 'registered')""",
-                    (meeting_id, display_name, (email or "").strip() or None, role, attendance,
-                     (absence_reason or "").strip() or None, (position or "").strip() or None),
+                    """INSERT INTO speakers (meeting_id, display_name, meet_alias, email, role, attendance, absence_reason, position, source)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'registered')""",
+                    (meeting_id, display_name, (meet_alias or "").strip()[:100] or None, (email or "").strip() or None, role,
+                     attendance, (absence_reason or "").strip() or None, (position or "").strip() or None),
                 )
             except pymysql.err.IntegrityError:
                 raise ValueError(f"มีผู้เข้าร่วมชื่อ \"{display_name}\" ในการประชุมนี้แล้ว")

@@ -8,8 +8,8 @@ from service import ServiceError
 from ui import common
 from ui.common import ATT_BY_LABEL, ATT_LABEL, ROLE_BY_LABEL, ROLE_LABEL, SOURCE_LABEL, clean_str
 
-COLS = ["speaker_id", "ชื่อ", "อีเมล", "บทบาท", "ตำแหน่ง", "การเข้าร่วม", "สาเหตุที่ไม่มา", "ที่มา", "ข้อความที่พูด"]
-VISIBLE = ["ชื่อ", "อีเมล", "บทบาท", "ตำแหน่ง", "การเข้าร่วม", "สาเหตุที่ไม่มา", "ที่มา", "ข้อความที่พูด"]
+COLS = ["speaker_id", "ชื่อ", "ชื่อใน Meet", "อีเมล", "บทบาท", "ตำแหน่ง", "การเข้าร่วม", "สาเหตุที่ไม่มา", "ที่มา", "ข้อความที่พูด"]
+VISIBLE = ["ชื่อ", "ชื่อใน Meet", "อีเมล", "บทบาท", "ตำแหน่ง", "การเข้าร่วม", "สาเหตุที่ไม่มา", "ที่มา", "ข้อความที่พูด"]
 
 
 def _rev(mid: int) -> int:
@@ -19,7 +19,7 @@ def _rev(mid: int) -> int:
 def _people_df(people: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(
         [{
-            "speaker_id": p["speaker_id"], "ชื่อ": p["display_name"], "อีเมล": p["email"] or "",
+            "speaker_id": p["speaker_id"], "ชื่อ": p["display_name"], "ชื่อใน Meet": p.get("meet_alias") or "", "อีเมล": p["email"] or "",
             "บทบาท": ROLE_LABEL[p["role"]], "ตำแหน่ง": p.get("position") or "", "การเข้าร่วม": ATT_LABEL[p["attendance"]],
             "สาเหตุที่ไม่มา": p.get("absence_reason") or "",
             "ที่มา": SOURCE_LABEL.get(p["source"], p["source"]), "ข้อความที่พูด": p["segment_count"],
@@ -36,6 +36,7 @@ def people_rows(df: pd.DataFrame) -> list[dict]:
         rows.append({
             "speaker_id": None if sid is None or sid != sid else int(sid),
             "display_name": clean_str(rec.get("ชื่อ")),
+            "meet_alias": clean_str(rec.get("ชื่อใน Meet")),
             "email": clean_str(rec.get("อีเมล")),
             "role": ROLE_BY_LABEL.get(clean_str(rec.get("บทบาท")), "attendee"),
             "attendance": ATT_BY_LABEL.get(clean_str(rec.get("การเข้าร่วม")), "invited"),
@@ -95,6 +96,7 @@ def render(user: dict, detail: dict):
         column_order=VISIBLE,
         column_config={
             "ชื่อ": st.column_config.TextColumn("ชื่อ", width="medium"),
+            "ชื่อใน Meet": st.column_config.TextColumn("ชื่อใน Meet", help="ชื่อที่ Google Meet แสดงของคนนี้ (เช่น ชื่อบัญชีภาษาอังกฤษ) ไว้จับคู่คนพูดและรายชื่อในห้องให้อัตโนมัติ ไม่ขึ้นในรายงาน — ว่างไว้ได้ ถ้าชื่อที่ลงทะเบียนตรงกับใน Meet", width="medium"),
             "อีเมล": st.column_config.TextColumn("อีเมล", width="medium", help="ใช้เชิญเข้า Calendar และให้ประธาน/เลขาอนุมัติได้"),
             "บทบาท": st.column_config.SelectboxColumn("บทบาท", options=list(ROLE_BY_LABEL), default=ROLE_LABEL["attendee"], required=True),
             "ตำแหน่ง": st.column_config.TextColumn("ตำแหน่ง", help="ตำแหน่งของผู้เข้าร่วม แสดงในคอลัมน์ ตำแหน่ง ของรายงาน PDF (เว้นว่าง = ใช้บทบาทในที่ประชุมแทน)", width="medium"),
@@ -104,6 +106,18 @@ def render(user: dict, detail: dict):
             "ข้อความที่พูด": st.column_config.NumberColumn("ข้อความที่พูด", format="%d ช่วง"),
         },
     )
+    if meeting.get("previous_meeting_id") and not locked:
+        if st.button("📋 เติมรายชื่อจากการประชุมครั้งก่อน", key=f"copy_roster_{mid}",
+                     help="เพิ่มผู้เข้าร่วมของการประชุมครั้งก่อนที่ยังไม่มีในรายชื่อนี้ พร้อมอีเมล บทบาท ตำแหน่ง และ \"ชื่อใน Meet\" "
+                          "(ไม่คัดลอกสถานะมา/ไม่มา)"):
+            try:
+                added = service.copy_roster_into_meeting(user, mid)
+            except ServiceError as e:
+                common.flash("error", str(e))
+            else:
+                common.flash("success" if added else "info", f"เพิ่มรายชื่อจากครั้งก่อน {added} คน" if added else "ไม่มีคนใหม่ให้เพิ่ม — มีครบแล้ว")
+            st.session_state[f"rev_people_{mid}"] = _rev(mid) + 1
+            st.rerun()
     if st.button("💾 บันทึกรายชื่อ", key=f"save_people_{mid}", disabled=locked):
         result = service.apply_people_table(user, mid, people_rows(edited))
         st.session_state[f"rev_people_{mid}"] = _rev(mid) + 1
