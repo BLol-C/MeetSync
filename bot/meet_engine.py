@@ -225,10 +225,15 @@ JS_CAPTION_WATCHER = r"""
 # และแต่ละคนเป็น role=listitem) ยังไม่ได้ยืนยันกับ Meet จริง — ถ้าอ่านไม่ได้ ระบบแจ้งในสถานะและไม่ทำอะไร (ไม่กระทบการจับคำบรรยาย)
 JS_READ_PARTICIPANTS = """
 () => {
-  const labelRe = /participants|people|everyone|ผู้เข้าร่วม|ผู้คน|ทุกคน/i;
-  const lists = [...document.querySelectorAll('[role="list"]')]
-    .filter((l) => labelRe.test(l.getAttribute('aria-label') || ''));
-  if (!lists.length) return { panel: false, names: [] };
+  const labelRe = /participants|people|everyone|contributors|ผู้เข้าร่วม|ผู้คน|ทุกคน|บุคคล|ผู้มีส่วนร่วม|ผู้ร่วมประชุม/i;
+  const all = [...document.querySelectorAll('[role="list"]')];
+  const lists = all.filter((l) => labelRe.test(l.getAttribute('aria-label') || ''));
+  if (!lists.length) {
+    // ไม่พบแผง: ส่งสิ่งที่เห็นในหน้ากลับไปด้วย เพื่อให้ปรับ selector ตาม Meet จริงได้ (ไม่ใช่การเดา)
+    const buttons = [...document.querySelectorAll('button[aria-label]')]
+      .map((b) => b.getAttribute('aria-label')).filter((t) => labelRe.test(t)).slice(0, 6);
+    return { panel: false, names: [], lists: all.map((l) => l.getAttribute('aria-label') || '(ไม่มีชื่อ)').slice(0, 8), buttons };
+  }
   const names = [];
   for (const list of lists) {
     for (const item of list.querySelectorAll('[role="listitem"]')) {
@@ -246,7 +251,8 @@ JS_READ_PARTICIPANTS = """
 """
 PEOPLE_BUTTON = (
     'button[aria-label*="people" i], button[aria-label*="everyone" i], button[aria-label*="participants" i], '
-    'button[aria-label*="ผู้คน"], button[aria-label*="ทุกคน"], button[aria-label*="ผู้เข้าร่วม"]'
+    'button[aria-label*="ผู้คน"], button[aria-label*="ทุกคน"], button[aria-label*="ผู้เข้าร่วม"], '
+    'button[aria-label*="บุคคล"], button[aria-label*="ผู้มีส่วนร่วม"], button[aria-label*="ผู้ร่วมประชุม"]'
 )
 PARTICIPANT_SCAN_S = int(os.environ.get("BOT_PARTICIPANT_SCAN_S", "60"))   # อ่านรายชื่อคนในห้องทุกกี่วินาที (0 = ปิด)
 PEOPLE_OPEN_ATTEMPTS = 2   # กดปุ่มผู้คนเพื่อเปิดแผงได้ติดกันกี่ครั้งก่อนยอมแพ้ (ยอมแพ้ที่รอบคู่ = แผงกลับมาปิดเหมือนเดิม)
@@ -460,8 +466,9 @@ class MeetCaptionEngine:
             self._emit(type="participants", names=result["names"])
         elif self._people_attempts >= PEOPLE_OPEN_ATTEMPTS and not self._people_warned:
             self._people_warned = True
+            seen = (f" [บอทเห็นรายการ: {result.get('lists') or '-'} · ปุ่ม: {result.get('buttons') or '-'}]")[:300]
             self._emit(type="status", text="⚠️ อ่านรายชื่อผู้เข้าร่วมในห้องไม่ได้ (ไม่พบแผงผู้คนของ Meet) — "
-                                           "คนที่มาฟังเฉยๆ ต้องตั้ง \"เข้าร่วม\" เองที่แท็บ ①")
+                                           "คนที่มาฟังเฉยๆ ต้องตั้ง \"เข้าร่วม\" เองที่แท็บ ①" + seen)
 
     async def _monitor(self, page, context, joined):
         """เฝ้าสุขภาพบอทตลอดการประชุม — คืนค่าไม่ได้ ออกได้ทาง _Stopped (สั่งหยุด) หรือ _EngineLost เท่านั้น

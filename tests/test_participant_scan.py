@@ -53,6 +53,18 @@ class ParticipantScanTests(unittest.TestCase):
         self.assertEqual(events, [{"type": "participants",
                                    "names": ["ธนาวีร์ บุญเกิด (You)", "ภาม", "ศศิน"]}])   # ชื่ออยู่ใน aria-label หรือข้อความแรก; แชทไม่ปน
 
+    def test_reads_the_thai_meet_panel_labels_seen_on_a_real_room(self):
+        # จากภาพ Meet จริง: แผงชื่อ "บุคคล" กลุ่ม "ผู้มีส่วนร่วม" มีผู้จัดการประชุม + บอท + ผู้เข้าร่วมอีกคน
+        thai = PANEL.replace('aria-label="Participants"', 'aria-label="ผู้มีส่วนร่วม"')
+        events = self.run_scan("<div>" + thai + "</div>")
+        self.assertEqual([e["names"] for e in events], [["ธนาวีร์ บุญเกิด (You)", "ภาม", "ศศิน"]])
+
+    def test_the_warning_lists_what_the_bot_could_see_so_selectors_can_be_fixed(self):
+        events = self.run_scan(UNRELATED_LIST + '<button aria-label="รายละเอียดผู้คน">x</button>', scans=3)
+        self.assertEqual([e["type"] for e in events], ["status"])
+        self.assertIn("Chat messages", events[0]["text"])
+        self.assertIn("รายละเอียดผู้คน", events[0]["text"])
+
     def test_opens_the_panel_when_it_is_closed_then_reads(self):
         events = self.run_scan(BUTTON_THAT_OPENS_PANEL)
         self.assertEqual([e["names"] for e in events], [["ธนาวีร์ บุญเกิด (You)", "ภาม", "ศศิน"]])
