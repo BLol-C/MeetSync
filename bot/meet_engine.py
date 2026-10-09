@@ -258,11 +258,12 @@ JS_READ_PARTICIPANTS = """
   return { panel: true, names: names.slice(0, 300) };
 }
 """
-PEOPLE_BUTTON = (
-    '[role="button"][jsname="ocqpFe"], '    # ปุ่ม "บุคคล" ที่เห็นจาก Meet จริง (div ไม่ใช่ <button> และไม่มี aria-label)
-    'button[aria-label*="people" i], button[aria-label*="everyone" i], button[aria-label*="participants" i], '
-    'button[aria-label*="ผู้คน"], button[aria-label*="ทุกคน"], button[aria-label*="ผู้เข้าร่วม"], '
-    'button[aria-label*="บุคคล"], button[aria-label*="ผู้มีส่วนร่วม"], button[aria-label*="ผู้ร่วมประชุม"]'
+# jsname="ocqpFe" ใช้ร่วมกันหลายปุ่มในแถบเครื่องมือ (ผลจากห้องจริง) จึงเลือกด้วยข้อความของปุ่มด้วย ห้ามหยิบตัวแรก
+# และห้ามจับ aria-label แบบ "มีคำว่า" — จะไปโดนปุ่ม "การประชุมนี้เปิดให้ทุกคนเข้าร่วมได้" แทน
+PEOPLE_LABEL_RE = r"^\s*(บุคคล|ผู้คน|ผู้เข้าร่วม|People|Participants|Show everyone)"
+PEOPLE_BUTTON_FALLBACK = (
+    'button[aria-label^="บุคคล"], button[aria-label^="ผู้คน"], button[aria-label^="ผู้เข้าร่วม"], '
+    'button[aria-label^="People" i], button[aria-label^="Show everyone" i], button[aria-label^="Participants" i]'
 )
 PARTICIPANT_SCAN_S = int(os.environ.get("BOT_PARTICIPANT_SCAN_S", "60"))   # อ่านรายชื่อคนในห้องทุกกี่วินาที (0 = ปิด)
 PEOPLE_OPEN_ATTEMPTS = 2   # กดปุ่มผู้คนเพื่อเปิดแผงได้ติดกันกี่ครั้งก่อนยอมแพ้ (ยอมแพ้ที่รอบคู่ = แผงกลับมาปิดเหมือนเดิม)
@@ -465,7 +466,9 @@ class MeetCaptionEngine:
         result = await page.evaluate(JS_READ_PARTICIPANTS)
         if not result["panel"] and self._people_attempts < PEOPLE_OPEN_ATTEMPTS:
             self._people_attempts += 1
-            button = page.locator(PEOPLE_BUTTON).first
+            button = page.locator('[role="button"][jsname="ocqpFe"]').filter(has_text=re.compile(PEOPLE_LABEL_RE, re.I)).first
+            if not await button.count():
+                button = page.locator(PEOPLE_BUTTON_FALLBACK).first
             if await button.count():
                 await button.click(timeout=3000)
                 await page.wait_for_timeout(1000)
