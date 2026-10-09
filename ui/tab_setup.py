@@ -79,11 +79,6 @@ def render(user: dict, detail: dict):
             st.rerun()
 
     st.subheader("ผู้เข้าร่วมและบทบาท")
-    st.caption("ใส่ **ชื่อภาษาไทย** (ที่จะขึ้นในรายงาน) และ **ชื่อภาษาอังกฤษ** ที่ตรงกับชื่อที่แสดงใน Google Meet ระบบจะจับคู่คนพูดและคนในห้องกับรายชื่อนี้ให้อัตโนมัติ  "
-               "ถ้าชื่อใน Meet ไม่ตรง (เช่น มีเลขหรือชื่อเล่นพ่วง) ให้ “รวมชื่อ” ที่แท็บ ③ Transcript  "
-               "ประธาน/เลขาที่ใส่อีเมลไว้ เข้ามาตรวจและอนุมัติรายงานได้ด้วยบัญชี Google ของตน  "
-               "“การเข้าร่วม”: คนที่มีเสียงพูดในประชุมถูกตั้งเป็น “เข้าร่วม” ให้เอง ส่วนคนที่เข้าฟังเฉยๆ ให้ตั้งเอง "
-               "(ที่ยังเป็น “ยังไม่ยืนยัน” จะถูกนับเป็นผู้ไม่มาประชุมในรายงาน)")
     for w in detail["header_warnings"]:
         if w["code"] in ("no_chair", "no_secretary"):
             st.warning(w["message"])
@@ -112,8 +107,6 @@ def render(user: dict, detail: dict):
         parts = [f"{label} {result[k]} คน" for k, label in (("added", "เพิ่ม"), ("updated", "แก้"), ("deleted", "ลบ")) if result[k]]
         if parts:
             common.flash("success", "บันทึกรายชื่อแล้ว: " + ", ".join(parts))
-        elif not result["errors"]:
-            common.flash("info", "ไม่มีการเปลี่ยนแปลง")
         for err in result["errors"]:
             common.flash("error", err)
         st.rerun()
