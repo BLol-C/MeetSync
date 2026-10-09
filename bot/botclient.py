@@ -18,7 +18,7 @@ from itsdangerous import URLSafeTimedSerializer
 BOT_API_URL = os.environ.get("BOT_API_URL", "http://127.0.0.1:8000")      # หน้าเว็บเรียกบอทที่นี่
 BOT_PUBLIC_URL = os.environ.get("BOT_PUBLIC_URL", "http://localhost:8000")   # เบราว์เซอร์ผู้ใช้ไปที่นี่ (ตอนเชื่อม Calendar)
 UI_URL = os.environ.get("STREAMLIT_URL", "http://localhost:8501")
-TOKEN_FILE = pathlib.Path(__file__).parent / ".bot_token"
+TOKEN_FILE = pathlib.Path(__file__).resolve().parent.parent / ".bot_token"
 TIMEOUT = 8
 
 

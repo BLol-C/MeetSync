@@ -9,7 +9,7 @@ import unittest
 
 from playwright.async_api import async_playwright
 
-import meet_engine
+from bot import meet_engine
 
 WORDS = (
     "ก็ดั้งแต่ตอนที่เราบอกเม้าท์มอยกันจนถึงประมาณ ไม่รู้อะไรอื่นมากก็เห็นมีแค่แฟนแล้วก็มี F ที่มาใหม่กับ บ้าน เห็นอยู่กัน 3 คน "

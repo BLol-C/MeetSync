@@ -10,10 +10,10 @@ from unittest import mock
 
 from tests.dbcase import TempDbCase
 
-import calendar_sync  # noqa: E402
+from integrations import calendar_sync  # noqa: E402
 import db  # noqa: E402
 import service  # noqa: E402
-import summarizer  # noqa: E402
+from reports import summarizer  # noqa: E402
 from service import ServiceError  # noqa: E402
 
 URL = "https://meet.google.com/abc-defg-hij"
@@ -238,7 +238,7 @@ class ServiceTests(TempDbCase):
         content = {"agenda": [{"title": "งบประมาณ", "discussion": "เสนอ 3,000 บาท", "resolution": "อนุมัติ"}],
                    "other_matters": None, "summary": "สรุป",
                    "action_items": [{"description": "ทำใบเบิก", "assignee": "ฟ้า", "due_date": "2026-10-12"}]}
-        import pdf_report
+        from reports import pdf_report
         data = pdf_report.build_minutes_pdf(meeting, db.list_speakers(mid), content)
         text = "\n".join(pg.extract_text() for pg in PdfReader(io.BytesIO(data)).pages)
         order = ["ผู้มาประชุม", "ผู้เข้าร่วมประชุม", "ผู้ไม่มาประชุม", "แพร", "ติดภารกิจ", "เริ่มประชุมเวลา", "ประธานกล่าวเปิดการประชุม",

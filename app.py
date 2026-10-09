@@ -26,10 +26,10 @@ from fastapi.responses import RedirectResponse
 from itsdangerous import BadSignature, SignatureExpired
 from pydantic import BaseModel
 
-import botclient
-import calendar_auth
+from bot import botclient
+from integrations import calendar_auth
 import db
-from meet_engine import MeetCaptionEngine
+from bot.meet_engine import MeetCaptionEngine
 
 _SEGMENT_MAX_CHARS = 3000   # ข้อความต่อ 1 segment สูงสุด (ไทย ~3 ไบต์/ตัวอักษร -> ~9KB ปลอดภัยสำหรับ TEXT 64KB)
 _ROW_MAP_MAX = 500     # จำนวนแถวคำบรรยายล่าสุดที่จำ segment_id ไว้ (แถวเก่ากว่านี้ไม่กลับมา final ซ้ำแล้ว)

@@ -8,12 +8,12 @@
 
 import datetime
 
-import calendar_auth
-import calendar_sync
+from integrations import calendar_auth
+from integrations import calendar_sync
 import db
-import pdf_report
-import report_data
-import summarizer
+from reports import pdf_report
+from reports import report_data
+from reports import summarizer
 
 EDITABLE_STATUSES = ("scheduled", "recording", "transcript_review", "transcript_verified", "draft")
 
@@ -51,7 +51,7 @@ def _require_status(meeting: dict, *allowed: str, hint: str = ""):
 # ── การประชุม ──
 
 def check_meet_url(url: str) -> str:
-    from meet_engine import MEET_URL_RE   # import ตรงนี้เพื่อไม่ดึง Playwright เข้ามาตอนแค่ import service
+    from bot.meet_engine import MEET_URL_RE   # import ตรงนี้เพื่อไม่ดึง Playwright เข้ามาตอนแค่ import service
 
     url = (url or "").strip()
     if not MEET_URL_RE.match(url):

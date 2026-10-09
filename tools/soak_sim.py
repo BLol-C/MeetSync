@@ -24,7 +24,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from playwright.async_api import async_playwright  # noqa: E402
 
-import meet_engine as me  # noqa: E402
+from bot import meet_engine as me  # noqa: E402
 
 FAKE_PAGE = """<!doctype html><html><head><meta charset="utf-8"></head><body>
 <button aria-label="Leave call" id="leave">leave</button>

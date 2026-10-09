@@ -2,7 +2,7 @@
 
 import streamlit as st
 
-import botclient
+from bot import botclient
 from ui import common
 
 

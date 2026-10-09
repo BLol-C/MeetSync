@@ -24,7 +24,7 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(ROOT / ".env")
 
-import summarizer  # noqa: E402
+from reports import summarizer  # noqa: E402
 from evaluation import metrics  # noqa: E402
 
 CASES_DIR = ROOT / "evaluation" / "cases"
