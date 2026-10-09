@@ -95,7 +95,7 @@ async def main(out: pathlib.Path):
         LAUNCHER.write_text(
             "import runpy, sys, pathlib\n"
             f"sys.path.insert(0, r'{ROOT}')\n"
-            "import summarizer\nfrom tests.test_service import fake_ai\n"
+            "from reports import summarizer\nfrom tests.test_service import fake_ai\n"
             "summarizer._gemini_generate = lambda: fake_ai\n"
             f"runpy.run_path(r'{ROOT / 'streamlit_app.py'}', run_name='__main__')\n",
             encoding="utf-8",

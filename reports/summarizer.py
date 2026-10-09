@@ -23,7 +23,7 @@ from pydantic import BaseModel, ValidationError
 
 import db
 
-HERE = pathlib.Path(__file__).parent
+HERE = pathlib.Path(__file__).resolve().parent.parent
 PROMPT_DIR = HERE / "prompts"
 PROMPT_NAME = os.environ.get("MINUTES_PROMPT", "minutes_v2")          # ชื่อไฟล์ใน prompts/ (ไม่รวม .md)
                                                                       # v2: ห้ามข้ามหัวข้อที่ไม่มีข้อสรุป + เขียนปี พ.ศ. ในเนื้อความ

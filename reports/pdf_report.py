@@ -14,7 +14,7 @@ import pathlib
 
 from fpdf import FPDF
 
-HERE = pathlib.Path(__file__).parent
+HERE = pathlib.Path(__file__).resolve().parent.parent
 _FONT_REGULAR = HERE / "fonts" / "THSarabunNew.ttf"
 _FONT_BOLD = HERE / "fonts" / "THSarabunNew-Bold.ttf"
 FONT = "THSarabunNew"
@@ -136,8 +136,8 @@ def build_minutes_pdf(
     approved_at=None,
 ) -> bytes:
     """สร้าง PDF รายงานการประชุมตามแบบฟอร์ม — ยังไม่อนุมัติจะมีลายน้ำ "ฉบับร่าง" ทุกหน้า"""
-    from report_data import build_header, thai_datetime, thai_time
-    from report_template import TEMPLATE
+    from reports.report_data import build_header, thai_datetime, thai_time
+    from reports.report_template import TEMPLATE
 
     L = TEMPLATE["labels"]
     hdr = build_header(meeting, participants)

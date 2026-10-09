@@ -6,7 +6,7 @@ import json
 import pandas as pd
 import streamlit as st
 
-import botclient
+from bot import botclient
 import service
 from service import ServiceError
 from ui import common

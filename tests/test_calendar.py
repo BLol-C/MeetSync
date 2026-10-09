@@ -9,7 +9,7 @@ from tests.dbcase import ROOT  # noqa: F401  (ทำให้ sys.path ถูก
 
 os.environ.setdefault("SESSION_SECRET", "test")
 
-import calendar_sync  # noqa: E402
+from integrations import calendar_sync  # noqa: E402
 
 ITEM = {"description": "ส่งรายงาน", "assignee": "Alice", "due_date": "2026-10-09",
         "due_time": None, "due_time_end": None}
@@ -23,22 +23,22 @@ class ConnectLinkTests(unittest.TestCase):
         os.environ.setdefault("GOOGLE_CLIENT_SECRET", "test-secret")
 
     def test_auth_url_carries_login_hint(self):
-        import calendar_auth
+        from integrations import calendar_auth
         url = calendar_auth.build_auth_url("state123", login_hint="me@example.com")
         self.assertIn("login_hint=me%40example.com", url)
         self.assertIn("access_type=offline", url)
 
     def test_auth_url_without_hint_has_none(self):
-        import calendar_auth
+        from integrations import calendar_auth
         self.assertNotIn("login_hint", calendar_auth.build_auth_url("state123"))
 
     def test_token_round_trip_keeps_email(self):
-        import botclient
+        from bot import botclient
         data = botclient.read_calendar_token(botclient.calendar_connect_token(7, "http://x/", "me@example.com"), 60)
         self.assertEqual(data, {"uid": 7, "ret": "http://x/", "em": "me@example.com"})
 
     def test_connect_url_uses_user_email(self):
-        import botclient
+        from bot import botclient
         url = botclient.calendar_connect_url({"user_id": 7, "email": "me@example.com"}, "http://x/")
         token = url.split("t=", 1)[1]
         import urllib.parse

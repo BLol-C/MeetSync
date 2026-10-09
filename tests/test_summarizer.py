@@ -9,7 +9,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-import summarizer  # noqa: E402
+from reports import summarizer  # noqa: E402
 
 MEETING = datetime.datetime(2026, 10, 1, 9, 30)   # วันพฤหัสบดี
 PARTS = [

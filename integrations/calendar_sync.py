@@ -5,9 +5,9 @@ import os
 
 from googleapiclient.discovery import build
 
-import calendar_auth
+from integrations import calendar_auth
 import db
-from summarizer import match_participant_name
+from reports.summarizer import match_participant_name
 
 TIMEZONE = "Asia/Bangkok"
 DEFAULT_DURATION = datetime.timedelta(hours=1)

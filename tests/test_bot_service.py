@@ -16,7 +16,7 @@ os.environ.setdefault("BOT_API_TOKEN", "test-token")
 from fastapi.testclient import TestClient  # noqa: E402
 
 import app as botapp  # noqa: E402
-import botclient  # noqa: E402
+from bot import botclient  # noqa: E402
 import db  # noqa: E402
 
 URL = "https://meet.google.com/abc-defg-hij"

@@ -11,7 +11,7 @@ import os
 
 import streamlit as st
 
-import botclient
+from bot import botclient
 import db
 import service
 from ui import common

@@ -4,8 +4,8 @@ import re
 
 import streamlit as st
 
-import botclient
-import report_data
+from bot import botclient
+from reports import report_data
 
 STATUS_LABEL = {
     "scheduled": "⚪ ตั้งค่าแล้ว รอเริ่มบอท",

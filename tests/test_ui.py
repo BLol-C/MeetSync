@@ -15,10 +15,10 @@ os.environ.setdefault("BOT_API_TOKEN", "test-token")
 
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
-import botclient  # noqa: E402
+from bot import botclient  # noqa: E402
 import db  # noqa: E402
 import service  # noqa: E402
-import summarizer  # noqa: E402
+from reports import summarizer  # noqa: E402
 from tests.test_service import fake_ai  # noqa: E402
 
 URL = "https://meet.google.com/abc-defg-hij"
@@ -306,7 +306,7 @@ class UiTests(TempDbCase):
 
     def test_calendar_card_shows_clear_sent_status(self):
         """กดส่งเข้า Calendar แล้วต้องเห็นสถานะ "ส่งเรียบร้อยแล้ว" ในการ์ดเอง และเห็นต่อเนื่องเมื่อเปิดหน้าใหม่"""
-        import calendar_sync
+        from integrations import calendar_sync
         mid = self.meeting("approved")               # fake_ai: งาน 1 มีวันที่, งาน 2 ไม่มีวันที่
         sent = []
 
@@ -329,7 +329,7 @@ class UiTests(TempDbCase):
             self.assertTrue(any("แล้วครบ 1/1" in v for v in texts(at.success)))
 
     def test_calendar_card_reports_failures_clearly(self):
-        import calendar_sync
+        from integrations import calendar_sync
         mid = self.meeting("approved")
 
         def broken(item_id, user_id, service=None):
