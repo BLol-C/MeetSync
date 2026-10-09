@@ -14,10 +14,13 @@ import pathlib
 
 from fpdf import FPDF
 
+from reports.thai_text import ZWSP, break_thai, strip_breaks, wrap_chunks
+
 HERE = pathlib.Path(__file__).resolve().parent.parent
 _FONT_REGULAR = HERE / "fonts" / "THSarabunNew.ttf"
 _FONT_BOLD = HERE / "fonts" / "THSarabunNew-Bold.ttf"
 FONT = "THSarabunNew"
+NL = chr(10)
 # ฟอนต์ไฟล์นี้ (TH Sarabun New เว็บฟอนต์) กว้างกว่า TH SarabunPSK ที่ต้นแบบใช้ ~1.53 เท่าที่ขนาดเดียวกัน — วัดจากตำแหน่งคำใน PDF ต้นแบบ
 # (ความกว้าง "ตามระเบียบวาระ " 76.3 pt เทียบกับ 116.6 pt ที่ 16 pt) จึงคูณขนาดตัวอักษรด้วยสเกลนี้ ให้ขนาด/ตำแหน่งคำตรงกับต้นแบบ
 FONT_SCALE = 0.6546
@@ -48,6 +51,32 @@ class _ReportPDF(FPDF):
         self.set_margins(LEFT, TOP, PAGE_W - RIGHT_X)
         self.c_margin = 0   # ไม่เว้นขอบในช่อง: ข้อความเริ่มที่ x ตรง ๆ ตามต้นแบบ
         self.set_auto_page_break(auto=True, margin=72)
+
+    # ข้อความไทยที่ห่อบรรทัดได้ผ่านสองเมธอดนี้ตัดบรรทัดที่รอยต่อคำ (reports/thai_text.py) — ใช้ ZWSP เฉพาะตอนคำนวณจุดตัด
+    # แล้วลบออกก่อนวาดจริง เพื่อไม่ให้ข้อความใน PDF (ค้นหา/คัดลอก) มีอักขระซ่อนปน
+    def multi_cell(self, w, h=None, text="", *args, **kwargs):
+        if args or not isinstance(text, str) or ZWSP in text or kwargs.get("dry_run") or kwargs.get("split_only"):
+            return super().multi_cell(w, h, break_thai(text) if not args else text, *args, **kwargs)
+        marked = break_thai(text)
+        if marked == text:
+            return super().multi_cell(w, h, text, **kwargs)
+        lines = super().multi_cell(w, h, marked, **{**kwargs, "dry_run": True, "output": "LINES"})
+        # แต่ละบรรทัดที่ได้พอดีความกว้างแล้ว ส่งกลับไปเป็นข้อความที่ขึ้นบรรทัดใหม่เอง fpdf2 จึงไม่ต้องตัดซ้ำ
+        return super().multi_cell(w, h, NL.join(strip_breaks(x) for x in lines), **kwargs)
+
+    def write(self, h=None, text="", *args, **kwargs):
+        if args or kwargs or not isinstance(text, str):
+            return super().write(h, text, *args, **kwargs)
+        for n, row in enumerate(text.split(NL)):
+            if n:
+                self.ln(h)
+                self.set_x(self.l_margin)
+            for chunk in wrap_chunks(row):
+                if self.x > self.l_margin + 0.01 and self.x + self.get_string_width(chunk.rstrip()) > self.w - self.r_margin + 0.01:
+                    self.ln(h)               # ไม่พอดีบรรทัด: ขึ้นบรรทัดใหม่ที่ขอบซ้าย ไม่ตัดกลางคำ
+                    self.set_x(self.l_margin)
+                    chunk = chunk.lstrip()
+                super().write(h, chunk)
 
     def header(self):
         if self.draft:   # ลายน้ำวาดก่อนเนื้อหา เนื้อหาจึงทับอยู่ด้านบน
