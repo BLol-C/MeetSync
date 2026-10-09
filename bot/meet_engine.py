@@ -220,18 +220,25 @@ JS_CAPTION_WATCHER = r"""
 """
 
 
-# อ่านรายชื่อคนในห้องจากแผง "ผู้คน" ของ Meet (ถ้าเปิดอยู่) — ไว้ตั้ง "เข้าร่วม" ให้คนที่มาแต่ไม่ได้พูด
-# ข้อสำคัญ: selector นี้เขียนจากโครงสร้างที่คาด (รายการ role=list ที่ aria-label มีคำว่า participants/people/ผู้เข้าร่วม/ผู้คน
-# และแต่ละคนเป็น role=listitem) ยังไม่ได้ยืนยันกับ Meet จริง — ถ้าอ่านไม่ได้ ระบบแจ้งในสถานะและไม่ทำอะไร (ไม่กระทบการจับคำบรรยาย)
+# อ่านรายชื่อคนในห้องจากแผง "บุคคล" ของ Meet — ไว้ตั้ง "เข้าร่วม" ให้คนที่มาแต่ไม่ได้พูด
+# โครงสร้างรายการ (role=list "ผู้เข้าร่วม" > role=listitem) และปุ่ม div[jsname=ocqpFe] ยืนยันจากผลสคริปต์ tools/meet_people_probe.js
+# ที่รันบนห้อง Meet ภาษาไทยจริงเมื่อ 9 ต.ค. 2569 — แต่บอท "กดเปิดแผงเอง" ด้วยปุ่มนี้ยังไม่ได้ทดสอบกับห้องจริง
+# (jsname เป็นชื่อภายในของ Meet เปลี่ยนได้โดยไม่แจ้ง) ถ้าอ่านไม่ได้ ระบบแจ้งในสถานะบอทและไม่กระทบการจับคำบรรยาย
 JS_READ_PARTICIPANTS = """
 () => {
+  // โครงสร้างที่เห็นจาก Meet จริง (ห้องภาษาไทย): role=list ชื่อ "ผู้เข้าร่วม" > role=listitem (aria-label = ชื่อ, มี data-participant-id)
   const labelRe = /participants|people|everyone|contributors|ผู้เข้าร่วม|ผู้คน|ทุกคน|บุคคล|ผู้มีส่วนร่วม|ผู้ร่วมประชุม/i;
+  const waitingRe = /waiting|request|admit|รอ|ขอเข้า/i;   // รายการคนที่ยังรออนุญาตเข้าห้อง ไม่ใช่คนที่อยู่ในห้อง
   const all = [...document.querySelectorAll('[role="list"]')];
-  const lists = all.filter((l) => labelRe.test(l.getAttribute('aria-label') || ''));
+  const lists = all.filter((l) => {
+    const label = l.getAttribute('aria-label') || '';
+    return labelRe.test(label) && !waitingRe.test(label);
+  });
   if (!lists.length) {
     // ไม่พบแผง: ส่งสิ่งที่เห็นในหน้ากลับไปด้วย เพื่อให้ปรับ selector ตาม Meet จริงได้ (ไม่ใช่การเดา)
-    const buttons = [...document.querySelectorAll('button[aria-label]')]
-      .map((b) => b.getAttribute('aria-label')).filter((t) => labelRe.test(t)).slice(0, 6);
+    const buttons = [...document.querySelectorAll('button[aria-label], [role="button"][jsname]')]
+      .map((b) => b.getAttribute('aria-label') || ('jsname=' + b.getAttribute('jsname') + ' ' + (b.textContent || '').trim().slice(0, 20)))
+      .filter((t) => labelRe.test(t) || t.includes('ocqpFe')).slice(0, 6);
     return { panel: false, names: [], lists: all.map((l) => l.getAttribute('aria-label') || '(ไม่มีชื่อ)').slice(0, 8), buttons };
   }
   const names = [];
@@ -250,6 +257,7 @@ JS_READ_PARTICIPANTS = """
 }
 """
 PEOPLE_BUTTON = (
+    '[role="button"][jsname="ocqpFe"], '    # ปุ่ม "บุคคล" ที่เห็นจาก Meet จริง (div ไม่ใช่ <button> และไม่มี aria-label)
     'button[aria-label*="people" i], button[aria-label*="everyone" i], button[aria-label*="participants" i], '
     'button[aria-label*="ผู้คน"], button[aria-label*="ทุกคน"], button[aria-label*="ผู้เข้าร่วม"], '
     'button[aria-label*="บุคคล"], button[aria-label*="ผู้มีส่วนร่วม"], button[aria-label*="ผู้ร่วมประชุม"]'
