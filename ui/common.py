@@ -61,6 +61,11 @@ def inject_css():
     )
 
 
+def table_height(n_rows: int, *, max_px: int = 420, spare_rows: int = 0) -> int:
+    """ความสูงตาราง (px) พอดีกับจำนวนแถว (+หัวตาราง +แถวว่างสำรอง) แต่ไม่เกิน max_px — เกินกว่านั้นเลื่อนดูภายในตาราง"""
+    return min(max_px, 35 * (max(n_rows, 1) + 1 + spare_rows) + 3)
+
+
 def clean_str(value) -> str:
     """ค่าจากตาราง (pandas) -> ข้อความที่ตัดช่องว่างแล้ว; None/NaN/NaT -> ''"""
     if value is None or value != value:

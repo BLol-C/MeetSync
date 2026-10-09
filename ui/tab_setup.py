@@ -11,6 +11,8 @@ from ui.common import ATT_BY_LABEL, ATT_LABEL, ROLE_BY_LABEL, ROLE_LABEL, SOURCE
 COLS = ["speaker_id", "ชื่อภาษาไทย", "ชื่อภาษาอังกฤษ", "อีเมล", "บทบาท", "ตำแหน่ง", "การเข้าร่วม", "สาเหตุที่ไม่มา", "ที่มา", "ข้อความที่พูด"]
 VISIBLE = ["ชื่อภาษาไทย", "ชื่อภาษาอังกฤษ", "อีเมล", "บทบาท", "ตำแหน่ง", "การเข้าร่วม", "สาเหตุที่ไม่มา", "ที่มา", "ข้อความที่พูด"]
 
+PEOPLE_MAX_H = 420   # px — ตารางรายชื่อสูงสุดเท่านี้ ที่เกินเลื่อนดูภายในตาราง
+
 
 def _rev(mid: int) -> int:
     return st.session_state.get(f"rev_people_{mid}", 0)
@@ -86,6 +88,7 @@ def render(user: dict, detail: dict):
     df = _people_df(detail["people"])
     edited = st.data_editor(
         df, key=f"people_{mid}_{_rev(mid)}", hide_index=True, width="stretch",
+        height=common.table_height(len(df), max_px=PEOPLE_MAX_H, spare_rows=0 if locked else 2),
         num_rows="fixed" if locked else "dynamic",
         disabled=True if locked else ["ที่มา", "ข้อความที่พูด"],
         column_order=VISIBLE,

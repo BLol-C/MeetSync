@@ -478,6 +478,11 @@ class TableConversionTests(unittest.TestCase):
         self.assertEqual(common.md_escape("a*b_c$d"), r"a\*b\_c\$d")
         self.assertEqual(common.md_escape(None), "")
 
+    def test_table_height_fits_the_rows_and_scrolls_inside_when_long(self):
+        self.assertEqual(common.table_height(1), 73)                      # หัวตาราง + 1 แถว ไม่เหลือที่ว่างเปล่า
+        self.assertGreater(common.table_height(1, spare_rows=2), common.table_height(1))
+        self.assertEqual(common.table_height(500, max_px=420), 420)       # ยาวกว่านั้นเลื่อนในตาราง
+
     def test_progress_text_numbers_match_the_four_tabs(self):
         from ui import common
         self.assertIn("ขั้นที่ 1 จาก 4", common.progress_text("scheduled"))

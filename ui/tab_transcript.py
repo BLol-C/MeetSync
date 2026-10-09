@@ -131,7 +131,7 @@ def render(user: dict, detail: dict):
         elif status == "transcript_review":
             st.caption("ดูอย่างเดียวขณะที่บอทยังบันทึกอยู่")
         edited = st.data_editor(
-            df, key=f"segs_{mid}_{_rev(mid)}", hide_index=True, width="stretch", height=520,
+            df, key=f"segs_{mid}_{_rev(mid)}", hide_index=True, width="stretch", height=common.table_height(len(df), max_px=520),
             num_rows="fixed", disabled=True if not editable else ["เวลา", "แก้แล้ว"], column_order=COLS[1:],
             column_config={
                 "เวลา": st.column_config.TextColumn("เวลา", width="small"),
