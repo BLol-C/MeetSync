@@ -282,8 +282,10 @@ def verify_transcript(user: dict, meeting_id: int, bot_running: bool = False) ->
         raise ServiceError("ไม่มีข้อความใน transcript ให้ยืนยัน", "conflict")
     if not db.set_meeting_status(meeting_id, "transcript_verified"):
         raise ServiceError(f"ยืนยัน transcript ไม่ได้ในสถานะ \"{meeting['status']}\"", "conflict")
+    marked_absent = db.mark_unconfirmed_absent(meeting_id)   # ประชุมจบแล้ว: ที่ยังไม่ยืนยัน = ไม่มา (ตรงกับรายงาน)
     return {"unmapped": [p["display_name"] for p in db.list_speakers(meeting_id)
-                         if p["source"] == "meet" and p["segment_count"]]}
+                         if p["source"] == "meet" and p["segment_count"]],
+            "marked_absent": marked_absent}
 
 
 def reopen_transcript(user: dict, meeting_id: int) -> None:
@@ -426,6 +428,7 @@ def approve_report(user: dict, meeting_id: int, confirm_warnings: bool = False) 
     if warnings and not confirm_warnings:
         raise ServiceError("ยังมีรายการที่ควรตรวจก่อนอนุมัติ", "needs_confirmation", {"warnings": warnings})
     db.update_report_content(report["summary_id"], summarizer.for_storage(cleaned))
+    db.mark_unconfirmed_absent(meeting_id)   # คนที่เพิ่มหลังยืนยัน transcript ก็ไม่ให้ค้างเป็น "ยังไม่ยืนยัน" ในรายงานที่ล็อกแล้ว
     if not db.approve_report(meeting_id, user["user_id"]):
         raise ServiceError("อนุมัติไม่ได้ (สถานะเปลี่ยนไปแล้ว)", "conflict")
 

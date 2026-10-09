@@ -157,6 +157,9 @@ def render(user: dict, detail: dict):
                                      + ", ".join(out["unmapped"]) + " (AI จะระบุผู้รับผิดชอบงานให้คนเหล่านี้ไม่ได้)")
                     else:
                         common.flash("success", "ยืนยัน transcript แล้ว — ไปแท็บ ④ รายงาน เพื่อให้ AI ร่างรายงาน")
+                    if out["marked_absent"]:
+                        common.flash("info", "ผู้ที่ยังไม่ยืนยันการเข้าร่วมถูกบันทึกเป็น \"ไม่มา\": "
+                                     + ", ".join(out["marked_absent"]) + " (ถ้ามาจริงแต่ไม่ได้พูด แก้เป็น \"เข้าร่วม\" ที่แท็บ ① ข้อมูล)")
                     st.rerun()
             else:
                 st.rerun()
