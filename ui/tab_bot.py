@@ -12,7 +12,6 @@ def _start(user: dict, mid: int):
     except botclient.BotError as e:
         st.error(str(e))
         return
-    common.flash("success", "สั่งบอทแล้ว — รอสักครู่ บอทจะเปิดหน้าต่าง Chrome เข้าห้องประชุม")
     st.rerun()
 
 
@@ -72,7 +71,6 @@ def render(user: dict, detail: dict):
         st.error(bot["error"])
 
     if bot["running_here"]:
-        st.success("🔴 บอทกำลังบันทึกการประชุมนี้อยู่")
         if st.button("⏹ หยุดบอท (ประชุมจบแล้ว)", key=f"stop_{mid}", type="primary"):
             _stop(user)
         _live_panel(user, mid)

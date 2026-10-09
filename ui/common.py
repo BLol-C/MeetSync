@@ -73,13 +73,6 @@ def md_escape(text: str) -> str:
     return re.sub(r"([\\`*_{}\[\]()#+\-.!|>~$<&])", r"\\\1", text or "")
 
 
-_MEET_BASE = re.compile(r"https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}", re.I)
-
-
-def meet_link_text(url: str) -> str:
-    """ลิงก์ Meet สำหรับแสดงผล: ตัด query ออก เหลือส่วนที่ปลอดภัยต่อ Markdown (ถ้า escape ทั้งลิงก์ จะมีเครื่องหมาย backslash ปนในลิงก์ที่แสดง)"""
-    base = (url or "").split("?")[0]
-    return base if _MEET_BASE.fullmatch(base) else md_escape(url)
 
 
 def previous_meeting_select(user: dict, *, key: str, current_id: int | None = None, exclude_id: int | None = None,
@@ -132,14 +125,6 @@ def progress_text(status: str) -> str:
     if status == "approved":
         return label
     return f"{label}  ·  ขั้นที่ {_DEFAULT_TAB.get(status, 0) + 1} จาก {len(TAB_LABELS)}"
-
-
-def render_next_step(status: str):
-    title, detail = NEXT_STEP.get(status, ("", ""))
-    if status == "approved":
-        st.success(f"**{title}** — {detail}")
-    else:
-        st.info(f"**ขั้นตอนต่อไป: {title}** — {detail}")
 
 
 # ── แถบด้านข้าง ──

@@ -18,6 +18,7 @@ from streamlit.testing.v1 import AppTest  # noqa: E402
 from bot import botclient  # noqa: E402
 import db  # noqa: E402
 import service  # noqa: E402
+from ui import common  # noqa: E402
 from reports import summarizer  # noqa: E402
 from tests.test_service import fake_ai  # noqa: E402
 
@@ -161,19 +162,17 @@ class UiTests(TempDbCase):
 
     # ── หน้าการประชุมทุกสถานะ ต้องเรนเดอร์ได้และบอกขั้นตอนต่อไปถูก ──
 
-    def test_every_status_renders_with_the_right_next_step(self):
-        expect = {
-            "scheduled": "เริ่มบอทเข้าห้องประชุม", "recording": "บอทกำลังบันทึกการประชุม",
-            "transcript_review": "ตรวจทานข้อความที่บอทจับได้", "transcript_verified": "ให้ AI ร่างรายงานการประชุม",
-            "draft": "ตรวจ แก้ไข และอนุมัติรายงาน", "approved": "เสร็จแล้ว",
-        }
-        for status, step in expect.items():
+    def test_every_status_renders_the_meeting_page_with_status_line_and_four_tabs(self):
+        for status in ("scheduled", "recording", "transcript_review", "transcript_verified", "draft", "approved"):
             with self.subTest(status=status):
                 mid = self.meeting(status)
                 at = self.app(m=mid)
                 self.assertIn("ประชุมทดสอบหน้าเว็บ", at.title[0].value)
-                self.assertIn(step, " ".join(texts(at.info) + texts(at.success)))
                 self.assertEqual(len(at.tabs), 4)
+                body = " ".join(texts(at.caption))
+                self.assertIn(common.STATUS_LABEL[status], body)                      # บรรทัดสถานะยังอยู่ (ไม่มีลิงก์ Meet)
+                self.assertNotIn("meet.google.com", body)
+                self.assertFalse(any("ขั้นตอนต่อไป" in v for v in texts(at.info) + texts(at.success)))   # ไม่มีกล่องขั้นตอนต่อไปแล้ว
 
     def test_cannot_open_someone_elses_meeting(self):
         other = db.upsert_user("dev:other@x.com", "other@x.com", "คนอื่น", None)
@@ -478,12 +477,6 @@ class TableConversionTests(unittest.TestCase):
         from ui import common
         self.assertEqual(common.md_escape("a*b_c$d"), r"a\*b\_c\$d")
         self.assertEqual(common.md_escape(None), "")
-
-    def test_meet_link_is_shown_without_backslashes_and_unsafe_text_is_still_escaped(self):
-        from ui import common
-        self.assertEqual(common.meet_link_text("https://meet.google.com/ccz-cccc-moz?pli=1"),
-                         "https://meet.google.com/ccz-cccc-moz")
-        self.assertEqual(common.meet_link_text("not a *meet* link"), r"not a \*meet\* link")
 
     def test_progress_text_numbers_match_the_four_tabs(self):
         from ui import common
