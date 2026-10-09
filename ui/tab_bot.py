@@ -83,12 +83,6 @@ def render(user: dict, detail: dict):
 
     if status in ("scheduled", "recording", "transcript_review") and bot["reachable"] and not bot["running_other"]:
         if status == "scheduled":
-            st.markdown(
-                "กดเริ่มเมื่อถึงเวลาประชุม บอทจะเปิดหน้าต่าง Chrome เข้าห้อง Google Meet และเปิดคำบรรยาย (CC) เอง\n\n"
-                "- ครั้งแรกอาจต้องล็อกอิน Google ในหน้าต่าง Chrome ที่บอทเปิด (จำไว้ให้ครั้งต่อไป)\n"
-                "- ถ้าห้องมีห้องรอ ต้องให้ผู้จัดการประชุมกดอนุญาตให้บอทเข้า\n"
-                "- หน้าต่าง Chrome ของบอทห้ามปิดระหว่างประชุม"
-            )
             label = "▶ เริ่มบอทเข้าห้องประชุม"
         else:
             if status == "recording":
