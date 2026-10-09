@@ -443,6 +443,19 @@ class TableConversionTests(unittest.TestCase):
         self.assertEqual(common.md_escape("a*b_c$d"), r"a\*b\_c\$d")
         self.assertEqual(common.md_escape(None), "")
 
+    def test_meet_link_is_shown_without_backslashes_and_unsafe_text_is_still_escaped(self):
+        from ui import common
+        self.assertEqual(common.meet_link_text("https://meet.google.com/ccz-cccc-moz?pli=1"),
+                         "https://meet.google.com/ccz-cccc-moz")
+        self.assertEqual(common.meet_link_text("not a *meet* link"), r"not a \*meet\* link")
+
+    def test_progress_text_numbers_match_the_four_tabs(self):
+        from ui import common
+        self.assertIn("ขั้นที่ 1 จาก 4", common.progress_text("scheduled"))
+        self.assertIn("ขั้นที่ 3 จาก 4", common.progress_text("transcript_review"))
+        self.assertIn("ขั้นที่ 4 จาก 4", common.progress_text("draft"))
+        self.assertNotIn("ขั้นที่", common.progress_text("approved"))
+
 
 if __name__ == "__main__":
     unittest.main()

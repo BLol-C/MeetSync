@@ -16,9 +16,6 @@ STATUS_LABEL = {
     "approved": "🟢 อนุมัติแล้ว",
 }
 
-STEPS = ["ตั้งค่า", "บันทึกด้วยบอท", "ตรวจ transcript", "ร่างและแก้รายงาน", "อนุมัติ"]
-_STEP_OF = {"scheduled": 1, "recording": 1, "transcript_review": 2, "transcript_verified": 3, "draft": 3, "approved": 5}
-
 # สถานะ -> (หัวข้อสิ่งที่ต้องทำต่อ, คำอธิบาย) แสดงเป็นกล่อง "ขั้นตอนต่อไป" ที่หัวหน้าการประชุมทุกหน้า
 NEXT_STEP = {
     "scheduled": ("เริ่มบอทเข้าห้องประชุม", "ตรวจรายชื่อผู้เข้าร่วมในแท็บ “① ข้อมูล” ให้ครบ แล้วไปแท็บ “② บอท” กด “เริ่มบอท”"),
@@ -49,10 +46,6 @@ def inject_css():
     st.markdown(
         """<style>
         .block-container { padding-top: 2.2rem; max-width: 1200px; }
-        .ms-step { display:inline-block; padding:4px 12px; margin:0 6px 6px 0; border-radius:999px;
-                   border:1px solid rgba(128,128,128,.35); font-size:.85rem; }
-        .ms-step.done { border-color:#37c978; color:#37c978; }
-        .ms-step.now { background:#4c8dff; border-color:#4c8dff; color:#fff; font-weight:600; }
         </style>""",
         unsafe_allow_html=True,
     )
@@ -68,6 +61,15 @@ def clean_str(value) -> str:
 def md_escape(text: str) -> str:
     """escape ตัวอักษรพิเศษของ Markdown/LaTeX ในข้อความภายนอก (ชื่อ/คำบรรยายจาก Meet) ก่อนแสดงผล"""
     return re.sub(r"([\\`*_{}\[\]()#+\-.!|>~$<&])", r"\\\1", text or "")
+
+
+_MEET_BASE = re.compile(r"https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}", re.I)
+
+
+def meet_link_text(url: str) -> str:
+    """ลิงก์ Meet สำหรับแสดงผล: ตัด query ออก เหลือส่วนที่ปลอดภัยต่อ Markdown (ถ้า escape ทั้งลิงก์ จะมีเครื่องหมาย backslash ปนในลิงก์ที่แสดง)"""
+    base = (url or "").split("?")[0]
+    return base if _MEET_BASE.fullmatch(base) else md_escape(url)
 
 
 # ── นำทาง ──
@@ -98,14 +100,12 @@ def show_flash():
 
 # ── ตัวบอกขั้นตอน ──
 
-def render_stepper(status: str):
-    now = _STEP_OF.get(status, 0)
-    chips = []
-    for i, name in enumerate(STEPS):
-        cls = "done" if i < now else ("now" if i == now else "")
-        mark = "✓ " if i < now else ""
-        chips.append(f'<span class="ms-step {cls}">{i + 1}. {mark}{name}</span>')
-    st.markdown("".join(chips), unsafe_allow_html=True)
+def progress_text(status: str) -> str:
+    """สถานะ + ลำดับขั้นเป็นบรรทัดเดียว (เลขขั้นตรงกับแท็บ ①–④ — แท็บคือแถบนำทางเดียวของหน้านี้)"""
+    label = STATUS_LABEL.get(status, status)
+    if status == "approved":
+        return label
+    return f"{label}  ·  ขั้นที่ {_DEFAULT_TAB.get(status, 0) + 1} จาก {len(TAB_LABELS)}"
 
 
 def render_next_step(status: str):
