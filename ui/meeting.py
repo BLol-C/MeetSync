@@ -1,4 +1,4 @@
-"""หน้าการประชุม: หัวเรื่อง + ตัวบอกขั้นตอน + กล่อง "ขั้นตอนต่อไป" + 4 แท็บ
+"""หน้าการประชุม: หัวเรื่อง + สถานะ/ขั้นที่ + กล่อง "ขั้นตอนต่อไป" + 4 แท็บ
 
 ทุกแท็บถูกวาดพร้อมกันทุกครั้ง (st.tabs) เพื่อให้ข้อมูลที่แก้ค้างไว้ในแท็บหนึ่งไม่หายตอนสลับไปแท็บอื่น
 """
@@ -52,8 +52,7 @@ def render(user: dict, meeting_id: int):
     top.title(common.md_escape(meeting["title"] or "การประชุม"))
     if back.button("← รายการประชุม", width="stretch"):
         common.go("home")
-    st.caption(f"{common.STATUS_LABEL.get(status, status)}  ·  {common.md_escape(meeting['meet_url'])}")
-    common.render_stepper(status)
+    st.caption(f"{common.progress_text(status)}  ·  {common.meet_link_text(meeting['meet_url'])}")
     common.render_next_step(status)
 
     tab_key = f"tabs_{meeting_id}"
