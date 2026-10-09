@@ -191,6 +191,15 @@ class UiTests(TempDbCase):
         self.assertFalse(any("เริ่มบอท" in b.label for b in at.button if b.key and b.key.startswith("start_")))
         self.assertTrue(any("บริการบอทไม่ได้เปิดอยู่" in v for v in texts(at.sidebar.error)))
 
+    def test_live_status_is_either_waiting_to_be_admitted_or_reading_captions(self):
+        from ui import tab_bot
+        line = lambda text: {"t": "10:00:00", "text": text}
+        waiting = {"rows": [], "status": [line("กำลังเปิดเบราว์เซอร์…"), line("ส่งคำขอเข้าร่วมแล้ว — รอหัวหน้าห้องกดยอมรับ…")]}
+        self.assertEqual(tab_bot.phase_text(waiting), "รอให้กดยอมรับเข้าห้อง")
+        joined = {"rows": [], "status": waiting["status"] + [line("✅ เข้าห้องแล้วและเปิดคำบรรยายแล้ว (ตรวจยืนยันจากหน้าจอ)")]}
+        self.assertEqual(tab_bot.phase_text(joined), "เข้าห้องแล้ว — กำลังอ่านคำบรรยาย (CC)")
+        self.assertEqual(tab_bot.phase_text({"rows": [{"name": "A"}], "status": []}), "เข้าห้องแล้ว — กำลังอ่านคำบรรยาย (CC)")
+
     def test_start_button_calls_the_bot_service_for_this_meeting(self):
         mid = self.meeting("scheduled")
         at = self.app(m=mid)
