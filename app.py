@@ -123,9 +123,11 @@ def _persist_segment(meeting_id: int, row_id: int | None, name: str, text: str):
 
 def _persist_participants(meeting_id: int, names: list[str]):
     """ตั้ง "เข้าร่วม" ให้คนที่อยู่ในห้องและชื่อตรงกับรายชื่อที่ลงทะเบียนไว้ (รันใน thread เดียวกับ worker)"""
-    changed = db.mark_present_by_names(meeting_id, names)
-    if changed:
-        _log("✅ เห็นในห้อง จึงตั้ง \"เข้าร่วม\" ให้: " + ", ".join(changed))
+    result = db.record_room_names(meeting_id, names)
+    if result["marked"]:
+        _log("✅ เห็นในห้อง จึงตั้ง \"เข้าร่วม\" ให้: " + ", ".join(result["marked"]))
+    if result["new"]:
+        _log("พบชื่อในห้องที่ไม่ตรงกับรายชื่อ: " + ", ".join(result["new"]) + " — จับคู่ได้ที่แท็บ ③")
 
 
 async def _save_worker_loop(q: asyncio.Queue):

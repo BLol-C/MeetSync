@@ -237,6 +237,27 @@ class UiTests(TempDbCase):
 
     # ── transcript ──
 
+    def test_unconfirmed_people_can_be_matched_to_names_seen_in_the_room_or_set_absent(self):
+        mid = self.meeting("transcript_review")
+        silent = service.add_person(self.user, mid, "ธนาวีร์ ผู้ฟังเงียบ")            # ลงทะเบียนไว้ แต่ไม่ได้พูด
+        away = service.add_person(self.user, mid, "ศศิน ลากิจ")
+        db.record_room_names(mid, ["Thanawee BOONKERD"])                              # บอทเห็นชื่อนี้ในห้อง แต่ไม่ตรงกับใคร
+        room = next(p for p in db.list_speakers(mid) if p["display_name"] == "Thanawee BOONKERD")
+        at = self.app(m=mid)
+        self.assertTrue(any("ยังไม่ยืนยันการเข้าร่วม" in v for v in texts(at.subheader)))
+        select = next(x for x in at.selectbox if x.key == f"unc_{silent}")
+        self.assertTrue(any("Thanawee BOONKERD" in o for o in select.options))        # ชื่อที่เห็นในห้องอยู่ในตัวเลือก
+        select.select(f"meet:{room['speaker_id']}").run()
+        next(b for b in at.button if b.key == f"unc_go_{silent}").click().run()
+        people = {p["display_name"]: p for p in db.list_speakers(mid)}
+        self.assertNotIn("Thanawee BOONKERD", people)                                # รวมเข้ากับคนที่ลงทะเบียนแล้ว
+        self.assertEqual((people["ธนาวีร์ ผู้ฟังเงียบ"]["attendance"], people["ธนาวีร์ ผู้ฟังเงียบ"]["meet_alias"]),
+                         ("present", "Thanawee BOONKERD"))
+        at = self.app(m=mid)                                                          # อีกคนเลือก "ไม่มา"
+        next(x for x in at.selectbox if x.key == f"unc_{away}").select("absent").run()
+        next(b for b in at.button if b.key == f"unc_go_{away}").click().run()
+        self.assertEqual(db.get_speaker(away)["attendance"], "absent")
+
     def test_transcript_tab_offers_merging_unregistered_names_and_verify(self):
         mid = self.meeting("transcript_review")
         s = db.get_or_create_speaker(mid, "46 Alice Wonderland")             # Meet แสดงชื่อพ่วงเลข ไม่ตรงรายชื่อ

@@ -186,11 +186,14 @@ class BotServiceTests(TempDbCase):
         self.assertTrue(wait_for(lambda: len(db.get_transcript(mid)) == 1))
         self.assertTrue(wait_for(lambda: {p["display_name"]: p["attendance"] for p in db.list_speakers(mid)}.get("Bob") == "present"))
         status = {p["display_name"]: p["attendance"] for p in db.list_speakers(mid)}
-        self.assertEqual(status, {"Alice": "present", "Bob": "present", "Carol": "invited", "Dan": "absent"})
-        self.assertNotIn("คนไม่รู้จัก", status)                                   # ไม่สร้างผู้เข้าร่วมใหม่จากชื่อที่ไม่รู้จัก
+        self.assertEqual({k: v for k, v in status.items() if k != "คนไม่รู้จัก"},
+                         {"Alice": "present", "Bob": "present", "Carol": "invited", "Dan": "absent"})
+        room = next(p for p in db.list_speakers(mid) if p["display_name"] == "คนไม่รู้จัก")   # ชื่อที่ไม่ตรงใครถูกเก็บไว้ให้จับคู่ภายหลัง
+        self.assertEqual((room["source"], room["role"], room["attendance"]), ("meet", "guest", "present"))
         log = " ".join(s["text"] for s in self.state()["status"])
         self.assertIn("เห็นผู้เข้าร่วมในห้อง", log)
         self.assertIn("Bob", log)
+        self.assertIn("คนไม่รู้จัก", log)                                         # แจ้งว่ามีชื่อที่ต้องจับคู่
 
     def test_one_endless_monologue_is_split_into_segments_not_lost(self):
         # คนพูดไม่หยุด Meet ใช้แถวเดียวตลอด ข้อความสะสมยาวเกินคอลัมน์ได้ — ต้องแบ่งเป็นหลาย segment ครบ ไม่ error ไม่หาย

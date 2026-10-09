@@ -187,6 +187,15 @@ def add_person(user: dict, meeting_id: int, display_name: str, email: str | None
         raise _value_error(e)
 
 
+def set_person_attendance(user: dict, speaker_id: int, attendance: str) -> None:
+    """ตั้งสถานะการเข้าร่วมของผู้เข้าร่วมคนเดียว (เข้าร่วม / ไม่มา) — ใช้จากหน้าจับคู่ผู้ที่ยังไม่ยืนยัน"""
+    _person_meeting(user, speaker_id)
+    try:
+        db.update_speaker(speaker_id, attendance=attendance)
+    except ValueError as e:
+        raise _value_error(e)
+
+
 def merge_people(user: dict, source_id: int, target_id: int) -> int:
     source, _ = _person_meeting(user, source_id)
     target = db.get_speaker(target_id)

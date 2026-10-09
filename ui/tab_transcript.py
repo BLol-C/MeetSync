@@ -67,6 +67,47 @@ def _merge_section(user: dict, people: list[dict], editable: bool):
                     st.rerun()
 
 
+def _unconfirmed_section(user: dict, people: list[dict], editable: bool):
+    """ผู้ที่ลงทะเบียนไว้แต่ยังไม่ยืนยันการเข้าร่วม — เลือกว่าตรงกับชื่อไหนที่เห็นใน Meet (บอทอ่านจากห้อง/จากคนที่พูด)
+    หรือกำหนดเองว่ามา/ไม่มา; ถ้าไม่ตั้ง ตอนยืนยัน transcript จะถูกบันทึกเป็น "ไม่มา" """
+    pending = [p for p in people if p["source"] == "registered" and p["attendance"] == "invited"]
+    if not pending:
+        return
+    seen = [p for p in people if p["source"] == "meet"]
+    labels = {}
+    for m in seen:
+        labels[f"meet:{m['speaker_id']}"] = (f"{m['display_name']} — พูด {m['segment_count']} ช่วง" if m["segment_count"]
+                                             else f"{m['display_name']} — อยู่ในห้อง")
+    labels["present"] = "มาประชุม (ไม่พบชื่อในรายการ Meet)"
+    labels["absent"] = "ไม่ได้เข้าประชุม (ไม่มา)"
+    st.subheader("ผู้เข้าร่วมที่ยังไม่ยืนยันการเข้าร่วม")
+    st.caption("บอทอ่านชื่อคนที่อยู่ในห้อง Meet ไว้ให้เลือก เลือกชื่อที่ตรงกับแต่ละคน (ระบบจำชื่อนี้ไว้ ครั้งหน้าจับคู่ให้เอง) "
+               "หรือกำหนดเองว่ามา/ไม่มา — ถ้าไม่ตั้ง ตอนกดยืนยัน transcript ระบบจะบันทึกเป็น “ไม่มา”")
+    if not seen:
+        st.info("ยังไม่พบชื่อใน Meet ที่ไม่ตรงกับรายชื่อ (บอทอ่านรายชื่อในห้องไม่ได้ หรือทุกคนที่อยู่ในห้องจับคู่ได้แล้ว)")
+    for p in pending:
+        with st.container(border=True):
+            a, b, c = st.columns([3, 4, 1.2], vertical_alignment="center")
+            a.markdown(f"**{common.md_escape(p['display_name'])}**  \n{common.ROLE_LABEL.get(p['role'], p['role'])}")
+            choice = b.selectbox("ตรงกับ", options=list(labels), format_func=labels.get, index=None,
+                                 placeholder="เลือกชื่อใน Meet ที่ตรงกัน หรือกำหนดสถานะ…", key=f"unc_{p['speaker_id']}",
+                                 label_visibility="collapsed", disabled=not editable)
+            if c.button("ยืนยัน", key=f"unc_go_{p['speaker_id']}", disabled=not editable or choice is None, width="stretch"):
+                try:
+                    if choice in ("present", "absent"):
+                        service.set_person_attendance(user, p["speaker_id"], choice)
+                        done = "ตั้งเป็น " + ("เข้าร่วม" if choice == "present" else "ไม่มา") + f": {p['display_name']}"
+                    else:
+                        moved = service.merge_people(user, int(choice.split(":")[1]), p["speaker_id"])
+                        done = f"จับคู่แล้ว: {p['display_name']} เข้าร่วม" + (f" (ย้าย {moved} ช่วง)" if moved else "")
+                except ServiceError as e:
+                    st.error(str(e))
+                else:
+                    common.flash("success", done)
+                    st.session_state[f"rev_segs_{p['meeting_id']}"] = _rev(p["meeting_id"]) + 1
+                    st.rerun()
+
+
 def render(user: dict, detail: dict):
     meeting = detail["meeting"]
     mid = meeting["meeting_id"]
@@ -87,7 +128,9 @@ def render(user: dict, detail: dict):
     elif status == "approved":
         st.success("🔒 รายงานอนุมัติแล้ว transcript ถูกล็อก")
 
-    _merge_section(user, [{**p, "meeting_id": mid} for p in people], editable and status != "approved")
+    people_in_meeting = [{**p, "meeting_id": mid} for p in people]
+    _merge_section(user, people_in_meeting, editable and status != "approved")
+    _unconfirmed_section(user, people_in_meeting, editable and status != "approved")
 
     if not segments:
         st.subheader("ข้อความที่บอทจับได้")

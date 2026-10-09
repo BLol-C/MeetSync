@@ -379,6 +379,20 @@ class ServiceTests(TempDbCase):
         self.assertIn("เลขานุการ", text)                  # ไม่ได้กรอก = ใช้บทบาทในที่ประชุมเหมือนเดิม
         self.assertIn("ผู้ประสานงานโครงการ", text)         # ผู้เข้าร่วมที่ไม่ใช่กรรมการก็แสดงถ้ากรอกไว้
 
+    def test_set_person_attendance_works_while_editable_and_not_after_approval(self):
+        mid = self.new_meeting()
+        bob = next(p for p in db.list_speakers(mid) if p["display_name"] == "Bob")
+        service.set_person_attendance(self.owner, bob["speaker_id"], "present")
+        self.assertEqual(db.get_speaker(bob["speaker_id"])["attendance"], "present")
+        with self.assertRaises(ServiceError):
+            service.set_person_attendance(self.owner, bob["speaker_id"], "maybe")
+        with self.assertRaises(ServiceError):
+            service.set_person_attendance(self.other, bob["speaker_id"], "absent")        # คนนอกสิทธิ์
+        done = self.approved_meeting()
+        someone = db.list_speakers(done)[0]
+        with self.assertRaises(ServiceError):
+            service.set_person_attendance(self.owner, someone["speaker_id"], "absent")    # อนุมัติแล้วแก้ไม่ได้
+
     def test_pdf_follows_the_meeting_minutes_form(self):
         import io
         from pypdf import PdfReader

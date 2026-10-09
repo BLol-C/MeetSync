@@ -590,6 +590,33 @@ def mark_present_by_names(meeting_id: int, meet_names: list[str]) -> list[str]:
     return changed
 
 
+def record_room_names(meeting_id: int, meet_names: list[str]) -> dict:
+    """รายชื่อที่บอทเห็นในห้อง Meet: ตั้ง "เข้าร่วม" ให้คนที่ลงทะเบียนไว้และชื่อตรงกัน (mark_present_by_names) ส่วนชื่อที่ไม่ตรงกับใครเลย
+    เก็บเป็นผู้เข้าร่วมแยก (source = 'meet', บทบาท guest, เข้าร่วม, ไม่มีข้อความ) เพื่อให้ผู้ใช้เลือกจับคู่กับคนที่ลงทะเบียนไว้ภายหลัง
+    (รวมแล้วระบบจำชื่อไว้ ครั้งหน้าตรงเอง) คืน {"marked": [ชื่อที่ถูกตั้งเข้าร่วม], "new": [ชื่อที่เก็บใหม่]}"""
+    names = []
+    for n in meet_names or []:
+        n = (n or "").strip()[:100]
+        if n and n not in names:
+            names.append(n)
+    marked = mark_present_by_names(meeting_id, names)
+    created: list[str] = []
+    with _tx() as cur:
+        for name in names:
+            if _find_speaker_for_name(cur, meeting_id, name) is not None:
+                continue
+            try:
+                cur.execute(
+                    """INSERT INTO speakers (meeting_id, display_name, role, attendance, source)
+                       VALUES (%s, %s, 'guest', 'present', 'meet')""",
+                    (meeting_id, name),
+                )
+                created.append(name)
+            except pymysql.err.IntegrityError:    # ชื่อซ้ำกับที่มีอยู่ (เช่น กำกวมหลายคน) — ไม่สร้างซ้ำ
+                pass
+    return {"marked": marked, "new": created}
+
+
 def _find_speaker_for_name(cur, meeting_id: int, meet_name: str) -> int | None:
     """ชื่อที่ Meet แสดง -> ผู้เข้าร่วมที่ตรงกัน (ชื่อ/ชื่อเรียกใน Meet) — ตรงคนเดียวเท่านั้น ชื่อกำกวมไม่เดา"""
     cur.execute(
@@ -769,7 +796,7 @@ def merge_speakers(source_id: int, target_id: int) -> int:
         src, dst = rows[source_id], rows[target_id]
         if src["meeting_id"] != dst["meeting_id"]:
             raise ValueError("ผู้เข้าร่วมต้องอยู่ในการประชุมเดียวกัน")
-        if src["role"] != "attendee":
+        if src["role"] in UNIQUE_ROLES:
             raise ValueError("ไม่รวมผู้ที่เป็นประธาน/เลขา — เปลี่ยนบทบาทก่อน")
         cur.execute("UPDATE transcript_segments SET speaker_id = %s WHERE speaker_id = %s", (target_id, source_id))
         moved = cur.rowcount

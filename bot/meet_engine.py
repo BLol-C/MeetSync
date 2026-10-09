@@ -244,6 +244,8 @@ JS_READ_PARTICIPANTS = """
   const names = [];
   for (const list of lists) {
     for (const item of list.querySelectorAll('[role="listitem"]')) {
+      // แถวของตัวเอง (บอทเอง) มีข้อความ "(คุณ)" / "(You)" — ไม่นับเป็นผู้เข้าร่วม
+      if (/[(](คุณ|you)[)]/i.test(item.textContent || '')) continue;
       let name = (item.getAttribute('aria-label') || '').trim();
       if (!name) {
         const leaves = [...item.querySelectorAll('span, div')].filter((e) => !e.children.length)

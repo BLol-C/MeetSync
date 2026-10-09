@@ -21,15 +21,15 @@ def _item(name: str, device: int, extra: str = "", sub: str = "") -> str:
     )
 
 
-# แผงจริงของห้องที่มี 3 คน: ผู้จัดการประชุม (มี "(คุณ)" แยกเป็น span) + บอท + ผู้เข้าร่วมอีกคน
+# แผงของห้องที่มี 3 คน ในมุมมองของบอท (บอท = "Meet Sync" มี "(คุณ)" แยกเป็น span): ผู้จัดการประชุม + บอท + ผู้เข้าร่วมอีกคน
 PANEL = (
     '<div role="list" aria-label="ผู้เข้าร่วม">'
-    + _item("46 ธนาวีร์ บุญเกิด", 115, '<span class="NnTWjc">(คุณ)</span>', "ผู้จัดการประชุม")
-    + _item("Meet Sync", 120)
+    + _item("46 ธนาวีร์ บุญเกิด", 115, "", "ผู้จัดการประชุม")
+    + _item("Meet Sync", 120, '<span class="NnTWjc">(คุณ)</span>')
     + _item("Thanawee BOONKERD", 119)
     + "</div>"
 )
-NAMES = ["46 ธนาวีร์ บุญเกิด", "Meet Sync", "Thanawee BOONKERD"]
+NAMES = ["46 ธนาวีร์ บุญเกิด", "Thanawee BOONKERD"]      # แถวของบอทเอง (Meet Sync) ไม่นับเป็นผู้เข้าร่วม
 WAITING = '<div role="list" aria-label="ผู้ที่กำลังรอเข้าร่วม">' + _item("คนที่ยังรออนุญาต", 130) + "</div>"
 UNRELATED_LIST = '<div role="list" aria-label="Chat messages"><div role="listitem" aria-label="ข้อความแชท"></div></div>'
 # ปุ่มจริง: div role=button ไม่มี aria-label; กดแล้วแผงจึงโผล่
@@ -65,7 +65,7 @@ class ParticipantScanTests(unittest.TestCase):
 
     def test_reads_names_from_the_real_meet_panel_structure(self):
         events = self.run_scan(UNRELATED_LIST + WAITING + '<div id="host">' + PANEL + "</div>")
-        # ชื่อมาจาก aria-label (ไม่มี "(คุณ)" ปน) · รายการแชทและรายการ "กำลังรอเข้าร่วม" ไม่ปนเข้ามา
+        # ชื่อมาจาก aria-label · แถวของบอทเอง รายการแชท และรายการ "กำลังรอเข้าร่วม" ไม่ปนเข้ามา
         self.assertEqual(events, [{"type": "participants", "names": NAMES}])
 
     def test_opens_the_panel_with_the_real_div_button_then_reads(self):

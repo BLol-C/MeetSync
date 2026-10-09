@@ -139,6 +139,21 @@ class WorkflowTests(TempDbCase):
         self.assertEqual(db.mark_present_by_names(mid, ["bob"]), [])                       # เรียกซ้ำไม่เปลี่ยนอะไร
         self.assertEqual(db.mark_present_by_names(mid, []), [])
 
+    def test_unknown_room_names_are_kept_as_meet_guests_so_they_can_be_matched_later(self):
+        uid, mid = self.new_meeting()
+        a = db.add_speaker(mid, "ธนาวีร์")
+        out = db.record_room_names(mid, ["Thanawee BOONKERD", "  ", "Thanawee BOONKERD", "ธนาวีร์"])
+        self.assertEqual(out, {"marked": ["ธนาวีร์"], "new": ["Thanawee BOONKERD"]})
+        people = {p["display_name"]: p for p in db.list_speakers(mid)}
+        room = people["Thanawee BOONKERD"]
+        self.assertEqual((room["source"], room["role"], room["attendance"], room["segment_count"]),
+                         ("meet", "guest", "present", 0))
+        self.assertEqual(db.record_room_names(mid, ["Thanawee BOONKERD"]), {"marked": [], "new": []})   # ไม่สร้างซ้ำ
+        db.merge_speakers(room["speaker_id"], a)                      # ผู้ใช้จับคู่ว่าเป็นคนเดียวกับ "ธนาวีร์"
+        self.assertEqual(db.get_speaker(a)["meet_alias"], "Thanawee BOONKERD")
+        self.assertEqual(db.record_room_names(mid, ["Thanawee BOONKERD"]), {"marked": [], "new": []})   # จำชื่อไว้ ไม่สร้างใหม่
+        self.assertEqual([p["display_name"] for p in db.list_speakers(mid)], ["ธนาวีร์"])
+
     def test_setup_then_record_then_end(self):
         uid, mid = self.new_meeting(title="  ประชุม  ", venue="", meeting_no="3/2569")
         m = db.get_meeting(mid)
