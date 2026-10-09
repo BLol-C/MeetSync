@@ -43,7 +43,7 @@ def people_column_config() -> dict:
     return {
         "ชื่อภาษาไทย": st.column_config.TextColumn("ชื่อภาษาไทย", help="ชื่อที่จะขึ้นในรายงาน PDF (ภาษาไทย)", required=False, width="medium"),
         "ชื่อภาษาอังกฤษ": st.column_config.TextColumn("ชื่อภาษาอังกฤษ", help="ชื่อที่ Google Meet แสดงของคนนี้ (เช่น ชื่อบัญชีมหาวิทยาลัยที่เป็นภาษาอังกฤษ) ไว้จับคู่คนพูดและรายชื่อในห้องให้อัตโนมัติ ไม่ขึ้นในรายงาน — เว้นว่างได้ ถ้าชื่อภาษาไทยตรงกับที่ Meet แสดงอยู่แล้ว", width="medium"),
-        "อีเมล": st.column_config.TextColumn("อีเมล", help="กรอกเฉพาะประธานและเลขา — ใช้ให้เข้ามาตรวจและอนุมัติรายงานด้วยบัญชี Google ของตน (คนอื่นไม่ต้องกรอก)", width="medium"),
+        "อีเมล": st.column_config.TextColumn("อีเมล", help="ใช้เชิญเข้า Calendar และให้ประธาน/เลขาเข้าอนุมัติรายงานได้", width="medium"),
         "บทบาท": st.column_config.SelectboxColumn("บทบาท", options=list(ROLE_BY_LABEL), default=ROLE_LABEL["attendee"], required=True),
         "ตำแหน่ง": st.column_config.TextColumn("ตำแหน่ง", help="ตำแหน่งของผู้เข้าร่วม แสดงในคอลัมน์ ตำแหน่ง ของรายงาน PDF (เว้นว่าง = ใช้บทบาทในที่ประชุมแทน)", width="medium"),
         "การเข้าร่วม": st.column_config.SelectboxColumn("การเข้าร่วม", options=list(ATT_BY_LABEL), default="ยังไม่ยืนยัน", required=True),
@@ -56,15 +56,12 @@ def _create(user: dict, payload: dict, force: bool = False):
     if dups and not force:
         st.session_state["_dup_pending"] = {"payload": payload, "dups": dups}
         st.rerun()
-    ignored = [p["display_name"] for p in payload.get("people", []) if p.get("email") and p.get("role") not in ("chair", "secretary")]
     try:
         meeting_id = service.create_meeting(user, **payload)
     except ServiceError as e:
         st.error(str(e))
         return
     st.session_state.pop("_dup_pending", None)
-    if ignored:
-        common.flash("warning", "ไม่ได้บันทึกอีเมลของ " + ", ".join(ignored) + " — เก็บเฉพาะอีเมลของประธานและเลขา")
     common.flash("success", "สร้างการประชุมแล้ว — ตรวจรายชื่อผู้เข้าร่วม แล้วไปแท็บ “② บอท” เพื่อเริ่มบอทเมื่อถึงเวลาประชุม")
     common.go("meeting", meeting_id)
 

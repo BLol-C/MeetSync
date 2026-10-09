@@ -418,24 +418,6 @@ class ServiceTests(TempDbCase):
         self.assertEqual(service.apply_people_table(self.owner, mid, rows)["errors"], [])
         self.assertEqual(next(p for p in db.list_speakers(mid) if p["display_name"] == "ภาม")["meet_alias"], "Pharm S")
 
-    def test_email_is_kept_only_for_chair_and_secretary(self):
-        mid = self.new_meeting(people=[
-            {"display_name": "ประธาน", "role": "chair", "email": "chair@x.com", "attendance": "present"},
-            {"display_name": "เลขา", "role": "secretary", "email": "sec@x.com", "attendance": "present"},
-            {"display_name": "กรรมการ", "role": "attendee", "email": "member@x.com"},
-            {"display_name": "แขก", "role": "guest", "email": "guest@x.com"},
-        ])
-        emails = {p["display_name"]: p["email"] for p in db.list_speakers(mid)}
-        self.assertEqual(emails, {"ประธาน": "chair@x.com", "เลขา": "sec@x.com", "กรรมการ": None, "แขก": None})
-        service.add_person(self.owner, mid, "คนเพิ่ม", email="x@x.com")                      # เพิ่มทีหลังก็เหมือนกัน
-        self.assertIsNone(next(p for p in db.list_speakers(mid) if p["display_name"] == "คนเพิ่ม")["email"])
-        # ประธานยังเข้ามาอนุมัติด้วยอีเมลที่ลงทะเบียนไว้ได้ ส่วนกรรมการที่ไม่มีอีเมลเข้าไม่ได้
-        chair_user = {"user_id": db.upsert_user("sub-chair-only", "chair@x.com", "ประธาน", None), "email": "chair@x.com"}
-        self.assertEqual(service.get_detail(chair_user, mid)["meeting"]["meeting_id"], mid)
-        member_user = {"user_id": db.upsert_user("sub-member-only", "member@x.com", "กรรมการ", None), "email": "member@x.com"}
-        with self.assertRaises(ServiceError):
-            service.get_detail(member_user, mid)
-
     def test_pdf_follows_the_meeting_minutes_form(self):
         import io
         from pypdf import PdfReader
@@ -500,9 +482,7 @@ class ServiceTests(TempDbCase):
         by = {r["display_name"]: r for r in rows}
         by["Alice"]["role"], by["สมชาย ใจดี"]["role"] = "chair", "attendee"          # สลับประธานในการบันทึกครั้งเดียว
         by["Alice"]["attendance"] = "present"
-        by["Alice"]["email"] = "alice@x.com"                                          # Alice เป็นประธานแล้ว: เก็บอีเมลได้
-        by["Bob"]["attendance"] = "present"
-        by["Bob"]["email"] = "bob@x.com"                                              # คนทั่วไป: อีเมลไม่ถูกบันทึก
+        by["Bob"]["email"] = "bob@x.com"
         rows = [r for r in rows if r["display_name"] != "สมหญิง"]                      # ลบเลขา
         rows.append({"speaker_id": None, "display_name": "Carol", "email": "", "role": "secretary", "attendance": "present"})
         rows.append({"speaker_id": float("nan"), "display_name": "Dave", "email": "d@x.com", "role": "attendee", "attendance": "invited"})
@@ -512,9 +492,7 @@ class ServiceTests(TempDbCase):
         self.assertEqual((result["updated"], result["added"], result["deleted"]), (3, 2, 1))
         d = service.get_detail(self.owner, mid)
         self.assertEqual((d["header"]["chair"], d["header"]["secretary"]), ("Alice", "Carol"))
-        emails = {p["display_name"]: p["email"] for p in d["people"]}
-        self.assertEqual((emails["Alice"], emails["Bob"], emails["Dave"]), ("alice@x.com", None, None))
-        self.assertEqual(sorted(result["ignored_emails"]), ["Bob", "Dave"])           # แจ้งว่าอีเมลของใครไม่ถูกบันทึก
+        self.assertEqual({p["display_name"]: p["email"] for p in d["people"]}["Bob"], "bob@x.com")
         self.assertEqual(sorted(p["display_name"] for p in d["people"]), ["Alice", "Bob", "Carol", "Dave", "สมชาย ใจดี"])
 
     def test_people_table_reports_row_errors_without_losing_the_rest(self):
@@ -758,8 +736,7 @@ class ServiceTests(TempDbCase):
         mid = self.draft()
         fake = FakeCalendar()
         content = service.get_report_view(self.owner, mid)["report"]["content"]
-        content["action_items"][0].update(assignee="สมชาย ใจดี")                  # ประธานมีอีเมลในรายชื่อ
-        content["action_items"][1].update(assignee="Bob", due_date="2026-10-12")       # Bob เป็นคนทั่วไป ไม่มีอีเมลเก็บไว้
+        content["action_items"][1].update(assignee="Bob", due_date="2026-10-12")
         service.save_report_draft(self.owner, mid, content)
         first = service.get_report_view(self.owner, mid)["report"]["content"]["action_items"][0]["action_item_id"]
         with self.assertRaises(ServiceError) as cm:
@@ -774,11 +751,9 @@ class ServiceTests(TempDbCase):
             results = service.sync_all(self.owner, mid)
             self.assertTrue(all(r["ok"] for r in results), results)
             self.assertEqual(len(fake.inserted), 2)
-            chair_ev = next(b for b, _ in fake.inserted if b["summary"] == "ส่งรายงานความก้าวหน้า")
-            self.assertEqual(chair_ev["attendees"], [{"email": "chair@x.com"}])
-            self.assertEqual(chair_ev["start"]["dateTime"], "2026-10-09T13:00:00")
-            bob_ev = next(b for b, _ in fake.inserted if b["summary"] == "ติดต่อห้องประชุม")
-            self.assertNotIn("attendees", bob_ev)                                          # ไม่มีอีเมลเก็บไว้ = ไม่เชิญใคร
+            alice_ev = next(b for b, _ in fake.inserted if b["summary"] == "ส่งรายงานความก้าวหน้า")
+            self.assertEqual(alice_ev["attendees"], [{"email": "alice@x.com"}])
+            self.assertEqual(alice_ev["start"]["dateTime"], "2026-10-09T13:00:00")
             self.assertEqual({s for _, s in fake.inserted}, {"none"})            # ค่าเริ่มต้นไม่ส่งอีเมลเชิญจริง
             again = service.sync_all(self.owner, mid)                           # ส่งซ้ำไม่สร้าง event ซ้ำ
             self.assertTrue(all(r.get("already") for r in again))
