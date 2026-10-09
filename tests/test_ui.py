@@ -270,7 +270,7 @@ class UiTests(TempDbCase):
     def test_transcript_tab_shows_conversation_grouped_into_speaker_turns(self):
         mid = self.meeting("transcript_review")            # สมชาย 1 ประโยค แล้ว Alice 1 ประโยค = 2 ช่วงพูด
         at = self.app(m=mid)
-        self.assertTrue(any("บทสนทนา (2 ช่วงพูด · 2 ประโยค)" in v for v in texts(at.subheader)))
+        self.assertTrue(any(v == "บทสนทนา" for v in texts(at.subheader)))
         body = " ".join(texts(at.markdown))
         self.assertIn("เห็นด้วยค่ะ", body)
         text = service.transcript_text(self.user, mid)

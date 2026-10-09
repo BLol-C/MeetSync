@@ -11,6 +11,9 @@ from ui.common import clean_str
 COLS = ["segment_id", "เวลา", "ผู้พูด", "ข้อความ", "ลบ", "แก้แล้ว"]
 
 
+CONVERSATION_MAX_H = 420   # px — กล่องบทสนทนาสูงสุดเท่านี้ ที่เกินเลื่อนในกล่อง
+
+
 def _rev(mid: int) -> int:
     return st.session_state.get(f"rev_segs_{mid}", 0)
 
@@ -107,11 +110,12 @@ def render(user: dict, detail: dict):
 
     # มุมมองอ่านง่าย: รวมประโยคต่อเนื่องของคนเดียวกันเป็นช่วงพูด (ในฐานข้อมูลยังเป็น 1 ประโยค = 1 แถว)
     turns = service.group_turns(segments)
-    n_sentences = sum(1 for s in segments if not s["deleted"])
-    st.subheader(f"บทสนทนา ({len(turns)} ช่วงพูด · {n_sentences} ประโยค)")
+    st.subheader("บทสนทนา")
     st.caption(f"ประโยคต่อเนื่องของคนเดียวกัน (ห่างกันไม่เกิน {service.TURN_GAP_S} วินาที) รวมเป็นช่วงพูดเดียวเพื่อให้อ่านง่าย · "
                "✎ = มีประโยคที่ถูกแก้ · แก้ไขได้ที่ตารางรายประโยคด้านล่าง")
-    with st.container(height=420, border=True):
+    # กล่องสูงตามเนื้อหา (ประมาณ) แต่ไม่เกิน CONVERSATION_MAX_H — ยาวกว่านั้นเลื่อนอ่านภายในกล่อง
+    lines = sum(2 + len(t["text"]) // 80 for t in turns)
+    with st.container(height=min(CONVERSATION_MAX_H, max(120, 70 + lines * 26)), border=True):
         st.markdown("\n\n".join(
             f"**{service.format_turn_time(t)} · {common.md_escape(t['display_name'])}**{' ✎' if t['edited'] else ''}  \n"
             f"{common.md_escape(t['text'])}" for t in turns) or "_ไม่มีข้อความ (ลบทั้งหมด)_")
