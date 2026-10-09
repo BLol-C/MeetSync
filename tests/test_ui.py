@@ -390,17 +390,17 @@ class TableConversionTests(unittest.TestCase):
             {"speaker_id": float("nan"), "ชื่อ": "คนใหม่", "อีเมล": None, "บทบาท": None, "การเข้าร่วม": None, "สาเหตุที่ไม่มา": float("nan"), "ที่มา": None, "ข้อความที่พูด": None},
         ])
         rows = tab_setup.people_rows(df)
-        self.assertEqual(rows[0], {"speaker_id": 5, "display_name": "สมชาย", "email": "a@x.com", "role": "chair", "attendance": "present", "absence_reason": ""})
-        self.assertEqual(rows[1], {"speaker_id": None, "display_name": "คนใหม่", "email": "", "role": "attendee", "attendance": "invited", "absence_reason": ""})
+        self.assertEqual(rows[0], {"speaker_id": 5, "display_name": "สมชาย", "email": "a@x.com", "role": "chair", "attendance": "present", "absence_reason": "", "position": ""})
+        self.assertEqual(rows[1], {"speaker_id": None, "display_name": "คนใหม่", "email": "", "role": "attendee", "attendance": "invited", "absence_reason": "", "position": ""})
 
     def test_new_meeting_people_skip_blank_rows(self):
         import pandas as pd
 
         from ui import new_meeting
         df = pd.DataFrame([{"ชื่อ": "", "อีเมล": "", "บทบาท": "ประธาน", "การเข้าร่วม": "เข้าร่วม"},
-                           {"ชื่อ": "Bob", "อีเมล": "", "บทบาท": "เลขา", "การเข้าร่วม": "ไม่มา", "สาเหตุที่ไม่มา": "ลาป่วย"}])
+                           {"ชื่อ": "Bob", "อีเมล": "", "บทบาท": "เลขา", "การเข้าร่วม": "ไม่มา", "สาเหตุที่ไม่มา": "ลาป่วย", "ตำแหน่ง": " อาจารย์ "}])
         self.assertEqual(new_meeting.people_from_df(df),
-                         [{"display_name": "Bob", "email": None, "role": "secretary", "attendance": "absent", "absence_reason": "ลาป่วย"}])
+                         [{"display_name": "Bob", "email": None, "role": "secretary", "attendance": "absent", "absence_reason": "ลาป่วย", "position": "อาจารย์"}])
 
     def test_segment_table_rows(self):
         import pandas as pd

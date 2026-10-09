@@ -341,6 +341,44 @@ class ServiceTests(TempDbCase):
         self.assertIn("4.1.1", text)
         self.assertIn("4.2.1", text)
 
+    def test_position_is_saved_trimmed_and_shown_in_the_pdf_when_present(self):
+        import io
+
+        from pypdf import PdfReader
+
+        from reports import pdf_report
+        mid = self.new_meeting(people=[
+            {"display_name": "ต้น", "role": "chair", "attendance": "present", "position": "  หัวหน้าสาขาวิชา  "},
+            {"display_name": "ฟ้า", "role": "secretary", "attendance": "present"},
+            {"display_name": "มด", "attendance": "present", "position": ""},
+            {"display_name": "คุณแขก", "role": "guest", "attendance": "present", "position": "ผู้ประสานงานโครงการ"},
+            {"display_name": "คุณแขกสอง", "role": "guest", "attendance": "present"},
+        ])
+        people = {p["display_name"]: p for p in db.list_speakers(mid)}
+        self.assertEqual(people["ต้น"]["position"], "หัวหน้าสาขาวิชา")      # ตัดช่องว่าง
+        self.assertIsNone(people["ฟ้า"]["position"])
+        self.assertIsNone(people["มด"]["position"])                          # ว่าง = None
+        # แก้ตำแหน่งผ่านตารางผู้เข้าร่วมในหน้าเว็บ
+        rows = [{"speaker_id": p["speaker_id"], "display_name": p["display_name"], "email": p["email"] or "",
+                 "role": p["role"], "attendance": p["attendance"], "absence_reason": "",
+                 "position": p["position"] or ""} for p in people.values()]
+        next(r for r in rows if r["display_name"] == "มด")["position"] = "อาจารย์"
+        self.assertEqual(service.apply_people_table(self.owner, mid, rows)["errors"], [])
+        self.assertEqual({p["display_name"]: p["position"] for p in db.list_speakers(mid)},
+                         {"ต้น": "หัวหน้าสาขาวิชา", "ฟ้า": None, "มด": "อาจารย์",
+                          "คุณแขก": "ผู้ประสานงานโครงการ", "คุณแขกสอง": None})
+        header = service.get_detail(self.owner, mid)["header"]
+        self.assertEqual({a["name"]: a["position"] for a in header["attendees"]},
+                         {"ต้น": "หัวหน้าสาขาวิชา", "ฟ้า": None, "มด": "อาจารย์"})
+        self.assertEqual({a["name"]: a["position"] for a in header["guests"]},
+                         {"คุณแขก": "ผู้ประสานงานโครงการ", "คุณแขกสอง": None})
+        data = pdf_report.build_minutes_pdf(db.get_meeting(mid), db.list_speakers(mid), {"agenda": [], "action_items": []})
+        text = chr(10).join(pg.extract_text() for pg in PdfReader(io.BytesIO(data)).pages)
+        self.assertIn("หัวหน้าสาขาวิชา", text)           # กรอกตำแหน่งไว้ = แสดงตำแหน่งนั้น
+        self.assertIn("อาจารย์", text)
+        self.assertIn("เลขานุการ", text)                  # ไม่ได้กรอก = ใช้บทบาทในที่ประชุมเหมือนเดิม
+        self.assertIn("ผู้ประสานงานโครงการ", text)         # ผู้เข้าร่วมที่ไม่ใช่กรรมการก็แสดงถ้ากรอกไว้
+
     def test_pdf_follows_the_meeting_minutes_form(self):
         import io
         from pypdf import PdfReader

@@ -71,6 +71,7 @@ CREATE TABLE speakers (
     role          VARCHAR(20) NOT NULL DEFAULT 'attendee',
     attendance    VARCHAR(10) NOT NULL DEFAULT 'invited',
     absence_reason VARCHAR(255) NULL,
+    position      VARCHAR(100) NULL,
     source        VARCHAR(10) NOT NULL DEFAULT 'registered',
     UNIQUE KEY uq_speaker (meeting_id, display_name),
     FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id) ON DELETE CASCADE
@@ -619,6 +620,7 @@ def add_speaker(
     role: str = "attendee",
     attendance: str = "invited",
     absence_reason: str | None = None,
+    position: str | None = None,
 ) -> int:
     """ลงทะเบียนผู้เข้าร่วม (ก่อนหรือหลังประชุมก็ได้)"""
     display_name = (display_name or "").strip()
@@ -631,10 +633,10 @@ def add_speaker(
             _check_role_free(cur, meeting_id, role)
             try:
                 cur.execute(
-                    """INSERT INTO speakers (meeting_id, display_name, email, role, attendance, absence_reason, source)
-                       VALUES (%s, %s, %s, %s, %s, %s, 'registered')""",
+                    """INSERT INTO speakers (meeting_id, display_name, email, role, attendance, absence_reason, position, source)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, 'registered')""",
                     (meeting_id, display_name, (email or "").strip() or None, role, attendance,
-                     (absence_reason or "").strip() or None),
+                     (absence_reason or "").strip() or None, (position or "").strip() or None),
                 )
             except pymysql.err.IntegrityError:
                 raise ValueError(f"มีผู้เข้าร่วมชื่อ \"{display_name}\" ในการประชุมนี้แล้ว")
@@ -685,7 +687,7 @@ def list_speakers(meeting_id: int) -> list[dict]:
         conn.close()
 
 
-_SPEAKER_EDITABLE = ("display_name", "meet_alias", "email", "role", "attendance", "absence_reason")
+_SPEAKER_EDITABLE = ("display_name", "meet_alias", "email", "role", "attendance", "absence_reason", "position")
 
 
 def update_speaker(speaker_id: int, **fields) -> None:
@@ -698,7 +700,7 @@ def update_speaker(speaker_id: int, **fields) -> None:
         fields["display_name"] = (fields["display_name"] or "").strip()
         if not fields["display_name"]:
             raise ValueError("ต้องระบุชื่อผู้เข้าร่วม")
-    for key in ("email", "meet_alias", "absence_reason"):
+    for key in ("email", "meet_alias", "absence_reason", "position"):
         if key in fields:
             fields[key] = (fields[key] or "").strip() or None
     _check_person_fields(fields.get("role"), fields.get("attendance"))

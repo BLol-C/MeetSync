@@ -194,9 +194,12 @@ def build_minutes_pdf(
             pdf.set_xy(INDENT, y)
             pdf.cell(POS_X - INDENT - 6, PITCH, f"{i}. {p['name']}")
             if third == "position":
-                role = {"chair": L["chair_suffix"], "secretary": L["secretary_suffix"],
-                        "attendee": L["member_suffix"]}.get(p["role"], "")
+                # ตำแหน่งที่กรอกไว้มาก่อน ถ้าไม่ได้กรอกใช้บทบาทในที่ประชุมแทน
+                role = p.get("position") or {"chair": L["chair_suffix"], "secretary": L["secretary_suffix"],
+                                             "attendee": L["member_suffix"]}.get(p["role"], "")
                 text = f"{L['position']} {role}".strip() if role else ""
+            elif third == "guest":   # ผู้เข้าร่วมที่ไม่ใช่กรรมการ: แสดงเฉพาะเมื่อกรอกตำแหน่งไว้
+                text = f"{L['position']} {p['position']}" if p.get("position") else ""
             elif third == "reason":
                 text = p.get("reason") or ""
             else:
@@ -215,7 +218,7 @@ def build_minutes_pdf(
     def sec_guests():
         if hdr["guests"]:   # ผู้เข้าร่วมประชุม (ถ้ามี) — ไม่มีก็ไม่ต้องแสดงหัวข้อ
             _line(pdf, L["guests"], bold=True)
-            people_list(hdr["guests"], L["none"], third=None)
+            people_list(hdr["guests"], L["none"], third="guest")
             _blank(pdf)
 
     def sec_absent():
