@@ -338,10 +338,6 @@ def render(user: dict, detail: dict):
                 for w in warnings:
                     st.markdown(f"- {w['message']}")
 
-    if status == "transcript_verified":
-        st.info("แก้และยืนยัน transcript ใหม่แล้ว — รายงานด้านล่างสร้างจากข้อความเดิม เลือกได้ว่าจะ “ให้ AI ร่างใหม่” จาก transcript ล่าสุด "
-                "(สิ่งที่คุณแก้ในรายงานจะถูกแทนที่) หรือ “ใช้รายงานเดิมต่อ” เพื่อแก้เองและอนุมัติ (ระบบจะเตือนถ้าหลักฐานอ้างอิงไม่ตรงกับ transcript ใหม่)")
-
     rev = _rev(mid)
     st.subheader("สรุปภาพรวม")
     summary = st.text_area("สรุปภาพรวมการประชุม", value=content["summary"], key=f"sum_{mid}_{rev}", disabled=not editable,

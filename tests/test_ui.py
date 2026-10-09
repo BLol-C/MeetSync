@@ -385,7 +385,7 @@ class UiTests(TempDbCase):
         service.verify_transcript(self.user, mid)
         self.assertEqual(db.get_meeting(mid)["status"], "transcript_verified")
         at = self.app(m=mid)
-        self.assertTrue(any("แก้และยืนยัน transcript ใหม่แล้ว" in v for v in texts(at.info)))
+        self.assertFalse(any("แก้และยืนยัน transcript ใหม่แล้ว" in v for v in texts(at.info)))   # ไม่มีกล่องอธิบายแล้ว
         regen = next(b for b in at.button if b.key == f"regen_{mid}")
         self.assertFalse(any(b.key == f"approve_{mid}" for b in at.button))     # ยังไม่ให้อนุมัติฉบับเก่า
         regen.click().run()                                                       # เปิด dialog ยืนยัน
