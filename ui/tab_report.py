@@ -146,28 +146,34 @@ def _agenda_cards(mid: int, content: dict, warnings: list[dict], editable: bool)
     for i, a in enumerate(items):
         with st.container(border=True):
             top, rm = st.columns([8, 1.2], vertical_alignment="bottom")
-            title = top.text_input(f"วาระที่ {i + 1}", value=a["title"], key=f"ag_t_{mid}_{rev}_{i}", disabled=not editable,
-                                   placeholder="ชื่อวาระ")
-            if editable and rm.button("ลบวาระ", key=f"ag_rm_{mid}_{rev}_{i}", width="stretch"):
+            title = top.text_input(f"เรื่องที่ {i + 1}", value=a["title"], key=f"ag_t_{mid}_{rev}_{i}", disabled=not editable,
+                                   placeholder="ชื่อเรื่อง")
+            section_label = st.selectbox(
+                "อยู่ในวาระ", options=list(common.AGENDA_SECTION_BY_LABEL), key=f"ag_s_{mid}_{rev}_{i}", disabled=not editable,
+                index=list(common.AGENDA_SECTION_LABEL).index(a.get("section") or "consider_new"),
+                help="เรื่องที่ AI สรุปอยู่ที่วาระ 4.2 ย้ายไปวาระ 1 ถ้าเป็นเรื่องแจ้งให้ทราบ — วาระ 2, 3, 4.1 ระบบเติมจากการประชุมครั้งก่อนที่เลือกไว้ (ถ้ามี)")
+            section = common.AGENDA_SECTION_BY_LABEL[section_label]
+            if editable and rm.button("ลบเรื่อง", key=f"ag_rm_{mid}_{rev}_{i}", width="stretch"):
                 remove_at = i
             discussion = st.text_area("สาระสำคัญของการอภิปราย", value=a["discussion"], key=f"ag_d_{mid}_{rev}_{i}",
                                       disabled=not editable, height=110)
             resolution = st.text_area("มติที่ประชุม (เว้นว่าง = เพื่อทราบ / ยังไม่มีมติ)", value=a["resolution"],
                                       key=f"ag_r_{mid}_{rev}_{i}", disabled=not editable, height=70)
             evidence = a.get("evidence") or []
-            if evidence or resolution.strip():
+            if section in ("inform", "consider_new") and (evidence or resolution.strip()):   # เฉพาะเรื่องที่ AI สกัดจาก transcript
                 st.caption("หลักฐานจาก transcript: " + _evidence_text(evidence, a.get("grounded", True if evidence else None)))
             for w in warnings:
                 if w["path"].startswith(f"agenda[{i}]"):
                     st.warning(w["message"])
-        current.append({"title": title, "discussion": discussion, "resolution": resolution, "evidence": evidence,
-                        "grounded": a.get("grounded")})
+        current.append({"section": section, "title": title, "discussion": discussion, "resolution": resolution,
+                        "evidence": evidence, "grounded": a.get("grounded")})
     if editable:
-        add = st.button("＋ เพิ่มวาระ", key=f"ag_add_{mid}_{rev}")
+        add = st.button("＋ เพิ่มเรื่อง", key=f"ag_add_{mid}_{rev}")
         if remove_at is not None or add:
             new_items = [x for j, x in enumerate(current) if j != remove_at]
             if add:
-                new_items.append({"title": "", "discussion": "", "resolution": "", "evidence": [], "grounded": None})
+                new_items.append({"section": "consider_new", "title": "", "discussion": "", "resolution": "", "evidence": [],
+                                  "grounded": None})
             st.session_state[f"rev_report_{mid}"] = rev + 1
             st.session_state[f"agenda_work_{mid}_{rev + 1}"] = new_items
             st.rerun()
@@ -177,8 +183,9 @@ def _agenda_cards(mid: int, content: dict, warnings: list[dict], editable: bool)
 def _collect(mid: int, summary: str, other: str, agenda: list[dict], actions_edited: pd.DataFrame) -> dict:
     return {
         "summary": summary, "other_matters": other.strip() or None,
-        "agenda": [{"title": a["title"], "discussion": a["discussion"], "resolution": a["resolution"].strip() or None,
-                    "evidence": a["evidence"]} for a in agenda if a["title"].strip() or a["discussion"].strip()],
+        "agenda": [{"section": a["section"], "title": a["title"], "discussion": a["discussion"],
+                    "resolution": a["resolution"].strip() or None, "evidence": a["evidence"]}
+                   for a in agenda if a["title"].strip() or a["discussion"].strip()],
         "action_items": actions_from_df(actions_edited),
     }
 
@@ -339,11 +346,11 @@ def render(user: dict, detail: dict):
     st.subheader("สรุปภาพรวม")
     summary = st.text_area("สรุปภาพรวมการประชุม", value=content["summary"], key=f"sum_{mid}_{rev}", disabled=not editable,
                            height=130, label_visibility="collapsed")
-    st.subheader("ระเบียบวาระและมติ")
+    st.subheader("ระเบียบวาระและมติ (วาระ 1–4)")
     agenda = _agenda_cards(mid, content, warnings, editable)
     if not agenda and not editable:
         st.caption("ไม่มีวาระ")
-    st.subheader("เรื่องอื่น ๆ")
+    st.subheader("วาระ 5 · เรื่องอื่น ๆ")
     other = st.text_area("เรื่องอื่น ๆ", value=content["other_matters"] or "", key=f"other_{mid}_{rev}",
                          disabled=not editable, height=80, label_visibility="collapsed")
 

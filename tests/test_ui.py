@@ -82,6 +82,21 @@ class UiTests(TempDbCase):
             service.approve_report(self.user, mid, confirm_warnings=True)
         return mid
 
+    def test_draft_report_has_a_section_selector_per_agenda_item_and_setup_offers_previous_meetings(self):
+        prev = self.meeting("approved")
+        mid = self.meeting("draft")
+        at = self.app(m=mid)
+        section_boxes = [x for x in at.selectbox if x.key.startswith(f"ag_s_{mid}_")]
+        self.assertTrue(section_boxes)                                                    # ทุกเรื่องในรายงานเลือกวาระได้
+        self.assertEqual(section_boxes[0].value, "วาระ 4.2 · เรื่องพิจารณาใหม่")           # ที่ AI สรุปเริ่มที่ 4.2
+        previous_box = next(x for x in at.selectbox if x.key == f"prev_{mid}")
+        self.assertIn(f"(#{prev})", " ".join(previous_box.options))                        # เสนอเฉพาะการประชุมที่อนุมัติแล้ว
+        self.assertEqual(previous_box.value, "— ไม่มี / ไม่ใช้ข้อมูลครั้งก่อน —")
+        new = self.app(view="new")
+        new_box = next(x for x in new.selectbox if x.key == "new_previous_meeting")
+        self.assertNotEqual(new_box.value, "— ไม่มี / ไม่ใช้ข้อมูลครั้งก่อน —")           # หน้าสร้างใหม่ตั้งค่าเริ่มต้นเป็นครั้งล่าสุดที่อนุมัติ
+        self.assertIn(new_box.value, new_box.options)
+
     # ── หน้ารวมและหน้าสร้าง ──
 
     def test_home_empty_then_lists_meetings_with_status_and_next_step(self):

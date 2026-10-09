@@ -99,6 +99,7 @@ def render(user: dict):
         org = c2.text_input("หน่วยงาน", placeholder="เช่น ภาควิชาวิทยาการคอมพิวเตอร์")
         no = c1.text_input("ครั้งที่", placeholder="เช่น 3/2569")
         venue = c2.text_input("สถานที่", placeholder="เช่น ห้องประชุม 2 / ออนไลน์ (Google Meet)")
+        previous = common.previous_meeting_select(user, key="new_previous_meeting", default_latest=True)
         st.markdown("##### ผู้เข้าร่วมและบทบาท")
         st.caption("ใส่ชื่อ **ตรงกับชื่อที่แสดงใน Google Meet** เพื่อให้ระบบจับคู่คนพูดกับรายชื่อนี้ให้อัตโนมัติ "
                    "(ประธานและเลขามีได้อย่างละ 1 คน) ใส่อีเมลประธาน/เลขาเพื่อให้เข้ามาตรวจและอนุมัติด้วยบัญชี Google ของตนได้ "
@@ -115,5 +116,5 @@ def render(user: dict):
             return
         _create(user, {
             "meet_url": url, "title": title, "org_name": org, "meeting_no": no, "venue": venue,
-            "people": people_from_df(people_df),
+            "people": people_from_df(people_df), "previous_meeting_id": previous,
         })

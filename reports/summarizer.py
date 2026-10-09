@@ -40,6 +40,8 @@ _REQUEST_TIMEOUT_MS = 120_000   # รายงานยาว + ประชุ�
 SINGLE_PASS_CHARS = int(os.environ.get("MINUTES_SINGLE_PASS_CHARS", "60000"))
 CHUNK_CHARS = int(os.environ.get("MINUTES_CHUNK_CHARS", "30000"))
 
+# วาระที่ AI สกัดจาก transcript จึงต้องมีหลักฐานอ้างอิง — วาระที่ระบบเติมจากครั้งก่อน/คนเพิ่มเองไม่ต้องตรวจหลักฐาน
+GROUNDED_SECTIONS = ("inform", "consider_new")
 GROUNDED_THRESHOLD = 0.8   # สัดส่วนของข้อความอ้างอิงที่ต้องหาเจอใน transcript ถึงถือว่า "มีที่มาจริง"
 
 _THAI_WEEKDAYS = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์", "อาทิตย์"]
@@ -181,19 +183,23 @@ def validate_minutes(
     agenda = []
     for i, a in enumerate(content.get("agenda") or []):
         item = {
+            "section": a.get("section") if a.get("section") in db.AGENDA_SECTIONS else db.DEFAULT_AGENDA_SECTION,
             "title": _clean_str(a.get("title")) or "",
             "discussion": _clean_str(a.get("discussion")) or "",
             "resolution": _clean_str(a.get("resolution")),
             "evidence": _clean_evidence(a.get("evidence")),
         }
         if not item["title"]:
-            warn("agenda_title_missing", f"agenda[{i}].title", f"วาระที่ {i + 1} ไม่มีชื่อวาระ")
-        item["grounded"] = check_evidence(
-            f"agenda[{i}].resolution", item["evidence"], required=bool(item["resolution"]),
-            what=f"มติของวาระที่ {i + 1} ",
-        )
+            warn("agenda_title_missing", f"agenda[{i}].title", f"เรื่องที่ {i + 1} ไม่มีชื่อ")
+        if item["section"] in GROUNDED_SECTIONS:
+            item["grounded"] = check_evidence(
+                f"agenda[{i}].resolution", item["evidence"], required=bool(item["resolution"]),
+                what=f"มติของเรื่องที่ {i + 1} ",
+            )
+        else:
+            item["grounded"] = None
         agenda.append(item)
-    if not agenda:
+    if not any(a["section"] in GROUNDED_SECTIONS for a in agenda):
         warn("no_agenda", "agenda", "ไม่พบวาระการประชุมที่ AI สกัดได้ — ตรวจสอบ transcript หรือเพิ่มวาระเอง")
 
     actions = []
@@ -403,9 +409,11 @@ def for_storage(content: dict) -> dict:
     return {
         "summary": content.get("summary") or "",
         "other_matters": content.get("other_matters"),
-        "agenda": [
-            {k: a.get(k) for k in ("title", "discussion", "resolution", "evidence")} for a in content.get("agenda") or []
-        ],
+        "agenda": sorted(     # เรียงตามหมวดวาระ (คงลำดับเดิมในหมวดเดียวกัน) ให้ตรงกับที่แสดงในรายงาน
+            ({k: a.get(k) for k in ("section", "title", "discussion", "resolution", "evidence")}
+             for a in content.get("agenda") or []),
+            key=lambda a: db.AGENDA_SECTIONS.index(a["section"]) if a.get("section") in db.AGENDA_SECTIONS else len(db.AGENDA_SECTIONS),
+        ),
         "action_items": [
             {k: it.get(k) for k in ("description", "assignee", "due_date", "due_time", "due_time_end", "evidence")}
             for it in content.get("action_items") or []
@@ -431,6 +439,8 @@ def generate_for_meeting(meeting_id: int, generate: Callable | None = None) -> d
         meeting.get("started_at") or datetime.datetime.now(), generate,
     )
     stored = for_storage(content)
-    saved = db.save_report(meeting_id, stored, _MODEL, PROMPT_NAME, ai_snapshot=stored)
+    from reports import continuity   # เติมวาระ 2, 3, 4.1 จากการประชุมครั้งก่อนที่เลือกไว้ (ถ้ามี) — ไม่ผ่าน AI
+    full = for_storage({**stored, "agenda": stored["agenda"] + continuity.prefill_items(meeting)})
+    saved = db.save_report(meeting_id, full, _MODEL, PROMPT_NAME, ai_snapshot=stored)   # ai_snapshot = เฉพาะที่ AI ร่าง
     db.set_meeting_status(meeting_id, "draft")
     return {**saved, "content": content}

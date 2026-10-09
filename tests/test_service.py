@@ -225,6 +225,122 @@ class ServiceTests(TempDbCase):
         self.assertEqual({a["name"]: a["reason"] for a in h["absent"]}, {"Bob": "ลาพักร้อน", "คุณใหม่": "ติดธุระ"})
         self.assertEqual([a["name"] for a in h["guests"]], ["Alice"])
 
+    # ── วาระ 5 หมวด + เติมจากการประชุมครั้งก่อน ──
+
+    def approved_meeting(self):
+        mid = self.draft()
+        service.approve_report(self.owner, mid, confirm_warnings=True)
+        return mid
+
+    def test_agenda_items_keep_their_section_and_only_ai_sections_need_evidence(self):
+        mid = self.draft()
+        content = service.get_report_view(self.owner, mid)["report"]["content"]
+        agenda = list(content["agenda"])
+        agenda += [
+            {"section": "followup", "title": "ติดตามงานเดิม", "discussion": "", "resolution": "อยู่ระหว่างดำเนินการ", "evidence": []},
+            {"section": "inform", "title": "แจ้งงานเปิดบ้าน", "discussion": "วันศุกร์หน้า", "resolution": None, "evidence": []},
+            {"section": "approve_prev", "title": "รับรองรายงานการประชุมครั้งที่ 1/2569", "discussion": "",
+             "resolution": "ที่ประชุมรับรอง", "evidence": []},
+            {"section": "bogus", "title": "ค่าผิดต้องกลับเป็นค่าเริ่มต้น", "discussion": "x", "resolution": None, "evidence": []},
+        ]
+        cleaned = service.save_report_draft(self.owner, mid, {**content, "agenda": agenda})
+        stored = db.get_report(mid)["content"]["agenda"]
+        order = [db.AGENDA_SECTIONS.index(a["section"]) for a in stored]
+        self.assertEqual(order, sorted(order))                                   # เก็บเรียงตามหมวดวาระ
+        by_title = {a["title"]: a["section"] for a in stored}
+        self.assertEqual(by_title["ค่าผิดต้องกลับเป็นค่าเริ่มต้น"], "consider_new")
+        self.assertEqual(by_title["แจ้งงานเปิดบ้าน"], "inform")
+        for i, a in enumerate(cleaned["agenda"]):                                # มติที่คนกรอกเองในหมวดที่ไม่ใช่ของ AI ไม่ถูกเตือนเรื่องหลักฐาน
+            if a["section"] in ("followup", "approve_prev"):
+                self.assertFalse([w for w in cleaned["warnings"] if w["path"].startswith(f"agenda[{i}]")], a["title"])
+
+    def test_previous_meeting_must_be_an_approved_meeting_you_manage(self):
+        prev = self.approved_meeting()
+        unapproved = self.new_meeting()
+        cur = self.new_meeting(previous_meeting_id=prev)
+        self.assertEqual(service.get_detail(self.owner, cur)["meeting"]["previous_meeting_id"], prev)
+        offered = [m["meeting_id"] for m in service.previous_meeting_choices(self.owner)]
+        self.assertIn(prev, offered)
+        self.assertNotIn(unapproved, offered)                                                # เสนอเฉพาะที่อนุมัติรายงานแล้ว
+        self.assertNotIn(cur, [m["meeting_id"] for m in service.previous_meeting_choices(self.owner, cur)])   # ไม่เสนอตัวเอง
+        self.assertEqual(service.previous_meeting_choices(self.other), [])                   # ไม่เห็นการประชุมของคนอื่น
+        for bad in (unapproved, cur, 999999, "abc"):                                          # ยังไม่อนุมัติ / ตัวเอง / ไม่มี / ไม่ใช่เลข
+            with self.assertRaises(ServiceError):
+                service.update_meeting(self.owner, cur, previous_meeting_id=bad)
+        service.update_meeting(self.owner, cur, previous_meeting_id=None)
+        self.assertIsNone(service.get_detail(self.owner, cur)["meeting"]["previous_meeting_id"])
+        with self.assertRaises(ServiceError):
+            self.new_meeting(previous_meeting_id=unapproved)
+
+    def generate_for(self, **over):
+        mid = self.new_meeting(**over)
+        self.record(mid)
+        service.verify_transcript(self.owner, mid)
+        service.generate_report(self.owner, mid, generate=fake_ai)
+        return mid
+
+    def test_generating_a_report_prefills_sections_2_3_and_4_1_from_the_previous_meeting(self):
+        prev = self.approved_meeting()
+        prev_report = db.get_report(prev)["content"]
+        prev_meeting = db.get_meeting(prev)
+        cur = self.generate_for(previous_meeting_id=prev, meeting_no="4/2569")
+        report = db.get_report(cur)
+        by = {}
+        for a in report["content"]["agenda"]:
+            by.setdefault(a["section"], []).append(a)
+        approve = by["approve_prev"][0]["title"]
+        self.assertIn("ครั้งที่ 3/2569", approve)                                          # มาจาก meeting_no ของครั้งก่อน
+        self.assertIn(str(prev_meeting["started_at"].year + 543), approve)
+        self.assertEqual([a["title"] for a in by["followup"]], [x["description"] for x in prev_report["action_items"]])
+        self.assertIn("ผู้รับผิดชอบ: Alice", by["followup"][0]["discussion"])
+        self.assertNotIn("consider_old", by)                                               # ครั้งก่อนทุกวาระมีมติ จึงไม่มีเรื่องค้าง
+        self.assertEqual([a["title"] for a in by["consider_new"]], ["งบประมาณ"])           # ที่ AI สรุปยังอยู่ 4.2
+        self.assertEqual({a.get("section") for a in report["ai_snapshot"]["agenda"]}, {"consider_new"})   # snapshot เก็บเฉพาะที่ AI ร่าง
+        alone = self.generate_for()                                                        # ไม่เลือกครั้งก่อน = ไม่มีหมวดที่เติมให้
+        self.assertEqual({a["section"] for a in db.get_report(alone)["content"]["agenda"]}, {"consider_new"})
+
+    def test_unresolved_agenda_items_of_the_previous_meeting_become_section_4_1(self):
+        prev = self.draft()
+        content = service.get_report_view(self.owner, prev)["report"]["content"]
+        content["agenda"].append({"section": "consider_new", "title": "เรื่องที่ยังไม่ตัดสินใจ", "discussion": "รอข้อมูลเพิ่ม",
+                                  "resolution": None, "evidence": ["ผมเสนอให้อนุมัติงบสองหมื่นบาท"]})
+        content["agenda"].append({"section": "inform", "title": "เรื่องแจ้งทราบ", "discussion": "x", "resolution": None, "evidence": []})
+        service.save_report_draft(self.owner, prev, content)
+        service.approve_report(self.owner, prev, confirm_warnings=True)
+        cur = self.generate_for(previous_meeting_id=prev)
+        old = [a for a in db.get_report(cur)["content"]["agenda"] if a["section"] == "consider_old"]
+        self.assertEqual([(a["title"], a["discussion"], a["resolution"]) for a in old],
+                         [("เรื่องที่ยังไม่ตัดสินใจ", "รอข้อมูลเพิ่ม", None)])         # เรื่องแจ้งทราบ (inform) ไม่ถูกนับเป็นเรื่องค้าง
+
+    def test_pdf_places_each_item_under_its_own_agenda_heading(self):
+        import io
+
+        from pypdf import PdfReader
+
+        from reports import pdf_report
+        mid = self.new_meeting()
+        content = {"summary": "", "other_matters": "เรื่องอื่นทดสอบ", "action_items": [], "agenda": [
+            {"section": "inform", "title": "ก_แจ้งทราบ", "discussion": "รายละเอียดแจ้ง", "resolution": None, "evidence": []},
+            {"section": "approve_prev", "title": "รับรองรายงานการประชุมครั้งที่ 3/2569 เมื่อวันที่ 2 ตุลาคม 2569",
+             "discussion": "", "resolution": "ที่ประชุมรับรองรายงานทดสอบ", "evidence": []},
+            {"section": "followup", "title": "ข_สืบเนื่อง", "discussion": "ผู้รับผิดชอบ: Alice", "resolution": None, "evidence": []},
+            {"section": "consider_old", "title": "ค_ค้างพิจารณา", "discussion": "", "resolution": "เลื่อนไปครั้งหน้า", "evidence": []},
+            {"section": "consider_new", "title": "ง_พิจารณาใหม่", "discussion": "", "resolution": "อนุมัติ", "evidence": []},
+        ]}
+        data = pdf_report.build_minutes_pdf(db.get_meeting(mid), db.list_speakers(mid), content)
+        text = chr(10).join(pg.extract_text() for pg in PdfReader(io.BytesIO(data)).pages)
+        order = ["ระเบียบวาระที่ 1", "ก_แจ้งทราบ", "รายละเอียดแจ้ง", "ระเบียบวาระที่ 2", "รับรองรายงานการประชุมครั้งที่ 3/2569",
+                 "ที่ประชุมรับรองรายงานทดสอบ", "ระเบียบวาระที่ 3", "ข_สืบเนื่อง", "ระเบียบวาระที่ 4", "4.1", "ค_ค้างพิจารณา",
+                 "เลื่อนไปครั้งหน้า", "4.2", "ง_พิจารณาใหม่", "ระเบียบวาระที่ 5", "เรื่องอื่นทดสอบ"]
+        pos = -1
+        for marker in order:
+            nxt = text.find(marker, pos + 1)
+            self.assertGreater(nxt, pos, f"ไม่พบ/ลำดับผิด: {marker!r}")
+            pos = nxt
+        self.assertIn("1.1 ก_แจ้งทราบ", text)
+        self.assertIn("4.1.1", text)
+        self.assertIn("4.2.1", text)
+
     def test_pdf_follows_the_meeting_minutes_form(self):
         import io
         from pypdf import PdfReader

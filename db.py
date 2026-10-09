@@ -57,7 +57,9 @@ CREATE TABLE meetings (
     started_at    DATETIME NOT NULL,
     ended_at      DATETIME NULL,
     status        VARCHAR(20) NOT NULL DEFAULT 'recording',
-    CONSTRAINT fk_meetings_owner FOREIGN KEY (owner_user_id) REFERENCES users(user_id) ON DELETE SET NULL
+    previous_meeting_id INT NULL,
+    CONSTRAINT fk_meetings_owner FOREIGN KEY (owner_user_id) REFERENCES users(user_id) ON DELETE SET NULL,
+    CONSTRAINT fk_meetings_previous FOREIGN KEY (previous_meeting_id) REFERENCES meetings(meeting_id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE speakers (
@@ -108,6 +110,7 @@ CREATE TABLE agenda_items (
     agenda_item_id INT AUTO_INCREMENT PRIMARY KEY,
     summary_id     INT NOT NULL,
     order_no       INT NOT NULL,
+    section        VARCHAR(20) NOT NULL DEFAULT 'consider_new',
     title          VARCHAR(255) NOT NULL,
     discussion     TEXT NULL,
     resolution     TEXT NULL,
@@ -146,6 +149,11 @@ _STATUS_TRANSITIONS: dict[str, set[str]] = {
 
 ROLES = ("chair", "secretary", "attendee", "guest")  # ประธาน / เลขา / กรรมการ-สมาชิก (ผู้มาประชุม) / ผู้เข้าร่วม (ไม่ใช่กรรมการ)
 UNIQUE_ROLES = ("chair", "secretary")               # แต่ละการประชุมมีได้คนเดียว
+# หมวดของวาระในรายงานตามแบบฟอร์ม (วาระที่ 5 เรื่องอื่น ๆ เก็บเป็นข้อความ summaries.other_matters ไม่ใช่แถววาระ)
+#   inform = วาระ 1 แจ้งให้ที่ประชุมทราบ · approve_prev = วาระ 2 รับรองรายงานครั้งก่อน · followup = วาระ 3 เรื่องสืบเนื่อง
+#   consider_old = วาระ 4.1 เรื่องค้างพิจารณา · consider_new = วาระ 4.2 เรื่องพิจารณาใหม่ (ค่าเริ่มต้น — เรื่องที่ AI สรุป)
+AGENDA_SECTIONS = ("inform", "approve_prev", "followup", "consider_old", "consider_new")
+DEFAULT_AGENDA_SECTION = "consider_new"
 ATTENDANCE = ("invited", "present", "absent")       # เชิญไว้ (ยังไม่ยืนยัน) / เข้าร่วม / ไม่มา
 
 
@@ -328,7 +336,7 @@ def get_calendar_token(user_id: int) -> str | None:
 # ─────────────────────────────────────────────────────────────────────────────
 # การประชุม
 # ─────────────────────────────────────────────────────────────────────────────
-_SETUP_EDITABLE = ("meet_url", "title", "venue", "scheduled_at", "meeting_no", "org_name")
+_SETUP_EDITABLE = ("meet_url", "title", "venue", "scheduled_at", "meeting_no", "org_name", "previous_meeting_id")
 
 
 def _clean(value):
@@ -468,7 +476,7 @@ def get_meeting(meeting_id: int) -> dict | None:
         with conn.cursor() as cur:
             cur.execute(
                 """SELECT meeting_id, meet_url, title, venue, scheduled_at, meeting_no, org_name,
-                          started_at, ended_at, status, owner_user_id
+                          started_at, ended_at, status, owner_user_id, previous_meeting_id
                    FROM meetings WHERE meeting_id = %s""",
                 (meeting_id,),
             )
@@ -505,7 +513,7 @@ def list_meetings(owner_user_id: int, email: str | None = None, limit: int = 100
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT m.meeting_id, m.meet_url, m.title, m.started_at, m.ended_at, m.status, m.owner_user_id,
+                """SELECT m.meeting_id, m.meet_url, m.title, m.meeting_no, m.org_name, m.started_at, m.ended_at, m.status, m.owner_user_id,
                           (SELECT COUNT(*) FROM transcript_segments t
                             WHERE t.meeting_id = m.meeting_id AND t.deleted = FALSE) AS segment_count
                    FROM meetings m
@@ -901,9 +909,10 @@ def _insert_report_rows(cur, summary_id: int, content: dict, carry: list[dict] |
     """เขียนวาระและงานของรายงาน (carry = แถวงานเดิมที่มีสถานะส่ง Calendar ไว้ ให้ย้ายสถานะไปยังรายการที่ไม่เปลี่ยน)"""
     for i, a in enumerate(content.get("agenda") or [], start=1):
         cur.execute(
-            """INSERT INTO agenda_items (summary_id, order_no, title, discussion, resolution, evidence)
-               VALUES (%s, %s, %s, %s, %s, %s)""",
-            (summary_id, i, (a.get("title") or "")[:255], a.get("discussion") or None,
+            """INSERT INTO agenda_items (summary_id, order_no, section, title, discussion, resolution, evidence)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (summary_id, i, a.get("section") if a.get("section") in AGENDA_SECTIONS else DEFAULT_AGENDA_SECTION,
+             (a.get("title") or "")[:255], a.get("discussion") or None,
              a.get("resolution") or None, _dump_list(a.get("evidence"))),
         )
     pool = list(carry or [])
@@ -939,8 +948,8 @@ def _existing_action_rows(cur, summary_id: int) -> list[dict]:
 def _report_row_to_dict(cur, row: dict) -> dict:
     sid = row["summary_id"]
     cur.execute("SELECT * FROM agenda_items WHERE summary_id = %s ORDER BY order_no, agenda_item_id", (sid,))
-    agenda = [{"title": a["title"], "discussion": a["discussion"] or "", "resolution": a["resolution"],
-               "evidence": _json_list(a["evidence"])} for a in cur.fetchall()]
+    agenda = [{"section": a["section"], "title": a["title"], "discussion": a["discussion"] or "",
+               "resolution": a["resolution"], "evidence": _json_list(a["evidence"])} for a in cur.fetchall()]
     cur.execute("SELECT * FROM action_items WHERE summary_id = %s ORDER BY action_item_id", (sid,))
     actions = []
     for a in cur.fetchall():

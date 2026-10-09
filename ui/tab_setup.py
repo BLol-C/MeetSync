@@ -61,9 +61,11 @@ def render(user: dict, detail: dict):
         org = c2.text_input("หน่วยงาน", value=meeting["org_name"] or "", disabled=locked)
         no = c1.text_input("ครั้งที่", value=meeting["meeting_no"] or "", disabled=locked)
         venue = c2.text_input("สถานที่", value=meeting["venue"] or "", disabled=locked)
+        previous = common.previous_meeting_select(
+            user, key=f"prev_{mid}", current_id=meeting.get("previous_meeting_id"), exclude_id=mid, disabled=locked)
         saved = st.form_submit_button("บันทึกข้อมูล", disabled=locked)
     if saved:
-        fields = {"title": title, "org_name": org, "meeting_no": no, "venue": venue}
+        fields = {"title": title, "org_name": org, "meeting_no": no, "venue": venue, "previous_meeting_id": previous}
         if status == "scheduled":
             fields["meet_url"] = url
         try:

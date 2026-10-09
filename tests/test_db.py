@@ -104,6 +104,25 @@ class WorkflowTests(TempDbCase):
         self.assertEqual(db.get_speaker(c)["absence_reason"], "ลา")
         self.assertEqual(db.mark_unconfirmed_absent(mid), [])         # เรียกซ้ำไม่เปลี่ยนอะไร
 
+    def test_deleting_the_previous_meeting_clears_the_link_and_sections_roundtrip(self):
+        uid, prev = self.new_meeting()
+        cur = db.create_meeting_setup(uid, meet_url=URL, previous_meeting_id=prev)
+        self.assertEqual(db.get_meeting(cur)["previous_meeting_id"], prev)
+        db.update_meeting_setup(cur, previous_meeting_id=None)
+        self.assertIsNone(db.get_meeting(cur)["previous_meeting_id"])
+        db.update_meeting_setup(cur, previous_meeting_id=prev)
+        self.assertTrue(db.delete_scheduled_meeting(prev))             # ตัวที่ถูกอ้างอิงถูกลบ -> ลิงก์ว่าง ไม่ทำให้ลบไม่ได้
+        self.assertIsNone(db.get_meeting(cur)["previous_meeting_id"])
+        db.begin_recording(cur)
+        db.end_meeting(cur)
+        content = {"summary": "s", "other_matters": None, "action_items": [], "agenda": [
+            {"section": "followup", "title": "ก", "discussion": "", "resolution": None, "evidence": []},
+            {"title": "ไม่ระบุหมวด", "discussion": "", "resolution": None, "evidence": []},
+            {"section": "nonsense", "title": "หมวดผิด", "discussion": "", "resolution": None, "evidence": []}]}
+        db.save_report(cur, content)
+        self.assertEqual([(a["title"], a["section"]) for a in db.get_report(cur)["content"]["agenda"]],
+                         [("ก", "followup"), ("ไม่ระบุหมวด", "consider_new"), ("หมวดผิด", "consider_new")])
+
     def test_setup_then_record_then_end(self):
         uid, mid = self.new_meeting(title="  ประชุม  ", venue="", meeting_no="3/2569")
         m = db.get_meeting(mid)
@@ -322,7 +341,8 @@ class WorkflowTests(TempDbCase):
         saved = db.save_report(mid, self.report_content(), "gemini", "minutes_v2")
         rep = db.get_report(mid)
         self.assertEqual(rep["summary_id"], saved["summary_id"])
-        self.assertEqual(rep["content"], {**self.report_content(), "action_items": [
+        self.assertEqual(rep["content"], {**self.report_content(), "agenda": [
+            {**a, "section": "consider_new"} for a in self.report_content()["agenda"]], "action_items": [
             {**self.report_content()["action_items"][0], "action_item_id": rep["content"]["action_items"][0]["action_item_id"],
              "calendar_synced": False, "google_calendar_event_id": None},
             {**self.report_content()["action_items"][1], "action_item_id": rep["content"]["action_items"][1]["action_item_id"],

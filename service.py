@@ -64,15 +64,37 @@ def default_title(now: datetime.datetime | None = None) -> str:
     return f"การประชุม {report_data.thai_date(now)} {now:%H:%M} น."
 
 
+def previous_meeting_choices(user: dict, exclude_id: int | None = None) -> list[dict]:
+    """การประชุมที่อนุมัติรายงานแล้วและผู้ใช้จัดการได้ — ไว้เลือกเป็น "การประชุมครั้งก่อน" (ล่าสุดก่อน)"""
+    return [m for m in db.list_meetings(user["user_id"], user.get("email"))
+            if m["status"] == "approved" and m["meeting_id"] != exclude_id]
+
+
+def _check_previous(user: dict, previous_meeting_id, own_id: int | None = None) -> int | None:
+    if previous_meeting_id in (None, "", 0):
+        return None
+    try:
+        pid = int(previous_meeting_id)
+    except (TypeError, ValueError):
+        raise ServiceError("การประชุมครั้งก่อนไม่ถูกต้อง", "invalid")
+    if own_id is not None and pid == own_id:
+        raise ServiceError("เลือกการประชุมนี้เป็นครั้งก่อนของตัวเองไม่ได้", "invalid")
+    if not any(m["meeting_id"] == pid for m in previous_meeting_choices(user, own_id)):
+        raise ServiceError("การประชุมครั้งก่อนต้องเป็นการประชุมที่อนุมัติรายงานแล้วและคุณจัดการได้", "invalid")
+    return pid
+
+
 def create_meeting(
     user: dict, *, meet_url: str, title: str | None = None, venue: str | None = None,
     meeting_no: str | None = None, org_name: str | None = None,
     scheduled_at: datetime.datetime | None = None, people: list[dict] | None = None,
+    previous_meeting_id: int | None = None,
 ) -> int:
     """สร้างการประชุมพร้อมรายชื่อผู้เข้าร่วมและบทบาท (ยังไม่สั่งบอท) — ตรวจรายชื่อให้ผ่านทั้งหมดก่อนเขียน
     จะได้ไม่เหลือการประชุมครึ่งๆ กลางๆ ถ้ารายการท้ายผิด
     """
     url = check_meet_url(meet_url)
+    previous_meeting_id = _check_previous(user, previous_meeting_id)
     people = [p for p in (people or []) if (p.get("display_name") or "").strip()]
     roles = [p.get("role", "attendee") for p in people]
     for r in db.UNIQUE_ROLES:
@@ -87,6 +109,7 @@ def create_meeting(
         meeting_id = db.create_meeting_setup(
             user["user_id"], meet_url=url, title=(title or "").strip() or default_title(), venue=venue,
             meeting_no=meeting_no, org_name=org_name, scheduled_at=scheduled_at,
+            previous_meeting_id=previous_meeting_id,
         )
         for p in people:
             db.add_speaker(meeting_id, p["display_name"], p.get("email"), p.get("role", "attendee"),
@@ -128,6 +151,8 @@ def update_meeting(user: dict, meeting_id: int, **fields) -> None:
         if meeting["status"] != "scheduled":
             raise ServiceError("เปลี่ยนลิงก์ได้เฉพาะก่อนเริ่มบอท", "conflict")
         fields["meet_url"] = check_meet_url(fields["meet_url"])
+    if "previous_meeting_id" in fields:
+        fields["previous_meeting_id"] = _check_previous(user, fields["previous_meeting_id"], meeting_id)
     try:
         db.update_meeting_setup(meeting_id, **fields)
     except ValueError as e:

@@ -4,6 +4,8 @@ import re
 
 import streamlit as st
 
+import service
+
 from bot import botclient
 from reports import report_data
 
@@ -39,6 +41,14 @@ ROLE_LABEL = {"chair": "ประธาน", "secretary": "เลขา", "atten
 ROLE_BY_LABEL = {v: k for k, v in ROLE_LABEL.items()}
 ATT_LABEL = {"invited": "ยังไม่ยืนยัน", "present": "เข้าร่วม", "absent": "ไม่มา"}
 ATT_BY_LABEL = {v: k for k, v in ATT_LABEL.items()}
+AGENDA_SECTION_LABEL = {
+    "inform": "วาระ 1 · เรื่องแจ้งให้ที่ประชุมทราบ",
+    "approve_prev": "วาระ 2 · รับรองรายงานการประชุมครั้งก่อน",
+    "followup": "วาระ 3 · เรื่องสืบเนื่อง",
+    "consider_old": "วาระ 4.1 · เรื่องค้างพิจารณา",
+    "consider_new": "วาระ 4.2 · เรื่องพิจารณาใหม่",
+}
+AGENDA_SECTION_BY_LABEL = {v: k for k, v in AGENDA_SECTION_LABEL.items()}
 SOURCE_LABEL = {"registered": "ลงทะเบียนไว้", "meet": "พบจาก Meet"}
 
 
@@ -70,6 +80,22 @@ def meet_link_text(url: str) -> str:
     """ลิงก์ Meet สำหรับแสดงผล: ตัด query ออก เหลือส่วนที่ปลอดภัยต่อ Markdown (ถ้า escape ทั้งลิงก์ จะมีเครื่องหมาย backslash ปนในลิงก์ที่แสดง)"""
     base = (url or "").split("?")[0]
     return base if _MEET_BASE.fullmatch(base) else md_escape(url)
+
+
+def previous_meeting_select(user: dict, *, key: str, current_id: int | None = None, exclude_id: int | None = None,
+                            default_latest: bool = False, disabled: bool = False) -> int | None:
+    """ช่องเลือก "การประชุมครั้งก่อน" (เฉพาะที่อนุมัติรายงานแล้ว) — ระบบเติมวาระ 2, 3, 4.1 ของรายงานจากครั้งนั้น คืน meeting_id หรือ None"""
+    none_label = "— ไม่มี / ไม่ใช้ข้อมูลครั้งก่อน —"
+    labels: dict[str, int | None] = {none_label: None}
+    for m in service.previous_meeting_choices(user, exclude_id):
+        no = f" · ครั้งที่ {m['meeting_no']}" if m.get("meeting_no") else ""
+        labels[f"{m['title'] or '(ไม่ได้ตั้งชื่อ)'}{no} · {thai_date(m['started_at'])} (#{m['meeting_id']})"] = m["meeting_id"]
+    ids = list(labels.values())
+    wanted = current_id if current_id is not None and current_id in ids else (ids[1] if default_latest and len(ids) > 1 else None)
+    return labels[st.selectbox(
+        "การประชุมครั้งก่อน", options=list(labels), index=ids.index(wanted), key=key, disabled=disabled,
+        help="ระบบเติมรายงานวาระที่ 2 (รับรองรายงานครั้งก่อน) วาระที่ 3 (งานที่มอบหมายไว้) และวาระที่ 4.1 (เรื่องที่ไม่มีมติ) "
+             "จากรายงานของการประชุมนี้ เลือกได้เฉพาะที่อนุมัติรายงานแล้ว — ตรวจและแก้ได้ที่แท็บ ④ ก่อนอนุมัติ")]
 
 
 # ── นำทาง ──

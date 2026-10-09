@@ -244,27 +244,55 @@ def build_minutes_pdf(
         _para(pdf, parts)
 
     def sec_agenda():
+        all_items = content.get("agenda") or []
+
+        def items_of(section: str) -> list[dict]:
+            return [x for x in all_items if (x.get("section") or "consider_new") == section]
+
+        def item_block(label: str, a: dict, *, always_resolution: bool):
+            """หนึ่งเรื่อง: ชื่อเรื่อง + สาระ + มติ (เรื่องที่ไม่ต้องมีมติ เช่น แจ้งให้ทราบ แสดงมติเฉพาะเมื่อมีข้อความ)"""
+            _line(pdf, f"{label} {a.get('title') or ''}", x=INDENT)
+            if a.get("discussion"):
+                _para(pdf, a["discussion"])
+            if always_resolution or a.get("resolution"):
+                _resolution(a.get("resolution"))
+
         for n, entry in enumerate(TEMPLATE["agenda"], start=1):
-            _agenda_heading(n, entry["title"])
             kind = entry["kind"]
+            mine = items_of(entry.get("section", "")) if kind == "blank" else []
+            approve = items_of("approve_prev")[:1] if kind == "approve" else []
+            title = f"เรื่อง{approve[0]['title']}" if approve and approve[0].get("title") else entry["title"]
+            _agenda_heading(n, title)
             if kind == "blank":
-                _line(pdf, _dots(pdf, INDENT), x=INDENT)
+                if not mine:
+                    _line(pdf, _dots(pdf, INDENT), x=INDENT)
+                for k, a in enumerate(mine, start=1):
+                    item_block(f"{n}.{k}", a, always_resolution=False)
+                    if k < len(mine):
+                        _blank(pdf)
             elif kind == "approve":
-                _resolution(None, blank=True)
+                if approve and approve[0].get("discussion"):
+                    _para(pdf, approve[0]["discussion"])
+                if approve and approve[0].get("resolution"):
+                    _resolution(approve[0]["resolution"])
+                else:
+                    _resolution(None, blank=True)
             elif kind == "consider":
+                old, new = items_of("consider_old"), items_of("consider_new")
                 _line(pdf, f"{n}.1 {entry['old']}", x=INDENT, bold=True)
-                _line(pdf, _dots(pdf, INDENT), x=INDENT)
+                if not old:
+                    _line(pdf, _dots(pdf, INDENT), x=INDENT)
+                for k, a in enumerate(old, start=1):
+                    item_block(f"{n}.1.{k}", a, always_resolution=True)
+                    if k < len(old):
+                        _blank(pdf)
                 _blank(pdf)
                 _line(pdf, f"{n}.2 {entry['new']}", x=INDENT, bold=True)
-                items = content.get("agenda") or []
-                if not items:
+                if not new:
                     _line(pdf, _dots(pdf, INDENT), x=INDENT)
-                for k, a in enumerate(items, start=1):
-                    _line(pdf, f"{n}.2.{k} {a.get('title') or ''}", x=INDENT)
-                    if a.get("discussion"):
-                        _para(pdf, a["discussion"])
-                    _resolution(a.get("resolution"))
-                    if k < len(items):
+                for k, a in enumerate(new, start=1):
+                    item_block(f"{n}.2.{k}", a, always_resolution=True)
+                    if k < len(new):
                         _blank(pdf)
             elif kind == "other":
                 if content.get("other_matters"):
