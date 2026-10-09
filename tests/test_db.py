@@ -5,275 +5,40 @@
 รัน:  venv\\Scripts\\python.exe -m unittest discover -s tests -t . -v
 """
 
-import subprocess
-import types
 import unittest
 import uuid
 
-from tests.dbcase import ROOT, TempDbCase, server_conn   # ต้อง import ก่อน db: โหลด .env ให้เรียบร้อยก่อน
+from tests.dbcase import TempDbCase   # ต้อง import ก่อน db: โหลด .env ให้เรียบร้อยก่อน
 
 import db  # noqa: E402
 
-SA_ERA_COMMIT = "c582c90"    # db.py ตาม SA เดิม 6 ตาราง (ก่อนมี owner / participants / migration แบบมีเวอร์ชัน)
-DEV_COMMIT = "7035ad5"       # db.py ช่วงพัฒนา (มี participants / minutes / calendar_tokens แยกตาราง) ก่อนยุบให้ตรง SA
 URL = "https://meet.google.com/abc-defg-hij"
 
 
-def load_old_db(commit: str, dbname: str):
-    """โหลด db.py ของ commit เก่ามาเป็นโมดูล ชี้ไปที่ฐานข้อมูลที่ระบุ — ไว้สร้างฐานข้อมูล "เวอร์ชันเก่า" ที่มีข้อมูลจริงในตาราง"""
-    try:
-        src = subprocess.run(
-            ["git", "show", f"{commit}:db.py"],
-            cwd=ROOT, capture_output=True, text=True, encoding="utf-8", check=True,
-        ).stdout
-    except Exception as e:  # noqa: BLE001
-        raise unittest.SkipTest(f"อ่าน db.py ของ {commit} จาก git ไม่ได้: {e!r}")
-    old = types.ModuleType(f"old_db_{commit}")
-    exec(compile(src, f"old_db_{commit}.py", "exec"), old.__dict__)  # noqa: S102 — โค้ดของ repo เราเอง
-    old.DB_NAME = dbname
-    return old
+class SchemaTests(TempDbCase):
+    """ไม่มีระบบอัปเกรดโครงสร้าง: ฐานเปล่าได้ครบทุกตาราง, เรียกซ้ำได้, และฐานโครงสร้างเก่าต้องแจ้ง error ชัดเจน"""
 
+    per_test = True   # แต่ละเคสต้องเริ่มจากฐานเปล่า
 
-def make_db(name: str):
-    conn = server_conn()
-    with conn.cursor() as cur:
-        cur.execute(f"CREATE DATABASE `{name}` CHARACTER SET utf8mb4")
-    conn.close()
+    def tables(self):
+        return {r["TABLE_NAME"] for r in self.rows(
+            "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()")}
 
-
-def drop_db(name: str):
-    conn = server_conn()
-    with conn.cursor() as cur:
-        cur.execute(f"DROP DATABASE IF EXISTS `{name}`")
-    conn.close()
-
-
-def schema_signature(dbname: str) -> dict:
-    """ลายเซ็นโครงสร้างฐานข้อมูล: คอลัมน์ (ชนิด/null/ค่าเริ่มต้น), foreign key, unique key — ไว้เทียบว่าสองฐานเหมือนกันไหม"""
-    conn = server_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT
-                   FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = %s""",
-                (dbname,),
-            )
-            cols = {(r[0], r[1], r[2].lower(), r[3], None if r[4] is None else str(r[4]).strip("'")) for r in cur.fetchall()}
-            cur.execute(
-                """SELECT k.TABLE_NAME, k.COLUMN_NAME, k.REFERENCED_TABLE_NAME, r.DELETE_RULE
-                   FROM information_schema.KEY_COLUMN_USAGE k
-                   JOIN information_schema.REFERENTIAL_CONSTRAINTS r
-                     ON r.CONSTRAINT_SCHEMA = k.TABLE_SCHEMA AND r.CONSTRAINT_NAME = k.CONSTRAINT_NAME
-                    AND r.TABLE_NAME = k.TABLE_NAME
-                   WHERE k.TABLE_SCHEMA = %s""",
-                (dbname,),
-            )
-            fks = {tuple(r) for r in cur.fetchall()}
-            cur.execute(
-                """SELECT TABLE_NAME, INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX)
-                   FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = %s AND NON_UNIQUE = 0
-                   GROUP BY TABLE_NAME, INDEX_NAME""",
-                (dbname,),
-            )
-            uniques = {(r[0], r[2]) for r in cur.fetchall()}   # ไม่เทียบชื่อ index เพราะ MySQL ตั้งชื่ออัตโนมัติต่างกันได้
-        return {"columns": cols, "fks": fks, "uniques": uniques}
-    finally:
-        conn.close()
-
-
-class MigrationTests(TempDbCase):
-    """อัปเกรดจากฐานข้อมูลเดิมทุกยุคแล้วข้อมูลต้องครบ และโครงสร้างต้องเหมือนฐานข้อมูลที่สร้างใหม่"""
-
-    per_test = True   # แต่ละเคสสร้างฐานข้อมูลเวอร์ชันเก่าของตัวเอง ต้องเริ่มจากฐานเปล่า
-
-    def test_upgrade_from_sa_era_keeps_data_and_matches_fresh_schema(self):
-        old = load_old_db(SA_ERA_COMMIT, self.dbname)
-        old.init_schema()
-        running = old.create_meeting(URL)                       # สถานะเก่า: in_progress
-        finished = old.create_meeting(URL)
-        old.end_meeting(finished)                               # สถานะเก่า: completed
-        sp = old.get_or_create_speaker(finished, "สมชาย")
-        old.insert_segment(finished, sp, 1, "สวัสดีครับ")
-        summary_id = old.insert_summary(finished, "สรุปเดิม", "gemini")
-        old.insert_action_item(summary_id, "ส่งรายงาน", "สมชาย", "2026-10-30")
-
+    def test_empty_database_gets_every_table_and_no_migration_table(self):
         db.init_schema()
-        db.init_schema()   # รันซ้ำต้องไม่พังและไม่ทำอะไรซ้ำ
+        self.assertEqual(self.tables(), {"users", "meetings", "speakers", "transcript_segments", "summaries",
+                                         "agenda_items", "action_items"})
 
-        status = {r["meeting_id"]: r["status"] for r in self.rows("SELECT meeting_id, status FROM meetings")}
-        self.assertEqual(status[running], "recording")
-        self.assertEqual(status[finished], "transcript_review")
-        self.assertEqual([r["version"] for r in self.rows("SELECT version FROM schema_migrations ORDER BY version")],
-                         [v for v, _ in db._MIGRATIONS])
-        # ผู้พูดเดิมมาจากชื่อใน Meet และเคยพูดจริง -> เข้าร่วม
-        sp_row = db.list_speakers(finished)[0]
-        self.assertEqual((sp_row["display_name"], sp_row["source"], sp_row["attendance"], sp_row["segment_count"]),
-                         ("สมชาย", "meet", "present", 1))
-        self.assertEqual(db.get_transcript(finished)[0]["text"], "สวัสดีครับ")
-        # สรุปเดิมของ SA = รายงานฉบับร่าง (ยังไม่เคยผ่านการอนุมัติ) และงานเดิมยังผูกอยู่
-        report = db.get_report(finished)
-        self.assertFalse(report["approved"])
-        self.assertEqual(report["content"]["summary"], "สรุปเดิม")
-        self.assertEqual([(a["description"], a["assignee"], a["due_date"]) for a in report["content"]["action_items"]],
-                         [("ส่งรายงาน", "สมชาย", "2026-10-30")])
-
-        fresh = f"meetsync_fresh_{uuid.uuid4().hex[:6]}"
-        make_db(fresh)
-        orig, db.DB_NAME = db.DB_NAME, fresh
-        try:
-            db.init_schema()
-        finally:
-            db.DB_NAME = orig
-        try:
-            self.assertEqual(schema_signature(fresh), schema_signature(self.dbname),
-                             "ฐานข้อมูลที่อัปเกรดต้องมีโครงสร้างเหมือนฐานข้อมูลที่สร้างใหม่ทุกคอลัมน์")
-        finally:
-            drop_db(fresh)
-
-    def test_upgrade_from_development_schema_merges_duplicates(self):
-        """ช่วงพัฒนามี participants/minutes/calendar_tokens แยกตาราง ทำให้คนเดียวอยู่สองที่และรายงานซ้อนกัน"""
-        old = load_old_db(DEV_COMMIT, self.dbname)
-        old.init_schema()
-        uid = old.upsert_user("sub-dev", "dev@x.com", "เจ้าของ", None)
-        old.save_calendar_token(uid, '{"token": "abc"}')
-
-        # ประชุม A: รายชื่อ + คนเดียวกันโผล่เป็นสองผู้พูด + รายงานร่างเก่าค้าง + รายงานที่อนุมัติแล้ว
-        a = old.create_meeting_setup(uid, meet_url=URL, title="ประชุม A")
-        old.add_participant(a, "สมชาย ใจดี", "chair@x.com", "chair", "present")
-        old.add_participant(a, "Alice", "alice@x.com")
-        old.add_participant(a, "Bob", None, "attendee", "absent")
-        old.begin_recording(a)
-        s_chair = old.get_or_create_speaker(a, "สมชาย ใจดี (You)")      # จับคู่ chair อัตโนมัติ
-        s_alice1 = old.get_or_create_speaker(a, "Alice")
-        s_alice2 = old.get_or_create_speaker(a, "Alice (You)")           # คนเดียวกัน Meet เติม (You) -> ผู้พูดซ้ำ (เหมือนกรณีจริง)
-        s_zed = old.get_or_create_speaker(a, "Zed")                      # ไม่มีในรายชื่อ
-        for i, sid in enumerate([s_chair, s_alice1, s_alice2, s_zed], start=1):
-            old.insert_segment(a, sid, i, f"ข้อความ {i}")
-        old.end_meeting(a)
-        old.set_meeting_status(a, "transcript_verified")
-        old.set_meeting_status(a, "draft")
-        content = {"summary": "สรุป A", "other_matters": "ไม่มี",
-                   "agenda": [{"title": "งบ", "discussion": "คุยเรื่องงบ", "resolution": "อนุมัติ", "evidence": ["ผมเสนอ"]}],
-                   "action_items": [{"description": "ส่งรายงาน", "assignee": "Alice", "due_date": "2026-10-09",
-                                     "due_time": "13:00", "due_time_end": None, "evidence": ["ส่งรายงาน"]},
-                                    {"description": "จองห้อง", "assignee": None, "due_date": None,
-                                     "due_time": None, "due_time_end": None, "evidence": []}]}
-        old.insert_minutes(a, {**content, "summary": "ร่างเก่าที่ถูกแทนที่"}, "gemini", "minutes_v1")   # v1 ค้างเป็นร่าง
-        old.insert_minutes(a, content, "gemini", "minutes_v2")                                          # v2
-        self.assertTrue(old.approve_minutes(a, uid, content["action_items"]))                           # v2 อนุมัติ + มีแถวงาน
-        item_id = old.list_minutes_action_items(old.get_latest_minutes(a)["minutes_id"])[0]["action_item_id"]
-        old.mark_action_item_synced(item_id, "evt-1")                                                   # ส่ง Calendar ไปแล้วหนึ่งงาน
-
-        # ประชุม B: มีแต่ร่างเดียว
-        b = old.create_meeting_setup(uid, meet_url=URL, title="ประชุม B")
-        old.begin_recording(b)
-        sb = old.get_or_create_speaker(b, "ใครสักคน")
-        old.insert_segment(b, sb, 1, "ข้อความ B")
-        old.end_meeting(b)
-        old.set_meeting_status(b, "transcript_verified")
-        old.set_meeting_status(b, "draft")
-        old.insert_minutes(b, {"summary": "ร่าง B", "other_matters": None, "agenda": [],
-                               "action_items": [{"description": "งาน B", "assignee": None, "due_date": None,
-                                                 "due_time": None, "due_time_end": None, "evidence": []}]}, "gemini", "minutes_v2")
-
-        # ประชุม C: มีสรุปแบบ SA เดิม และรายงานร่างใหม่ซ้อนกัน
-        c = old.create_meeting(URL, uid)
-        sc = old.get_or_create_speaker(c, "คนหนึ่ง")
-        old.insert_segment(c, sc, 1, "ข้อความ C")
-        sid = old.insert_summary(c, "สรุปเดิมของ C", "gemini")
-        old.insert_action_item(sid, "งานเดิมของ C", None, None)
-        old.insert_minutes(c, {"summary": "ร่างใหม่ของ C", "other_matters": None, "agenda": [], "action_items": []}, "gemini", "minutes_v2")
-
-        # ประชุม D: อนุมัติแล้ว ส่ง Calendar ไปหนึ่งงาน แล้วกด "สร้างเวอร์ชันแก้ไข" (ร่างใหม่ซ้อนบนฉบับที่อนุมัติ)
-        d = old.create_meeting_setup(uid, meet_url=URL, title="ประชุม D")
-        old.begin_recording(d)
-        sd = old.get_or_create_speaker(d, "คน D")
-        old.insert_segment(d, sd, 1, "ข้อความ D")
-        old.end_meeting(d)
-        old.set_meeting_status(d, "transcript_verified")
-        old.set_meeting_status(d, "draft")
-        d_items = [{"description": "งาน D", "assignee": None, "due_date": "2026-11-01", "due_time": None,
-                    "due_time_end": None, "evidence": []}]
-        old.insert_minutes(d, {"summary": "ฉบับอนุมัติของ D", "other_matters": None, "agenda": [], "action_items": d_items},
-                           "gemini", "minutes_v2")
-        old.approve_minutes(d, uid, d_items)
-        old.mark_action_item_synced(old.list_minutes_action_items(old.get_latest_minutes(d)["minutes_id"])[0]["action_item_id"], "evt-d")
-        old.revise_minutes(d)
-
+    def test_init_schema_twice_keeps_data(self):
         db.init_schema()
-        db.init_schema()   # idempotent
+        uid = db.upsert_user("sub-twice", "t@x.com", "T", None)
+        mid = db.create_meeting_setup(uid, meet_url=URL)
+        db.init_schema()
+        self.assertEqual(db.get_meeting(mid)["meeting_id"], mid)
 
-        tables = {r["TABLE_NAME"] for r in self.rows(
-            "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = %s", (self.dbname,))}
-        self.assertEqual(tables, {"users", "meetings", "speakers", "transcript_segments", "summaries",
-                                  "agenda_items", "action_items", "schema_migrations"})
-        self.assertEqual(db.get_calendar_token(uid), '{"token": "abc"}')
-
-        # A: คนเดียวไม่ซ้ำ — Alice สองผู้พูดรวมเป็นแถวเดียว, ชื่อที่ Meet แสดงเก็บเป็น alias
-        people = {s["display_name"]: s for s in db.list_speakers(a)}
-        self.assertEqual(set(people), {"สมชาย ใจดี", "Alice", "Bob", "Zed"})
-        self.assertEqual((people["สมชาย ใจดี"]["role"], people["สมชาย ใจดี"]["meet_alias"], people["สมชาย ใจดี"]["segment_count"]),
-                         ("chair", "สมชาย ใจดี (You)", 1))
-        self.assertEqual((people["Alice"]["segment_count"], people["Alice"]["meet_alias"], people["Alice"]["email"]),
-                         (2, "Alice (You)", "alice@x.com"))
-        self.assertEqual((people["Bob"]["attendance"], people["Bob"]["source"], people["Bob"]["segment_count"]),
-                         ("absent", "registered", 0))
-        self.assertEqual((people["Zed"]["source"], people["Zed"]["attendance"]), ("meet", "present"))
-        self.assertEqual(len(db.get_transcript(a)), 4)
-
-        # A: รายงานหนึ่งฉบับต่อประชุมตาม SA (ร่างเก่าที่ถูกแทนที่ไม่ตามมา) งานและสถานะส่ง Calendar ย้ายตามมา
-        self.assertEqual(self.rows("SELECT COUNT(*) n FROM summaries WHERE meeting_id=%s", (a,))[0]["n"], 1)
-        rep = db.get_report(a)
-        self.assertTrue(rep["approved"])
-        self.assertEqual(rep["approved_by_name"], "เจ้าของ")
-        self.assertEqual(rep["content"]["summary"], "สรุป A")
-        self.assertEqual(rep["content"]["agenda"][0]["evidence"], ["ผมเสนอ"])
-        self.assertEqual(rep["prompt_version"], "minutes_v2")
-        self.assertEqual([(i["description"], i["calendar_synced"]) for i in rep["content"]["action_items"]],
-                         [("ส่งรายงาน", True), ("จองห้อง", False)])
-
-        # B: ร่างเดียวย้ายมาพร้อมงาน
-        rep_b = db.get_report(b)
-        self.assertEqual((rep_b["approved"], rep_b["content"]["summary"]), (False, "ร่าง B"))
-        self.assertEqual([i["description"] for i in rep_b["content"]["action_items"]], ["งาน B"])
-
-        # C: มีสรุปแบบ SA เดิมและรายงานใหม่ -> รายงานใหม่แทนที่ (เหมือนสร้างสรุปใหม่) เหลือแถวเดียว ไม่มีงานเดิมค้าง
-        self.assertEqual(self.rows("SELECT COUNT(*) n FROM summaries WHERE meeting_id=%s", (c,))[0]["n"], 1)
-        rep_c = db.get_report(c)
-        self.assertEqual((rep_c["content"]["summary"], rep_c["content"]["action_items"]), ("ร่างใหม่ของ C", []))
-
-        # D: อนุมัติแล้วแก้ต่อเป็นร่าง -> เป็นฉบับร่างฉบับเดียว และงานที่ส่ง Calendar ไปแล้วยังจำได้ (ไม่ส่งซ้ำ)
-        rep_d = db.get_report(d)
-        self.assertFalse(rep_d["approved"])
-        self.assertEqual([(i["description"], i["calendar_synced"], i["google_calendar_event_id"])
-                          for i in rep_d["content"]["action_items"]], [("งาน D", True, "evt-d")])
-
-        self.assertEqual(self.rows("SELECT COUNT(*) n FROM action_items WHERE summary_id IS NULL")[0]["n"], 0)
-        self.assertEqual(self.rows("SELECT COUNT(*) n FROM action_items")[0]["n"], 2 + 1 + 0 + 1)   # A สอง, B หนึ่ง, C ไม่มี, D หนึ่ง
-        self.assertEqual({r["meeting_id"]: r["status"] for r in self.rows("SELECT meeting_id, status FROM meetings")},
-                         {a: "approved", b: "draft", c: "recording", d: "draft"})
-
-
-    def test_two_processes_starting_at_once_do_not_migrate_twice(self):
-        """หน้าเว็บกับบริการบอทเรียก init_schema() ตอนเริ่มพร้อมกัน — ต้องไม่ย้ายข้อมูลซ้ำสองรอบจนข้อมูลซ้ำ"""
+    def test_two_processes_starting_at_once_create_tables_once(self):
+        """หน้าเว็บกับบริการบอทเรียก init_schema() ตอนเริ่มพร้อมกัน — ต้องไม่ error จากการสร้างตารางซ้ำ"""
         import threading
-
-        old = load_old_db(DEV_COMMIT, self.dbname)
-        old.init_schema()
-        uid = old.upsert_user("sub-race", "race@x.com", "R", None)
-        m = old.create_meeting_setup(uid, meet_url=URL)
-        old.add_participant(m, "Alice", "alice@x.com", "chair", "present")
-        old.begin_recording(m)
-        sp = old.get_or_create_speaker(m, "Alice (You)")
-        old.insert_segment(m, sp, 1, "x")
-        old.end_meeting(m)
-        old.set_meeting_status(m, "transcript_verified")
-        old.set_meeting_status(m, "draft")
-        content = {"summary": "สรุป", "other_matters": None, "agenda": [{"title": "ก", "discussion": "", "resolution": None, "evidence": []}],
-                   "action_items": [{"description": "งาน", "assignee": None, "due_date": None, "due_time": None,
-                                     "due_time_end": None, "evidence": []}]}
-        old.insert_minutes(m, content, "gemini", "minutes_v2")
-        old.approve_minutes(m, uid, content["action_items"])
 
         errors = []
         barrier = threading.Barrier(4)
@@ -290,9 +55,22 @@ class MigrationTests(TempDbCase):
         for t in threads:
             t.join(timeout=120)
         self.assertEqual(errors, [])
-        counts = {t: self.rows(f"SELECT COUNT(*) n FROM {t}")[0]["n"] for t in ("speakers", "summaries", "agenda_items", "action_items")}
-        self.assertEqual(counts, {"speakers": 1, "summaries": 1, "agenda_items": 1, "action_items": 1})
-        self.assertEqual(db.list_speakers(m)[0]["meet_alias"], "Alice (You)")
+        self.assertEqual(len(self.tables()), 7)
+
+    def test_database_with_an_older_structure_is_reported_clearly(self):
+        db.init_schema()
+        self.execute("ALTER TABLE speakers DROP COLUMN absence_reason")
+        with self.assertRaises(RuntimeError) as ctx:
+            db.init_schema()
+        self.assertIn("speakers.absence_reason", str(ctx.exception))
+        self.assertIn("DROP DATABASE", str(ctx.exception))
+
+    def test_expected_columns_cover_all_tables_in_the_schema(self):
+        cols = db._expected_columns()
+        self.assertEqual(set(cols), {"users", "meetings", "speakers", "transcript_segments", "summaries",
+                                     "agenda_items", "action_items"})
+        self.assertIn("absence_reason", cols["speakers"])
+        self.assertNotIn("PRIMARY", cols["users"])
 
 
 class WorkflowTests(TempDbCase):
@@ -311,10 +89,6 @@ class WorkflowTests(TempDbCase):
         return uid, mid
 
     # ── สถานะ ──
-
-    def test_fresh_database_records_all_migrations(self):
-        self.assertEqual([r["version"] for r in self.rows("SELECT version FROM schema_migrations ORDER BY version")],
-                         [v for v, _ in db._MIGRATIONS])
 
     def test_setup_then_record_then_end(self):
         uid, mid = self.new_meeting(title="  ประชุม  ", venue="", meeting_no="3/2569")

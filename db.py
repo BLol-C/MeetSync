@@ -9,11 +9,10 @@
   summaries            "รายงานการประชุม" หนึ่งฉบับต่อหนึ่งการประชุม (1:1 ตาม SA) approved_at ว่าง = ฉบับร่าง
   agenda_items         วาระ/มติของรายงาน
   action_items         งานที่ได้รับมอบหมายของรายงาน (ส่งเข้า Calendar จากตารางนี้)
-  schema_migrations    ตารางเทคนิค เก็บว่ารัน migration ไปถึงเวอร์ชันไหน (ไม่อยู่ใน ER ของระบบ)
 
 ตั้งค่าการเชื่อมต่อผ่าน .env: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
 ต้องสร้างฐานข้อมูลเปล่าไว้ก่อน (เช่น `CREATE DATABASE meetsync CHARACTER SET utf8mb4;`) — ตารางสร้างให้อัตโนมัติ
-และฐานข้อมูลเดิมทุกเวอร์ชันถูกอัปเกรดให้อัตโนมัติ (ดู _MIGRATIONS)
+ไม่มีระบบอัปเกรดโครงสร้าง: ถ้า _SCHEMA เปลี่ยน ให้ลบฐานข้อมูลแล้วสร้างใหม่
 """
 
 import contextlib
@@ -32,7 +31,7 @@ DB_PASSWORD = os.environ.get("DB_PASSWORD", "")
 DB_NAME = os.environ.get("DB_NAME", "meetsync")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# โครงสร้างปัจจุบัน (ใช้สร้างฐานข้อมูลใหม่) — ฐานข้อมูลเดิมถูกอัปเกรดให้ได้โครงสร้างเดียวกันนี้ด้วย _MIGRATIONS
+# โครงสร้างปัจจุบัน (ใช้สร้างฐานข้อมูลเปล่า)
 # ─────────────────────────────────────────────────────────────────────────────
 _SCHEMA = """
 CREATE TABLE users (
@@ -132,149 +131,6 @@ CREATE TABLE action_items (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
-# ตารางที่เคยมีในช่วงพัฒนา (เวอร์ชัน 5–8) แล้วถูกยุบเข้าตารางหลักของ SA ตอนเวอร์ชัน 9–11
-# เก็บคำสั่งสร้างไว้เพื่อให้ฐานข้อมูลที่หยุดอยู่ที่เวอร์ชันเก่าอัปเกรดผ่านทุกขั้นได้ตามลำดับ
-_PARTICIPANTS_V5 = """CREATE TABLE IF NOT EXISTS participants (
-    participant_id INT AUTO_INCREMENT PRIMARY KEY,
-    meeting_id     INT NOT NULL,
-    display_name   VARCHAR(100) NOT NULL,
-    email          VARCHAR(255) NULL,
-    role           VARCHAR(20) NOT NULL DEFAULT 'attendee',
-    attendance     VARCHAR(10) NOT NULL DEFAULT 'invited',
-    user_id        INT NULL,
-    created_at     DATETIME NOT NULL,
-    INDEX idx_participants_meeting (meeting_id),
-    FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
-
-_MINUTES_V8 = """CREATE TABLE IF NOT EXISTS minutes (
-    minutes_id     INT AUTO_INCREMENT PRIMARY KEY,
-    meeting_id     INT NOT NULL,
-    version        INT NOT NULL,
-    status         VARCHAR(10) NOT NULL DEFAULT 'draft',
-    content        LONGTEXT NOT NULL,
-    model_used     VARCHAR(50) NULL,
-    prompt_version VARCHAR(20) NULL,
-    created_at     DATETIME NOT NULL,
-    edited_at      DATETIME NULL,
-    approved_by    INT NULL,
-    approved_at    DATETIME NULL,
-    UNIQUE KEY uq_minutes_version (meeting_id, version),
-    FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id) ON DELETE CASCADE,
-    FOREIGN KEY (approved_by) REFERENCES users(user_id) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
-
-_CALENDAR_TOKENS_V8 = """CREATE TABLE IF NOT EXISTS calendar_tokens (
-    user_id    INT PRIMARY KEY,
-    token_json LONGTEXT NOT NULL,
-    updated_at DATETIME NOT NULL,
-    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Migration แบบมีเวอร์ชัน — ต่อท้ายด้วยเลขถัดไปเท่านั้น ห้ามแก้/แทรกของเดิม
-# แต่ละรายการคือ (เวอร์ชัน, [คำสั่ง SQL หรือฟังก์ชัน(cur)]) หรือ (เวอร์ชัน, _Dml(ฟังก์ชัน))
-#   - รายการคำสั่ง: DDL รันทีละคำสั่ง (MySQL commit DDL เองอยู่แล้ว) ทนต่อ "มีอยู่แล้ว"
-#   - _Dml: ย้ายข้อมูล รันในทรานแซกชันเดียวพร้อมบันทึกเวอร์ชัน ล้มเมื่อไหร่ย้อนกลับทั้งหมด (ไม่เหลือข้อมูลครึ่งๆ กลางๆ)
-# ─────────────────────────────────────────────────────────────────────────────
-class _Dml:
-    def __init__(self, fn):
-        self.fn = fn
-
-
-_MIGRATIONS: list[tuple[int, object]] = [
-    (1, ["ALTER TABLE action_items ADD COLUMN due_time TIME NULL"]),
-    (2, ["ALTER TABLE action_items ADD COLUMN due_time_end TIME NULL"]),
-    (3, [
-        "ALTER TABLE meetings ADD COLUMN owner_user_id INT NULL",
-        "ALTER TABLE meetings ADD CONSTRAINT fk_meetings_owner FOREIGN KEY (owner_user_id) "
-        "REFERENCES users(user_id) ON DELETE SET NULL",
-    ]),
-    (4, [  # ข้อมูลหัวรายงานการประชุม
-        "ALTER TABLE meetings ADD COLUMN venue VARCHAR(255) NULL",
-        "ALTER TABLE meetings ADD COLUMN scheduled_at DATETIME NULL",
-        "ALTER TABLE meetings ADD COLUMN meeting_no VARCHAR(50) NULL",
-        "ALTER TABLE meetings ADD COLUMN org_name VARCHAR(255) NULL",
-    ]),
-    (5, [  # (ช่วงพัฒนา) ผู้เข้าร่วมแยกตาราง — ถูกยุบกลับเข้า speakers ที่เวอร์ชัน 9–11
-        _PARTICIPANTS_V5,
-        "ALTER TABLE speakers ADD COLUMN participant_id INT NULL",
-        "ALTER TABLE speakers ADD CONSTRAINT fk_speakers_participant FOREIGN KEY (participant_id) "
-        "REFERENCES participants(participant_id) ON DELETE SET NULL",
-    ]),
-    (6, [
-        "ALTER TABLE transcript_segments ADD COLUMN original_text TEXT NULL",
-        "ALTER TABLE transcript_segments ADD COLUMN edited_at DATETIME NULL",
-        "ALTER TABLE transcript_segments ADD COLUMN deleted BOOLEAN NOT NULL DEFAULT FALSE",
-    ]),
-    (7, [  # สถานะประชุมเดิม (in_progress/completed) -> สถานะใหม่ของ workflow รายงาน
-        "UPDATE meetings SET status = 'recording' WHERE status = 'in_progress'",
-        "UPDATE meetings SET status = 'transcript_review' WHERE status = 'completed'",
-        "ALTER TABLE meetings ALTER COLUMN status SET DEFAULT 'recording'",
-    ]),
-    (8, [  # (ช่วงพัฒนา) รายงานแยกตาราง minutes + token Calendar แยกตาราง — ถูกยุบที่เวอร์ชัน 9–11
-        _MINUTES_V8,
-        _CALENDAR_TOKENS_V8,
-        "ALTER TABLE minutes ADD COLUMN ai_content LONGTEXT NULL",
-        "ALTER TABLE action_items MODIFY summary_id INT NULL",
-        "ALTER TABLE action_items ADD COLUMN minutes_id INT NULL",
-        "ALTER TABLE action_items ADD CONSTRAINT fk_action_items_minutes FOREIGN KEY (minutes_id) "
-        "REFERENCES minutes(minutes_id) ON DELETE CASCADE",
-    ]),
-    # ── ยุบโครงสร้างให้ตรง SA: participants -> speakers, minutes -> summaries (+ agenda_items), calendar_tokens -> users ──
-    (9, [  # 9: เตรียมโครงสร้างใหม่ (เพิ่มคอลัมน์/ตาราง ยังไม่แตะข้อมูลเดิม)
-        "ALTER TABLE users ADD COLUMN calendar_token LONGTEXT NULL",
-        # ค่าเริ่มต้นชั่วคราว: speakers เดิมทุกแถวมาจากชื่อใน Meet และเคยพูดจริง (ปรับเป็นค่าสุดท้ายในเวอร์ชัน 11)
-        "ALTER TABLE speakers ADD COLUMN meet_alias VARCHAR(100) NULL",
-        "ALTER TABLE speakers ADD COLUMN email VARCHAR(255) NULL",
-        "ALTER TABLE speakers ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT 'attendee'",
-        "ALTER TABLE speakers ADD COLUMN attendance VARCHAR(10) NOT NULL DEFAULT 'present'",
-        "ALTER TABLE speakers ADD COLUMN source VARCHAR(10) NOT NULL DEFAULT 'meet'",
-        "ALTER TABLE summaries ADD COLUMN other_matters TEXT NULL",
-        "ALTER TABLE summaries ADD COLUMN ai_snapshot LONGTEXT NULL",
-        "ALTER TABLE summaries ADD COLUMN prompt_version VARCHAR(20) NULL",
-        "ALTER TABLE summaries ADD COLUMN edited_at DATETIME NULL",
-        "ALTER TABLE summaries ADD COLUMN approved_by INT NULL",
-        "ALTER TABLE summaries ADD CONSTRAINT fk_summaries_approver FOREIGN KEY (approved_by) "
-        "REFERENCES users(user_id) ON DELETE SET NULL",
-        "ALTER TABLE summaries ADD COLUMN approved_at DATETIME NULL",
-        "CREATE TABLE IF NOT EXISTS agenda_items ("
-        "agenda_item_id INT AUTO_INCREMENT PRIMARY KEY, summary_id INT NOT NULL, order_no INT NOT NULL, "
-        "title VARCHAR(255) NOT NULL, discussion TEXT NULL, resolution TEXT NULL, evidence TEXT NULL, "
-        "INDEX idx_agenda_order (summary_id, order_no), "
-        "FOREIGN KEY (summary_id) REFERENCES summaries(summary_id) ON DELETE CASCADE"
-        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-        "ALTER TABLE action_items ADD COLUMN evidence TEXT NULL",
-    ]),
-    (10, _Dml(lambda cur: _move_data_to_sa_tables(cur))),   # 10: ย้ายข้อมูลทั้งหมด (ทรานแซกชันเดียว)
-    (11, [  # 11: ลบของเก่าที่ย้ายข้อมูลออกไปแล้ว + ตั้งค่าเริ่มต้นสุดท้าย
-        "ALTER TABLE speakers DROP FOREIGN KEY fk_speakers_participant",
-        "ALTER TABLE speakers DROP COLUMN participant_id",
-        "DROP TABLE IF EXISTS participants",
-        "ALTER TABLE action_items DROP FOREIGN KEY fk_action_items_minutes",
-        "ALTER TABLE action_items DROP COLUMN minutes_id",
-        "DROP TABLE IF EXISTS minutes",
-        "DROP TABLE IF EXISTS calendar_tokens",
-        "DELETE FROM action_items WHERE summary_id IS NULL",
-        "ALTER TABLE action_items MODIFY summary_id INT NOT NULL",
-        "ALTER TABLE speakers ALTER COLUMN attendance SET DEFAULT 'invited'",
-        "ALTER TABLE speakers ALTER COLUMN source SET DEFAULT 'registered'",
-    ]),
-    (12, [  # 12: สาเหตุที่ไม่มาประชุม (แสดงในวงเล็บท้ายชื่อในรายงานตามแบบฟอร์ม)
-        "ALTER TABLE speakers ADD COLUMN absence_reason VARCHAR(255) NULL",
-    ]),
-]
-
-# error ที่แปลว่า "ทำไปแล้ว" — ทำให้รัน migration ซ้ำหลังล้มกลางทางได้ (จงใจให้แคบ ไม่ครอบ error อื่นที่เป็นปัญหาจริง)
-_ALREADY_APPLIED_ERRORS = {
-    1060,  # Duplicate column name
-    1061,  # Duplicate key name
-    1826,  # Duplicate foreign key constraint name
-    1091,  # Can't DROP ... check that column/key exists (ลบไปแล้ว)
-}
-
 MEETING_STATUSES = ("scheduled", "recording", "transcript_review", "transcript_verified", "draft", "approved")
 _STATUS_TRANSITIONS: dict[str, set[str]] = {
     # workflow: scheduled -> recording -> transcript_review -> transcript_verified -> draft -> approved
@@ -346,21 +202,27 @@ def _table_exists(cur, table: str) -> bool:
 
 
 def init_schema():
-    """สร้างตารางทั้งหมด (ฐานข้อมูลเปล่า) หรืออัปเกรดฐานข้อมูลเดิมให้เป็นโครงสร้างปัจจุบัน — เรียกตอนแอปสตาร์ท
+    """สร้างตารางทั้งหมดถ้าฐานข้อมูลยังว่าง — เรียกตอนแอปสตาร์ท (ทั้งหน้าเว็บและบริการบอท)
 
-    ทั้งหน้าเว็บและบริการบอทเรียกฟังก์ชันนี้ตอนเริ่ม ถ้าเปิดพร้อมกันครั้งแรกหลังอัปเกรด ต้องไม่ย้ายข้อมูลซ้ำสองรอบ
-    (ข้อมูลซ้ำคือปัญหาที่ migration นี้มีไว้แก้) จึงใช้ล็อกของ MySQL ให้ทำทีละโปรเซส โปรเซสที่มาทีหลังรอจนเสร็จ
-    แล้วเห็นว่าทุกเวอร์ชันถูกรันแล้วและไม่ทำอะไรซ้ำ
+    ไม่มีการอัปเกรดโครงสร้างให้ฐานข้อมูลเก่า: ถ้าโครงสร้างใน _SCHEMA เปลี่ยน ให้ลบฐานข้อมูลแล้วสร้างใหม่
+    (ถ้าเจอฐานข้อมูลที่โครงสร้างเก่ากว่า จะแจ้ง error ชัดเจนแทนที่จะพังตอนใช้งาน)
+    หน้าเว็บกับบริการบอทอาจสตาร์ทพร้อมกัน จึงใช้ล็อกของ MySQL ให้สร้างทีละโปรเซส โปรเซสที่มาทีหลังรอจนเสร็จ
     """
     conn = get_connection()
-    lock = f"meetsync_migrate_{DB_NAME}"
+    lock = f"meetsync_init_{DB_NAME}"
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT GET_LOCK(%s, 120) AS ok", (lock,))
             if cur.fetchone()["ok"] != 1:
-                raise RuntimeError("รออีกโปรเซสที่กำลังอัปเกรดฐานข้อมูลนานเกินไป (เกิน 120 วินาที)")
+                raise RuntimeError("รออีกโปรเซสที่กำลังสร้างฐานข้อมูลนานเกินไป (เกิน 120 วินาที)")
         try:
-            _init_schema_locked(conn)
+            with conn.cursor() as cur:
+                if _table_exists(cur, "meetings"):
+                    _check_schema_is_current(cur)
+                else:
+                    for statement in _SCHEMA.split(";"):
+                        if statement.strip():
+                            cur.execute(statement)
         finally:
             with conn.cursor() as cur:
                 cur.execute("SELECT RELEASE_LOCK(%s)", (lock,))
@@ -368,43 +230,31 @@ def init_schema():
         conn.close()
 
 
-def _init_schema_locked(conn):
-    """ส่วนที่ต้องรันทีละโปรเซส (เรียกหลังได้ล็อกแล้วเท่านั้น)"""
-    record = "INSERT INTO schema_migrations (version, applied_at) VALUES (%s, NOW())"
-    with conn.cursor() as cur:
-        cur.execute(
-            """CREATE TABLE IF NOT EXISTS schema_migrations (
-                   version    INT PRIMARY KEY,
-                   applied_at DATETIME NOT NULL
-               ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
-        )
-        if not _table_exists(cur, "meetings"):
-            # ฐานข้อมูลเปล่า: สร้างโครงสร้างสุดท้ายตรงๆ แล้วบันทึกว่าครบทุกเวอร์ชัน
-            for statement in _SCHEMA.split(";"):
-                if statement.strip():
-                    cur.execute(statement)
-            for version, _ in _MIGRATIONS:
-                cur.execute(record, (version,))
-            return
-        cur.execute("SELECT version FROM schema_migrations")
-        applied = {row["version"] for row in cur.fetchall()}
+_NOT_COLUMNS = {"PRIMARY", "FOREIGN", "UNIQUE", "INDEX", "KEY", "CONSTRAINT"}
 
-    for version, steps in _MIGRATIONS:
-        if version in applied:
-            continue
-        if isinstance(steps, _Dml):
-            with _tx() as tcur:           # ย้ายข้อมูล + บันทึกเวอร์ชันในทรานแซกชันเดียว
-                steps.fn(tcur)
-                tcur.execute(record, (version,))
-            continue
-        with conn.cursor() as cur:
-            for statement in steps:
-                try:
-                    cur.execute(statement)
-                except (pymysql.err.OperationalError, pymysql.err.InternalError, pymysql.err.ProgrammingError) as e:
-                    if e.args[0] not in _ALREADY_APPLIED_ERRORS:
-                        raise
-            cur.execute(record, (version,))
+
+def _expected_columns() -> dict[str, set[str]]:
+    """ตารางและคอลัมน์ที่ _SCHEMA กำหนด (อ่านจากข้อความ CREATE TABLE ของเราเอง)"""
+    out: dict[str, set[str]] = {}
+    for table, body in re.findall(r"CREATE TABLE (\w+) \((.*?)\n\)", _SCHEMA, flags=re.S):
+        out[table] = {m.group(1) for m in re.finditer(r"^\s{4}(\w+)", body, flags=re.M)
+                      if m.group(1).upper() not in _NOT_COLUMNS}
+    return out
+
+
+def _check_schema_is_current(cur):
+    cur.execute("SELECT TABLE_NAME AS t, COLUMN_NAME AS c FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()")
+    have: dict[str, set[str]] = {}
+    for row in cur.fetchall():
+        have.setdefault(row["t"], set()).add(row["c"])
+    missing = [f"{t}.{c}" if t in have else t
+               for t, cols in _expected_columns().items() for c in sorted(cols - have.get(t, set()))]
+    if missing:
+        raise RuntimeError(
+            f"ฐานข้อมูล {DB_NAME} มีโครงสร้างเก่ากว่าโค้ด (ขาด: {', '.join(dict.fromkeys(missing))}) — "
+            f"ลบฐานข้อมูลนี้แล้วสร้างเปล่าใหม่ (DROP DATABASE {DB_NAME}; CREATE DATABASE {DB_NAME} CHARACTER SET utf8mb4;) "
+            "ตารางจะถูกสร้างให้เองตอนเปิดแอป"
+        )
 
 
 def _json_list(value) -> list[str]:
@@ -420,108 +270,6 @@ def _json_list(value) -> list[str]:
 def _dump_list(items) -> str | None:
     items = [str(i).strip() for i in (items or []) if str(i).strip()]
     return json.dumps(items, ensure_ascii=False) if items else None
-
-
-def _move_data_to_sa_tables(cur):
-    """migration 10: ย้ายข้อมูลจากโครงสร้างช่วงพัฒนา (participants / minutes / calendar_tokens) เข้าตารางหลักของ SA
-
-    รันในทรานแซกชันเดียวกับการบันทึกเวอร์ชัน — ล้มตรงไหนย้อนกลับหมด ไม่มีข้อมูลซ้ำหรือหายครึ่งๆ กลางๆ
-    ฐานข้อมูลที่ไม่เคยมีตารางช่วงพัฒนา (มาจาก SA เดิมโดยตรง) ก็ผ่านขั้นนี้ได้ (ไม่มีอะไรให้ย้าย)
-    """
-    # 1) token Calendar: calendar_tokens -> users.calendar_token
-    if _table_exists(cur, "calendar_tokens"):
-        cur.execute(
-            """UPDATE users u JOIN calendar_tokens t ON t.user_id = u.user_id
-               SET u.calendar_token = t.token_json"""
-        )
-
-    # 2) participants -> speakers (คนละหนึ่งแถว)
-    if _table_exists(cur, "participants"):
-        cur.execute("SELECT * FROM participants ORDER BY participant_id")
-        for p in cur.fetchall():
-            mid = p["meeting_id"]
-            cur.execute(
-                "SELECT * FROM speakers WHERE meeting_id = %s AND participant_id = %s ORDER BY speaker_id",
-                (mid, p["participant_id"]),
-            )
-            linked = list(cur.fetchall())
-            cur.execute(
-                "SELECT * FROM speakers WHERE meeting_id = %s AND display_name = %s",
-                (mid, p["display_name"]),
-            )
-            same_name = cur.fetchone()
-            # แถวหลักที่จะเก็บไว้: ชื่อตรงกับผู้เข้าร่วมอยู่แล้ว > แถวที่เคยจับคู่ไว้ > สร้างใหม่
-            target = same_name or (linked[0] if linked else None)
-            if target is None:
-                cur.execute(
-                    """INSERT INTO speakers (meeting_id, display_name, email, role, attendance, source)
-                       VALUES (%s, %s, %s, %s, %s, 'registered')""",
-                    (mid, p["display_name"], p["email"], p["role"], p["attendance"]),
-                )
-                continue
-            alias = target["meet_alias"]
-            for other in linked:
-                if other["speaker_id"] == target["speaker_id"]:
-                    continue
-                alias = alias or other["display_name"]
-                cur.execute(
-                    "UPDATE transcript_segments SET speaker_id = %s WHERE speaker_id = %s",
-                    (target["speaker_id"], other["speaker_id"]),
-                )
-                cur.execute("DELETE FROM speakers WHERE speaker_id = %s", (other["speaker_id"],))
-            if target["display_name"] != p["display_name"]:   # ชื่อที่ Meet แสดงเก็บไว้เป็นชื่อเรียกในการจับคู่
-                alias = alias or target["display_name"]
-            cur.execute(
-                """UPDATE speakers SET display_name = %s, meet_alias = %s, email = %s, role = %s,
-                          attendance = %s, source = 'registered' WHERE speaker_id = %s""",
-                (p["display_name"], alias, p["email"], p["role"], p["attendance"], target["speaker_id"]),
-            )
-
-    # 3) minutes -> summaries (+ agenda_items): รายงานหนึ่งฉบับต่อหนึ่งการประชุมตาม SA (summaries 1:1 meetings)
-    #    เก็บฉบับล่าสุดของแต่ละการประชุม — ฉบับอนุมัติเก่า/ร่างที่ถูกแทนที่แล้วไม่ถูกย้าย
-    #    ถ้าประชุมนั้นมีสรุปแบบ SA เดิมอยู่แล้ว รายงานใหม่แทนที่มัน (เหมือนการสร้างสรุปใหม่ regenerate ใน SA)
-    if _table_exists(cur, "minutes"):
-        cur.execute("SELECT summary_id, meeting_id FROM summaries")
-        existing = {r["meeting_id"]: r["summary_id"] for r in cur.fetchall()}
-        cur.execute("SELECT * FROM minutes ORDER BY meeting_id, version")
-        latest: dict[int, dict] = {}
-        all_ids: dict[int, list[int]] = {}
-        for m in cur.fetchall():
-            latest[m["meeting_id"]] = m          # เวอร์ชันหลังทับเวอร์ชันก่อน
-            all_ids.setdefault(m["meeting_id"], []).append(m["minutes_id"])
-        for mid, m in latest.items():
-            content = json.loads(m["content"])
-            approved = m["status"] == "approved"
-            fields = (content.get("summary") or "", content.get("other_matters"), m["ai_content"], m["model_used"],
-                      m["prompt_version"], m["created_at"], m["edited_at"],
-                      m["approved_by"] if approved else None,
-                      (m["approved_at"] or m["created_at"]) if approved else None)
-            # แถวงานเดิมที่เคยส่ง Calendar แล้ว (ของทุกเวอร์ชันของประชุมนี้) — ไว้ส่งต่อสถานะให้งานที่ไม่เปลี่ยน ไม่ส่งซ้ำ
-            placeholders = ",".join(["%s"] * len(all_ids[mid]))
-            cur.execute(f"SELECT * FROM action_items WHERE minutes_id IN ({placeholders})", tuple(all_ids[mid]))
-            carry = list(cur.fetchall())
-            for r in carry:
-                r["_key"] = (r["description"], r["assignee"], str(r["due_date"]) if r["due_date"] else None,
-                             _fmt_time(r["due_time"]), _fmt_time(r["due_time_end"]))
-            if mid in existing:
-                sid = existing[mid]
-                cur.execute(
-                    """UPDATE summaries SET executive_summary = %s, other_matters = %s, ai_snapshot = %s,
-                              model_used = %s, prompt_version = %s, generated_at = %s, edited_at = %s,
-                              approved_by = %s, approved_at = %s WHERE summary_id = %s""",
-                    (*fields, sid),
-                )
-                cur.execute("DELETE FROM action_items WHERE summary_id = %s", (sid,))   # งานของสรุปเดิมถูกแทนที่
-            else:
-                cur.execute(
-                    """INSERT INTO summaries
-                       (meeting_id, executive_summary, other_matters, ai_snapshot, model_used, prompt_version,
-                        generated_at, edited_at, approved_by, approved_at)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                    (mid, *fields),
-                )
-                sid = cur.lastrowid
-            _insert_report_rows(cur, sid, content, carry)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
