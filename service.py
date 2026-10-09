@@ -96,6 +96,7 @@ def create_meeting(
     url = check_meet_url(meet_url)
     previous_meeting_id = _check_previous(user, previous_meeting_id)
     people = [p for p in (people or []) if (p.get("display_name") or "").strip()]
+    people = [p if p.get("role", "attendee") in db.UNIQUE_ROLES else {**p, "email": None} for p in people]   # อีเมลเก็บเฉพาะประธาน/เลขา
     roles = [p.get("role", "attendee") for p in people]
     for r in db.UNIQUE_ROLES:
         if roles.count(r) > 1:
@@ -182,6 +183,7 @@ def add_person(user: dict, meeting_id: int, display_name: str, email: str | None
                position: str | None = None, meet_alias: str | None = None) -> int:
     meeting = meeting_for(user, meeting_id)
     _require_status(meeting, *EDITABLE_STATUSES, hint="รายงานที่อนุมัติแล้วแก้รายชื่อไม่ได้")
+    email = email if role in db.UNIQUE_ROLES else None      # อีเมลเก็บเฉพาะประธาน/เลขา
     try:
         return db.add_speaker(meeting_id, display_name, email, role, attendance, absence_reason, position, meet_alias)
     except ValueError as e:
@@ -219,7 +221,7 @@ def apply_people_table(user: dict, meeting_id: int, rows: list[dict]) -> dict:
     meeting = meeting_for(user, meeting_id)
     _require_status(meeting, *EDITABLE_STATUSES, hint="รายงานที่อนุมัติแล้วแก้รายชื่อไม่ได้")
     current = {p["speaker_id"]: p for p in db.list_speakers(meeting_id)}
-    result = {"updated": 0, "added": 0, "deleted": 0, "errors": []}
+    result = {"updated": 0, "added": 0, "deleted": 0, "errors": [], "ignored_emails": []}
 
     def clean(value):
         return (value or "").strip() if isinstance(value, str) else (value or "")
@@ -237,6 +239,10 @@ def apply_people_table(user: dict, meeting_id: int, rows: list[dict]) -> dict:
                 new = clean(row.get(f))
                 if new != (current[sid][f] or ""):
                     changes[f] = (new or None) if f in ("email", "absence_reason", "position", "meet_alias") else new
+            role_after = changes.get("role") or current[sid]["role"]
+            if changes.get("email") and role_after not in db.UNIQUE_ROLES:     # ตั้งอีเมลให้คนที่ไม่ใช่ประธาน/เลขาไม่ได้ (ของเดิมไม่ถูกแตะ)
+                del changes["email"]
+                result["ignored_emails"].append(current[sid]["display_name"])
             if changes:
                 updates.append((sid, changes))
         elif clean(row.get("display_name")):
@@ -260,8 +266,13 @@ def apply_people_table(user: dict, meeting_id: int, rows: list[dict]) -> dict:
             result["errors"].append(f"{current[sid]['display_name']}: {e}")
     for row in adds:
         try:
-            db.add_speaker(meeting_id, row["display_name"], clean(row.get("email")) or None,
-                           clean(row.get("role")) or "attendee", clean(row.get("attendance")) or "invited",
+            role = clean(row.get("role")) or "attendee"
+            email = clean(row.get("email")) or None
+            if email and role not in db.UNIQUE_ROLES:
+                email = None
+                result["ignored_emails"].append(clean(row.get("display_name")))
+            db.add_speaker(meeting_id, row["display_name"], email,
+                           role, clean(row.get("attendance")) or "invited",
                            clean(row.get("absence_reason")) or None, clean(row.get("position")) or None,
                            meet_alias=clean(row.get("meet_alias")) or None)
             result["added"] += 1

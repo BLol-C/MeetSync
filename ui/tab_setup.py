@@ -97,7 +97,7 @@ def render(user: dict, detail: dict):
         column_config={
             "ชื่อภาษาไทย": st.column_config.TextColumn("ชื่อภาษาไทย", help="ชื่อที่จะขึ้นในรายงาน PDF (ภาษาไทย)", width="medium"),
             "ชื่อภาษาอังกฤษ": st.column_config.TextColumn("ชื่อภาษาอังกฤษ", help="ชื่อที่ Google Meet แสดงของคนนี้ (เช่น ชื่อบัญชีมหาวิทยาลัยที่เป็นภาษาอังกฤษ) ไว้จับคู่คนพูดและรายชื่อในห้องให้อัตโนมัติ ไม่ขึ้นในรายงาน — เว้นว่างได้ ถ้าชื่อภาษาไทยตรงกับที่ Meet แสดงอยู่แล้ว", width="medium"),
-            "อีเมล": st.column_config.TextColumn("อีเมล", width="medium", help="ใช้เชิญเข้า Calendar และให้ประธาน/เลขาอนุมัติได้"),
+            "อีเมล": st.column_config.TextColumn("อีเมล", width="medium", help="กรอกเฉพาะประธานและเลขา — ใช้ให้เข้ามาตรวจและอนุมัติรายงานด้วยบัญชี Google ของตน (คนอื่นไม่ต้องกรอก)"),
             "บทบาท": st.column_config.SelectboxColumn("บทบาท", options=list(ROLE_BY_LABEL), default=ROLE_LABEL["attendee"], required=True),
             "ตำแหน่ง": st.column_config.TextColumn("ตำแหน่ง", help="ตำแหน่งของผู้เข้าร่วม แสดงในคอลัมน์ ตำแหน่ง ของรายงาน PDF (เว้นว่าง = ใช้บทบาทในที่ประชุมแทน)", width="medium"),
             "การเข้าร่วม": st.column_config.SelectboxColumn("การเข้าร่วม", options=list(ATT_BY_LABEL), default="ยังไม่ยืนยัน", required=True),
@@ -116,6 +116,8 @@ def render(user: dict, detail: dict):
             common.flash("info", "ไม่มีการเปลี่ยนแปลง")
         for err in result["errors"]:
             common.flash("error", err)
+        if result["ignored_emails"]:
+            common.flash("warning", "ไม่ได้บันทึกอีเมลของ " + ", ".join(result["ignored_emails"]) + " — เก็บเฉพาะอีเมลของประธานและเลขา")
         st.rerun()
 
     if status == "scheduled" and not locked:
