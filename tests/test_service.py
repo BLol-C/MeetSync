@@ -3,6 +3,7 @@
 AI ร่าง (ใช้ AI ปลอม) -> แก้ -> อนุมัติ -> PDF -> Calendar (ใช้ Calendar ปลอม) ไม่เรียก Gemini/Google จริง
 """
 
+import datetime
 import json
 import unittest
 import uuid
@@ -23,7 +24,7 @@ def fake_ai(prompt, schema=None):
     return json.dumps({
         "summary": "ที่ประชุมอนุมัติงบประมาณ",
         "agenda": [{
-            "title": "งบประมาณ", "discussion": "นายสมชายเสนอให้อนุมัติงบ", "resolution": "อนุมัติงบสองหมื่นบาท",
+            "section": "consider_new", "title": "งบประมาณ", "discussion": "นายสมชายเสนอให้อนุมัติงบ", "resolution": "อนุมัติงบสองหมื่นบาท",
             "evidence": ["ผมเสนอให้อนุมัติงบสองหมื่นบาท"],
         }],
         "other_matters": None,
@@ -697,6 +698,7 @@ class ServiceTests(TempDbCase):
         def clean_ai(prompt, schema=None):
             body = json.loads(fake_ai(prompt))
             body["action_items"] = body["action_items"][:1]
+            body["action_items"][0]["due_date"] = (datetime.date.today() + datetime.timedelta(days=7)).isoformat()   # วันประชุมคือวันนี้ กำหนดส่งต้องไม่อยู่ก่อนวันประชุม
             return json.dumps(body)
         service.generate_report(self.owner, mid, generate=clean_ai)
         self.assertEqual(service.approval_warnings(self.owner, mid), [], service.approval_warnings(self.owner, mid))

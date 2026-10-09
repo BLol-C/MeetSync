@@ -17,7 +17,7 @@ import os
 import pathlib
 import re
 import time
-from typing import Callable
+from typing import Callable, Literal
 
 from pydantic import BaseModel, ValidationError
 
@@ -25,10 +25,12 @@ import db
 
 HERE = pathlib.Path(__file__).resolve().parent.parent
 PROMPT_DIR = HERE / "prompts"
-PROMPT_NAME = os.environ.get("MINUTES_PROMPT", "minutes_v2")          # ชื่อไฟล์ใน prompts/ (ไม่รวม .md)
+PROMPT_NAME = os.environ.get("MINUTES_PROMPT", "minutes_v3")          # ชื่อไฟล์ใน prompts/ (ไม่รวม .md)
                                                                       # v2: ห้ามข้ามหัวข้อที่ไม่มีข้อสรุป + เขียนปี พ.ศ. ในเนื้อความ
-                                                                      # (v1 ยังเก็บไว้ให้ไล่ย้อนรายงานที่เคยสร้างด้วย v1 ได้)
-MAP_PROMPT_NAME = os.environ.get("MINUTES_MAP_PROMPT", "minutes_map_v1")
+                                                                      # v3: บันทึกการอภิปรายละเอียดแบบรายงานจริง (ใครรายงาน/ใครกล่าวอะไร) + AI เลือกหมวดวาระ
+                                                                      #     + มติว่างเมื่อไม่มีใครสรุปชัดเจน (ห้ามเติม "รับทราบ" เอง)
+                                                                      # (v1/v2 ยังเก็บไว้ให้ไล่ย้อนรายงานที่เคยสร้างด้วยเวอร์ชันเก่าได้)
+MAP_PROMPT_NAME = os.environ.get("MINUTES_MAP_PROMPT", "minutes_map_v2")
 
 _MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 _MAX_RETRIES = 4
@@ -51,6 +53,7 @@ _ROLE_LABEL = {"chair": "ประธาน", "secretary": "เลขา", "atte
 # ── schema ที่บังคับให้ Gemini ตอบ ──
 
 class AgendaItemAI(BaseModel):
+    section: Literal["inform", "consider_new"]    # AI เลือกได้เฉพาะสองหมวดนี้ ส่วนวาระ 2, 3, 4.1 ระบบเติมจากการประชุมครั้งก่อน
     title: str
     discussion: str
     resolution: str | None

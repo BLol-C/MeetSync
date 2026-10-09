@@ -27,7 +27,7 @@ def good_body(**over):
     body = {
         "summary": "ที่ประชุมอนุมัติงบประมาณ",
         "agenda": [{
-            "title": "งบประมาณ", "discussion": "นายสมชายเสนอให้อนุมัติงบ",
+            "section": "consider_new", "title": "งบประมาณ", "discussion": "นายสมชายเสนอให้อนุมัติงบ",
             "resolution": "อนุมัติงบสองหมื่นบาท", "evidence": ["ผมเสนอให้อนุมัติงบสองหมื่นบาท"],
         }],
         "other_matters": None,
@@ -178,6 +178,29 @@ class GenerateTests(unittest.TestCase):
         self.assertIn("[09:30] Alice: เห็นด้วยค่ะ", prompt)
         self.assertNotRegex(prompt, r"\{(meeting_title|weekday|date|participants|transcript|source_label)\}")
         self.assertEqual(out["warnings"], [])
+
+    def test_ai_chooses_the_agenda_section_and_it_is_kept(self):
+        body = good_body(agenda=[
+            {"section": "inform", "title": "แจ้งงบประมาณ", "discussion": "ประธานฯ แจ้งต่อที่ประชุมว่ามีงบ",
+             "resolution": None, "evidence": []},
+            good_body()["agenda"][0],
+        ])
+        out = summarizer.generate_minutes_content(ROWS, PARTS, None, MEETING, self.make([json.dumps(body)]))
+        self.assertEqual([a["section"] for a in out["agenda"]], ["inform", "consider_new"])
+        self.assertEqual([a["section"] for a in summarizer.for_storage(out)["agenda"]], ["inform", "consider_new"])
+
+    def test_section_outside_the_two_ai_choices_is_rejected_by_the_schema(self):
+        body = good_body()
+        body["agenda"][0]["section"] = "approve_prev"            # วาระ 2 ระบบเติมเอง ไม่ใช่งานของ AI
+        with self.assertRaises(ValueError):
+            summarizer.generate_minutes_content(ROWS, PARTS, None, MEETING, self.make([json.dumps(body)]))
+
+    def test_prompt_v3_tells_the_ai_not_to_invent_resolutions_and_to_write_by_speaker(self):
+        text = summarizer.load_prompt("minutes_v3")
+        for phrase in ("รายงานต่อที่ประชุมว่า", "ประธานฯ กล่าวว่า", "ห้ามเติม \"รับทราบ\" หรือ \"เห็นชอบ\" เอง",
+                       '"consider_new"', '"inform"'):
+            self.assertIn(phrase, text)
+        self.assertEqual(summarizer.PROMPT_NAME, "minutes_v3")
 
     def test_long_meeting_uses_map_reduce(self):
         old = summarizer.SINGLE_PASS_CHARS, summarizer.CHUNK_CHARS
