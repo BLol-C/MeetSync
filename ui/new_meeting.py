@@ -8,14 +8,14 @@ from service import ServiceError
 from ui import common
 from ui.common import ATT_BY_LABEL, ROLE_BY_LABEL, ROLE_LABEL, clean_str
 
-PEOPLE_COLS = ["ชื่อ", "ชื่อใน Meet", "อีเมล", "บทบาท", "ตำแหน่ง", "การเข้าร่วม", "สาเหตุที่ไม่มา"]
+PEOPLE_COLS = ["ชื่อภาษาไทย", "ชื่อภาษาอังกฤษ", "อีเมล", "บทบาท", "ตำแหน่ง", "การเข้าร่วม", "สาเหตุที่ไม่มา"]
 
 
 def _default_people() -> pd.DataFrame:
     return pd.DataFrame(
         [
-            {"ชื่อ": "", "ชื่อใน Meet": "", "อีเมล": "", "บทบาท": "ประธาน", "ตำแหน่ง": "", "การเข้าร่วม": "เข้าร่วม", "สาเหตุที่ไม่มา": ""},
-            {"ชื่อ": "", "ชื่อใน Meet": "", "อีเมล": "", "บทบาท": "เลขา", "ตำแหน่ง": "", "การเข้าร่วม": "เข้าร่วม", "สาเหตุที่ไม่มา": ""},
+            {"ชื่อภาษาไทย": "", "ชื่อภาษาอังกฤษ": "", "อีเมล": "", "บทบาท": "ประธาน", "ตำแหน่ง": "", "การเข้าร่วม": "เข้าร่วม", "สาเหตุที่ไม่มา": ""},
+            {"ชื่อภาษาไทย": "", "ชื่อภาษาอังกฤษ": "", "อีเมล": "", "บทบาท": "เลขา", "ตำแหน่ง": "", "การเข้าร่วม": "เข้าร่วม", "สาเหตุที่ไม่มา": ""},
         ],
         columns=PEOPLE_COLS,
     )
@@ -24,12 +24,12 @@ def _default_people() -> pd.DataFrame:
 def people_from_df(df: pd.DataFrame) -> list[dict]:
     people = []
     for rec in df.to_dict("records"):
-        name = clean_str(rec.get("ชื่อ"))
+        name = clean_str(rec.get("ชื่อภาษาไทย"))
         if not name:
             continue
         people.append({
             "display_name": name,
-            "meet_alias": clean_str(rec.get("ชื่อใน Meet")) or None,
+            "meet_alias": clean_str(rec.get("ชื่อภาษาอังกฤษ")) or None,
             "email": clean_str(rec.get("อีเมล")) or None,
             "role": ROLE_BY_LABEL.get(clean_str(rec.get("บทบาท")), "attendee"),
             "attendance": ATT_BY_LABEL.get(clean_str(rec.get("การเข้าร่วม")), "invited"),
@@ -41,8 +41,8 @@ def people_from_df(df: pd.DataFrame) -> list[dict]:
 
 def people_column_config() -> dict:
     return {
-        "ชื่อ": st.column_config.TextColumn("ชื่อ", help="ชื่อที่จะขึ้นในรายงาน (ภาษาไทยได้) — ถ้าตรงกับชื่อที่แสดงใน Google Meet ระบบจับคู่ให้เอง", required=False, width="medium"),
-        "ชื่อใน Meet": st.column_config.TextColumn("ชื่อใน Meet", help="ชื่อที่ Google Meet แสดงของคนนี้ (เช่น ชื่อบัญชีภาษาอังกฤษ) ไว้จับคู่คนพูดและรายชื่อในห้องให้อัตโนมัติ ไม่ขึ้นในรายงาน — ว่างไว้ได้ ถ้าชื่อที่ลงทะเบียนตรงกับใน Meet", width="medium"),
+        "ชื่อภาษาไทย": st.column_config.TextColumn("ชื่อภาษาไทย", help="ชื่อที่จะขึ้นในรายงาน PDF (ภาษาไทย)", required=False, width="medium"),
+        "ชื่อภาษาอังกฤษ": st.column_config.TextColumn("ชื่อภาษาอังกฤษ", help="ชื่อที่ Google Meet แสดงของคนนี้ (เช่น ชื่อบัญชีมหาวิทยาลัยที่เป็นภาษาอังกฤษ) ไว้จับคู่คนพูดและรายชื่อในห้องให้อัตโนมัติ ไม่ขึ้นในรายงาน — เว้นว่างได้ ถ้าชื่อภาษาไทยตรงกับที่ Meet แสดงอยู่แล้ว", width="medium"),
         "อีเมล": st.column_config.TextColumn("อีเมล", help="ใช้เชิญเข้า Calendar และให้ประธาน/เลขาเข้าอนุมัติรายงานได้", width="medium"),
         "บทบาท": st.column_config.SelectboxColumn("บทบาท", options=list(ROLE_BY_LABEL), default=ROLE_LABEL["attendee"], required=True),
         "ตำแหน่ง": st.column_config.TextColumn("ตำแหน่ง", help="ตำแหน่งของผู้เข้าร่วม แสดงในคอลัมน์ ตำแหน่ง ของรายงาน PDF (เว้นว่าง = ใช้บทบาทในที่ประชุมแทน)", width="medium"),
@@ -105,10 +105,10 @@ def render(user: dict):
         venue = c2.text_input("สถานที่", placeholder="เช่น ห้องประชุม 2 / ออนไลน์ (Google Meet)")
         previous = common.previous_meeting_select(user, key="new_previous_meeting", default_latest=True)
         copy_roster = st.checkbox(
-            "คัดลอกรายชื่อผู้เข้าร่วมจากการประชุมครั้งก่อนมาด้วย (รวมอีเมล บทบาท ตำแหน่ง และชื่อใน Meet)", value=True,
+            "คัดลอกรายชื่อผู้เข้าร่วมจากการประชุมครั้งก่อนมาด้วย (รวมอีเมล บทบาท ตำแหน่ง และชื่อภาษาอังกฤษ)", value=True,
             help="ใช้ได้เมื่อเลือกการประชุมครั้งก่อนด้านบน เติมเฉพาะคนที่ยังไม่มีในตารางด้านล่าง ไม่ต้องกรอกและจับคู่ชื่อซ้ำทุกครั้ง")
         st.markdown("##### ผู้เข้าร่วมและบทบาท")
-        st.caption("ใส่ชื่อ **ตรงกับชื่อที่แสดงใน Google Meet** เพื่อให้ระบบจับคู่คนพูดกับรายชื่อนี้ให้อัตโนมัติ "
+        st.caption("ใส่ **ชื่อภาษาไทย** (ที่จะขึ้นในรายงาน) และ **ชื่อภาษาอังกฤษ** ที่ตรงกับชื่อที่แสดงใน Google Meet เพื่อให้ระบบจับคู่คนพูดกับรายชื่อนี้ให้อัตโนมัติ "
                    "(ประธานและเลขามีได้อย่างละ 1 คน) ใส่อีเมลประธาน/เลขาเพื่อให้เข้ามาตรวจและอนุมัติด้วยบัญชี Google ของตนได้ "
                    "— กดปุ่ม ＋ ใต้ตารางเพื่อเพิ่มแถว")
         people_df = st.data_editor(

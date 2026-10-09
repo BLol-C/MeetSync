@@ -262,7 +262,7 @@ class UiTests(TempDbCase):
         prev = self.meeting("approved")
         mid = service.create_meeting(self.user, meet_url=URL, previous_meeting_id=prev, people=[])
         at = self.app(m=mid)
-        self.assertIn("ชื่อใน Meet", [c for c in at.dataframe[0].value.columns] if at.dataframe else ["ชื่อใน Meet"])
+        self.assertIn("ชื่อภาษาอังกฤษ", [c for c in at.dataframe[0].value.columns] if at.dataframe else ["ชื่อภาษาอังกฤษ"])
         next(b for b in at.button if b.key == f"copy_roster_{mid}").click().run()
         names = {p["display_name"] for p in db.list_speakers(mid)}
         self.assertTrue({"สมชาย ใจดี", "สมหญิง", "Alice"} <= names)                         # ผู้เข้าร่วมที่ลงทะเบียนของครั้งก่อนถูกเติม
@@ -417,8 +417,8 @@ class TableConversionTests(unittest.TestCase):
 
         from ui import tab_setup
         df = pd.DataFrame([
-            {"speaker_id": 5, "ชื่อ": "  สมชาย  ", "อีเมล": "a@x.com", "บทบาท": "ประธาน", "การเข้าร่วม": "เข้าร่วม", "สาเหตุที่ไม่มา": None, "ที่มา": "x", "ข้อความที่พูด": 2},
-            {"speaker_id": float("nan"), "ชื่อ": "คนใหม่", "อีเมล": None, "บทบาท": None, "การเข้าร่วม": None, "สาเหตุที่ไม่มา": float("nan"), "ที่มา": None, "ข้อความที่พูด": None},
+            {"speaker_id": 5, "ชื่อภาษาไทย": "  สมชาย  ", "อีเมล": "a@x.com", "บทบาท": "ประธาน", "การเข้าร่วม": "เข้าร่วม", "สาเหตุที่ไม่มา": None, "ที่มา": "x", "ข้อความที่พูด": 2},
+            {"speaker_id": float("nan"), "ชื่อภาษาไทย": "คนใหม่", "อีเมล": None, "บทบาท": None, "การเข้าร่วม": None, "สาเหตุที่ไม่มา": float("nan"), "ที่มา": None, "ข้อความที่พูด": None},
         ])
         rows = tab_setup.people_rows(df)
         self.assertEqual(rows[0], {"speaker_id": 5, "display_name": "สมชาย", "meet_alias": "", "email": "a@x.com", "role": "chair", "attendance": "present", "absence_reason": "", "position": ""})
@@ -428,8 +428,8 @@ class TableConversionTests(unittest.TestCase):
         import pandas as pd
 
         from ui import new_meeting
-        df = pd.DataFrame([{"ชื่อ": "", "อีเมล": "", "บทบาท": "ประธาน", "การเข้าร่วม": "เข้าร่วม"},
-                           {"ชื่อ": "Bob", "อีเมล": "", "บทบาท": "เลขา", "การเข้าร่วม": "ไม่มา", "สาเหตุที่ไม่มา": "ลาป่วย", "ตำแหน่ง": " อาจารย์ "}])
+        df = pd.DataFrame([{"ชื่อภาษาไทย": "", "อีเมล": "", "บทบาท": "ประธาน", "การเข้าร่วม": "เข้าร่วม"},
+                           {"ชื่อภาษาไทย": "Bob", "อีเมล": "", "บทบาท": "เลขา", "การเข้าร่วม": "ไม่มา", "สาเหตุที่ไม่มา": "ลาป่วย", "ตำแหน่ง": " อาจารย์ "}])
         self.assertEqual(new_meeting.people_from_df(df),
                          [{"display_name": "Bob", "meet_alias": None, "email": None, "role": "secretary", "attendance": "absent", "absence_reason": "ลาป่วย", "position": "อาจารย์"}])
 
