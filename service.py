@@ -84,64 +84,11 @@ def _check_previous(user: dict, previous_meeting_id, own_id: int | None = None) 
     return pid
 
 
-def roster_of(meeting_id: int) -> list[dict]:
-    """รายชื่อผู้เข้าร่วมที่ลงทะเบียนไว้ของการประชุมหนึ่ง (พร้อมชื่อที่ Meet แสดง) สำหรับคัดลอกไปประชุมถัดไป
-    ไม่รวมคนที่แค่พบจาก Meet และไม่คัดลอกสถานะมา/ไม่มา (ประธาน/เลขาตั้งเป็นเข้าร่วม ที่เหลือยังไม่ยืนยัน)"""
-    return [
-        {"display_name": p["display_name"], "email": p["email"], "role": p["role"], "position": p.get("position"),
-         "meet_alias": p.get("meet_alias"), "attendance": "present" if p["role"] in db.UNIQUE_ROLES else "invited"}
-        for p in db.list_speakers(meeting_id) if p["source"] == "registered"
-    ]
-
-
-def _with_missing_from(existing: list[dict], roster: list[dict]) -> list[dict]:
-    """existing + คนใน roster ที่ยังไม่มี (เทียบชื่อและชื่อใน Meet แบบไม่สนตัวพิมพ์) — ถ้าประธาน/เลขามีคนแล้ว คนจาก roster ลงเป็นผู้เข้าร่วมทั่วไป"""
-    taken = set()
-    roles = set()
-    for x in existing:
-        for key in (x.get("display_name"), x.get("meet_alias")):
-            if (key or "").strip():
-                taken.add(key.strip().casefold())
-        roles.add(x.get("role", "attendee"))
-    merged = list(existing)
-    for r in roster:
-        keys = {k.strip().casefold() for k in (r["display_name"], r.get("meet_alias")) if (k or "").strip()}
-        if keys & taken:        # ชื่อหรือชื่อใน Meet ของคนนี้ตรงกับคนที่มีอยู่แล้ว (คนเดียวกันที่กรอกด้วยชื่ออีกแบบ)
-            continue
-        r = dict(r)
-        if r["role"] in db.UNIQUE_ROLES and r["role"] in roles:
-            r["role"], r["attendance"] = "attendee", "invited"
-        roles.add(r["role"])
-        taken |= keys
-        merged.append(r)
-    return merged
-
-
-def copy_roster_into_meeting(user: dict, meeting_id: int) -> int:
-    """เพิ่มรายชื่อผู้เข้าร่วมจากการประชุมครั้งก่อน (ที่เลือกไว้) ที่ยังไม่มีในการประชุมนี้ คืนจำนวนคนที่เพิ่ม"""
-    meeting = meeting_for(user, meeting_id)
-    _require_status(meeting, *EDITABLE_STATUSES, hint="รายงานที่อนุมัติแล้วแก้รายชื่อไม่ได้")
-    prev = meeting.get("previous_meeting_id")
-    if not prev:
-        raise ServiceError("ยังไม่ได้เลือกการประชุมครั้งก่อน", "invalid")
-    _check_previous(user, prev, meeting_id)
-    existing = [{"display_name": p["display_name"], "meet_alias": p["meet_alias"], "role": p["role"]}
-                for p in db.list_speakers(meeting_id)]
-    added = _with_missing_from(existing, roster_of(prev))[len(existing):]
-    try:
-        for r in added:
-            db.add_speaker(meeting_id, r["display_name"], r["email"], r["role"], r["attendance"],
-                           position=r["position"], meet_alias=r["meet_alias"])
-    except ValueError as e:
-        raise _value_error(e)
-    return len(added)
-
-
 def create_meeting(
     user: dict, *, meet_url: str, title: str | None = None, venue: str | None = None,
     meeting_no: str | None = None, org_name: str | None = None,
     scheduled_at: datetime.datetime | None = None, people: list[dict] | None = None,
-    previous_meeting_id: int | None = None, copy_roster: bool = False,
+    previous_meeting_id: int | None = None,
 ) -> int:
     """สร้างการประชุมพร้อมรายชื่อผู้เข้าร่วมและบทบาท (ยังไม่สั่งบอท) — ตรวจรายชื่อให้ผ่านทั้งหมดก่อนเขียน
     จะได้ไม่เหลือการประชุมครึ่งๆ กลางๆ ถ้ารายการท้ายผิด
@@ -149,8 +96,6 @@ def create_meeting(
     url = check_meet_url(meet_url)
     previous_meeting_id = _check_previous(user, previous_meeting_id)
     people = [p for p in (people or []) if (p.get("display_name") or "").strip()]
-    if copy_roster and previous_meeting_id:   # รายชื่อจากครั้งก่อนเติมเฉพาะคนที่ยังไม่มีในตารางที่กรอก
-        people = _with_missing_from(people, roster_of(previous_meeting_id))
     roles = [p.get("role", "attendee") for p in people]
     for r in db.UNIQUE_ROLES:
         if roles.count(r) > 1:

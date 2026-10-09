@@ -393,7 +393,7 @@ class ServiceTests(TempDbCase):
         with self.assertRaises(ServiceError):
             service.set_person_attendance(self.owner, someone["speaker_id"], "absent")    # อนุมัติแล้วแก้ไม่ได้
 
-    # ── ชื่อใน Meet (meet_alias) และคัดลอกรายชื่อจากครั้งก่อน ──
+    # ── ชื่อภาษาอังกฤษ / ชื่อที่ Meet แสดง (meet_alias) ──
 
     def test_meet_name_given_at_registration_matches_speakers_and_the_report_keeps_the_thai_name(self):
         mid = self.new_meeting(people=[
@@ -417,56 +417,6 @@ class ServiceTests(TempDbCase):
         next(r for r in rows if r["display_name"] == "ภาม")["meet_alias"] = "Pharm S"        # แก้ชื่อใน Meet ผ่านตาราง
         self.assertEqual(service.apply_people_table(self.owner, mid, rows)["errors"], [])
         self.assertEqual(next(p for p in db.list_speakers(mid) if p["display_name"] == "ภาม")["meet_alias"], "Pharm S")
-
-    def previous_with_roster(self):
-        prev = self.new_meeting(people=[
-            {"display_name": "ธนาวีร์ บุญเกิด", "meet_alias": "Thanawee BOONKERD", "email": "thanawee.b@ku.th",
-             "role": "chair", "attendance": "present", "position": "หัวหน้าสาขา"},
-            {"display_name": "ภาม", "role": "secretary", "attendance": "present"},
-            {"display_name": "ศศิน", "meet_alias": "Sasin TIENDEE", "attendance": "absent", "absence_reason": "ลา"},
-            {"display_name": "คุณแขก", "role": "guest"},
-        ])
-        db.get_or_create_speaker(prev, "คนแปลกหน้าที่พูดเฉยๆ")                              # พบจาก Meet ไม่ได้ลงทะเบียน -> ไม่คัดลอก
-        self.record(prev)
-        service.verify_transcript(self.owner, prev)
-        service.generate_report(self.owner, prev, generate=fake_ai)
-        service.approve_report(self.owner, prev, confirm_warnings=True)
-        return prev
-
-    def test_copy_roster_at_creation_brings_names_aliases_roles_but_not_attendance_or_meet_only_people(self):
-        prev = self.previous_with_roster()
-        mid = service.create_meeting(self.owner, meet_url=URL, previous_meeting_id=prev, copy_roster=True, people=[])
-        got = {p["display_name"]: p for p in db.list_speakers(mid)}
-        self.assertEqual(set(got), {"ธนาวีร์ บุญเกิด", "ภาม", "ศศิน", "คุณแขก"})              # ไม่มี "คนแปลกหน้า..."
-        self.assertEqual((got["ธนาวีร์ บุญเกิด"]["role"], got["ธนาวีร์ บุญเกิด"]["attendance"]), ("chair", "present"))
-        self.assertEqual((got["ธนาวีร์ บุญเกิด"]["meet_alias"], got["ธนาวีร์ บุญเกิด"]["email"], got["ธนาวีร์ บุญเกิด"]["position"]),
-                         ("Thanawee BOONKERD", "thanawee.b@ku.th", "หัวหน้าสาขา"))
-        self.assertEqual((got["ศศิน"]["attendance"], got["ศศิน"]["absence_reason"]), ("invited", None))   # สถานะไม่มา/สาเหตุไม่ติดมา
-        self.assertEqual(got["คุณแขก"]["role"], "guest")
-        self.assertEqual(db.get_or_create_speaker(mid, "Thanawee BOONKERD"), got["ธนาวีร์ บุญเกิด"]["speaker_id"])   # จับคู่ตรงตั้งแต่ครั้งแรก
-
-    def test_copied_roster_only_fills_gaps_and_never_duplicates_or_adds_a_second_chair(self):
-        prev = self.previous_with_roster()
-        mid = service.create_meeting(
-            self.owner, meet_url=URL, previous_meeting_id=prev, copy_roster=True,
-            people=[{"display_name": "คนใหม่", "role": "chair", "attendance": "present"},
-                    {"display_name": "Sasin TIENDEE"}])                                     # ชื่อตรงกับ meet_alias ของ "ศศิน" ครั้งก่อน
-        got = {p["display_name"]: p for p in db.list_speakers(mid)}
-        self.assertEqual(got["คนใหม่"]["role"], "chair")
-        self.assertEqual(got["ธนาวีร์ บุญเกิด"]["role"], "attendee")                          # มีประธานแล้ว คนจากครั้งก่อนลงเป็นผู้เข้าร่วมทั่วไป
-        self.assertNotIn("ศศิน", got)                                                       # ไม่ซ้ำกับ "Sasin TIENDEE" ที่กรอกเอง
-        self.assertEqual(sum(1 for p in got.values() if p["role"] == "chair"), 1)
-
-    def test_copy_roster_into_an_existing_meeting_adds_only_the_missing_people(self):
-        prev = self.previous_with_roster()
-        mid = self.new_meeting(previous_meeting_id=prev, people=[{"display_name": "ภาม", "role": "secretary", "attendance": "present"}])
-        self.assertEqual(service.copy_roster_into_meeting(self.owner, mid), 3)             # ภามมีอยู่แล้ว
-        self.assertEqual(service.copy_roster_into_meeting(self.owner, mid), 0)             # เรียกซ้ำไม่เพิ่มอีก
-        alone = self.new_meeting()
-        with self.assertRaises(ServiceError):
-            service.copy_roster_into_meeting(self.owner, alone)                            # ยังไม่ได้เลือกครั้งก่อน
-        with self.assertRaises(ServiceError):
-            service.copy_roster_into_meeting(self.other, mid)                              # คนนอกสิทธิ์
 
     def test_pdf_follows_the_meeting_minutes_form(self):
         import io

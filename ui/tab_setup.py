@@ -106,18 +106,6 @@ def render(user: dict, detail: dict):
             "ข้อความที่พูด": st.column_config.NumberColumn("ข้อความที่พูด", format="%d ช่วง"),
         },
     )
-    if meeting.get("previous_meeting_id") and not locked:
-        if st.button("📋 เติมรายชื่อจากการประชุมครั้งก่อน", key=f"copy_roster_{mid}",
-                     help="เพิ่มผู้เข้าร่วมของการประชุมครั้งก่อนที่ยังไม่มีในรายชื่อนี้ พร้อมอีเมล บทบาท ตำแหน่ง และ \"ชื่อภาษาอังกฤษ\" "
-                          "(ไม่คัดลอกสถานะมา/ไม่มา)"):
-            try:
-                added = service.copy_roster_into_meeting(user, mid)
-            except ServiceError as e:
-                common.flash("error", str(e))
-            else:
-                common.flash("success" if added else "info", f"เพิ่มรายชื่อจากครั้งก่อน {added} คน" if added else "ไม่มีคนใหม่ให้เพิ่ม — มีครบแล้ว")
-            st.session_state[f"rev_people_{mid}"] = _rev(mid) + 1
-            st.rerun()
     if st.button("💾 บันทึกรายชื่อ", key=f"save_people_{mid}", disabled=locked):
         result = service.apply_people_table(user, mid, people_rows(edited))
         st.session_state[f"rev_people_{mid}"] = _rev(mid) + 1

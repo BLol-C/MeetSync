@@ -95,7 +95,6 @@ def render(user: dict):
         return
 
     st.title("สร้างการประชุมใหม่")
-    st.caption("กรอกข้อมูลที่จะปรากฏในหัวรายงานการประชุม และรายชื่อผู้เข้าร่วมพร้อมบทบาท — แก้ไขภายหลังได้")
     with st.form("new_meeting"):
         url = st.text_input("ลิงก์ Google Meet *", placeholder="https://meet.google.com/abc-defg-hij")
         c1, c2 = st.columns(2)
@@ -104,13 +103,7 @@ def render(user: dict):
         no = c1.text_input("ครั้งที่", placeholder="เช่น 3/2569")
         venue = c2.text_input("สถานที่", placeholder="เช่น ห้องประชุม 2 / ออนไลน์ (Google Meet)")
         previous = common.previous_meeting_select(user, key="new_previous_meeting", default_latest=True)
-        copy_roster = st.checkbox(
-            "คัดลอกรายชื่อผู้เข้าร่วมจากการประชุมครั้งก่อนมาด้วย (รวมอีเมล บทบาท ตำแหน่ง และชื่อภาษาอังกฤษ)", value=True,
-            help="ใช้ได้เมื่อเลือกการประชุมครั้งก่อนด้านบน เติมเฉพาะคนที่ยังไม่มีในตารางด้านล่าง ไม่ต้องกรอกและจับคู่ชื่อซ้ำทุกครั้ง")
         st.markdown("##### ผู้เข้าร่วมและบทบาท")
-        st.caption("ใส่ **ชื่อภาษาไทย** (ที่จะขึ้นในรายงาน) และ **ชื่อภาษาอังกฤษ** ที่ตรงกับชื่อที่แสดงใน Google Meet เพื่อให้ระบบจับคู่คนพูดกับรายชื่อนี้ให้อัตโนมัติ "
-                   "(ประธานและเลขามีได้อย่างละ 1 คน) ใส่อีเมลประธาน/เลขาเพื่อให้เข้ามาตรวจและอนุมัติด้วยบัญชี Google ของตนได้ "
-                   "— กดปุ่ม ＋ ใต้ตารางเพื่อเพิ่มแถว")
         people_df = st.data_editor(
             _default_people(), key="new_people", num_rows="dynamic", hide_index=True,
             column_config=people_column_config(), width="stretch",
@@ -124,5 +117,4 @@ def render(user: dict):
         _create(user, {
             "meet_url": url, "title": title, "org_name": org, "meeting_no": no, "venue": venue,
             "people": people_from_df(people_df), "previous_meeting_id": previous,
-            "copy_roster": bool(copy_roster and previous),
         })

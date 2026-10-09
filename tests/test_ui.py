@@ -258,16 +258,6 @@ class UiTests(TempDbCase):
         next(b for b in at.button if b.key == f"unc_go_{away}").click().run()
         self.assertEqual(db.get_speaker(away)["attendance"], "absent")
 
-    def test_setup_tab_has_a_meet_name_column_and_can_copy_the_roster_from_the_previous_meeting(self):
-        prev = self.meeting("approved")
-        mid = service.create_meeting(self.user, meet_url=URL, previous_meeting_id=prev, people=[])
-        at = self.app(m=mid)
-        self.assertIn("ชื่อภาษาอังกฤษ", [c for c in at.dataframe[0].value.columns] if at.dataframe else ["ชื่อภาษาอังกฤษ"])
-        next(b for b in at.button if b.key == f"copy_roster_{mid}").click().run()
-        names = {p["display_name"] for p in db.list_speakers(mid)}
-        self.assertTrue({"สมชาย ใจดี", "สมหญิง", "Alice"} <= names)                         # ผู้เข้าร่วมที่ลงทะเบียนของครั้งก่อนถูกเติม
-        self.assertFalse(any(b.key == f"copy_roster_{mid}" and b.disabled for b in at.button))
-
     def test_transcript_tab_offers_merging_unregistered_names_and_verify(self):
         mid = self.meeting("transcript_review")
         s = db.get_or_create_speaker(mid, "46 Alice Wonderland")             # Meet แสดงชื่อพ่วงเลข ไม่ตรงรายชื่อ
