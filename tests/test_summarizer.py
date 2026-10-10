@@ -91,7 +91,10 @@ class ValidateTests(unittest.TestCase):
     def test_missing_assignee_warns(self):
         body = good_body()
         body["action_items"][0]["assignee"] = None
-        self.assertIn("assignee_missing", codes(self.check(body)))
+        result = self.check(body)
+        self.assertIn("assignee_missing", codes(result))
+        self.assertEqual(next(w["message"] for w in result["warnings"] if w["code"] == "assignee_missing"),
+                         "งานที่ 1 ยังไม่ระบุผู้รับผิดชอบ")                  # เว้นวรรคระหว่างเลขกับข้อความ
 
     def test_bad_date_is_cleared_and_flagged(self):
         body = good_body()

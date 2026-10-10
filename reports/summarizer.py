@@ -252,7 +252,7 @@ def validate_minutes(
         label = f"งานที่ {i + 1}"
         check_numbers(f"action_items[{i}].description", item["description"], label)
         if not item["description"]:
-            warn("action_description_missing", f"action_items[{i}].description", f"{label}ไม่มีรายละเอียด")
+            warn("action_description_missing", f"action_items[{i}].description", f"{label} ไม่มีรายละเอียด")
 
         if item["assignee"]:
             matched = match_participant_name(item["assignee"], participants)
@@ -262,7 +262,7 @@ def validate_minutes(
                 warn("assignee_unknown", f"action_items[{i}].assignee",
                      f"{label}: ผู้รับผิดชอบ \"{item['assignee']}\" ไม่อยู่ในรายชื่อผู้เข้าร่วม")
         else:
-            warn("assignee_missing", f"action_items[{i}].assignee", f"{label}ยังไม่ระบุผู้รับผิดชอบ")
+            warn("assignee_missing", f"action_items[{i}].assignee", f"{label} ยังไม่ระบุผู้รับผิดชอบ")
 
         if item["due_date"]:
             try:

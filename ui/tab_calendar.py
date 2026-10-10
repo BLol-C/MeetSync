@@ -122,13 +122,14 @@ def render(user: dict, detail: dict):
         num_rows="fixed" if approved else "dynamic", height=common.table_height(len(items), max_px=TABLE_MAX_H, spare_rows=0 if approved else 2),
         disabled=True if approved else ["สถานะ", "นัดใน Calendar"], column_order=VISIBLE,
         column_config={
-            "งาน / นัดหมาย": st.column_config.TextColumn("งาน / นัดหมาย", width="large"),
-            "ผู้รับผิดชอบ": st.column_config.SelectboxColumn("ผู้รับผิดชอบ", options=names, default=NO_ASSIGNEE, width="medium"),
-            "วันที่": st.column_config.DateColumn("วันที่", format="YYYY-MM-DD", width="small"),
-            "เวลาเริ่ม": st.column_config.TimeColumn("เวลาเริ่ม", format="HH:mm", step=60, width="small"),
-            "เวลาสิ้นสุด": st.column_config.TimeColumn("เวลาสิ้นสุด", format="HH:mm", step=60, width="small"),
-            "สถานะ": st.column_config.TextColumn("สถานะ", width="small"),
-            "นัดใน Calendar": st.column_config.LinkColumn("นัดใน Calendar", display_text="เปิดนัด", width="small"),
+            # ความกว้างเป็นพิกเซล (รวมราว 1,000) ให้ทุกคอลัมน์อยู่ในหน้าจอ — เกินกว่านี้ตารางเลื่อนซ้าย-ขวาในตัวเอง
+            "งาน / นัดหมาย": st.column_config.TextColumn("งาน / นัดหมาย", width=290),
+            "ผู้รับผิดชอบ": st.column_config.SelectboxColumn("ผู้รับผิดชอบ", options=names, default=NO_ASSIGNEE, width=140),
+            "วันที่": st.column_config.DateColumn("วันที่", format="YYYY-MM-DD", width=105),
+            "เวลาเริ่ม": st.column_config.TimeColumn("เวลาเริ่ม", format="HH:mm", step=60, width=85),
+            "เวลาสิ้นสุด": st.column_config.TimeColumn("เวลาสิ้นสุด", format="HH:mm", step=60, width=95),
+            "สถานะ": st.column_config.TextColumn("สถานะ", width=170),
+            "นัดใน Calendar": st.column_config.LinkColumn("นัดใน Calendar", display_text="เปิดนัด", width=105),
         },
     )
     invites = st.checkbox("ส่งอีเมลเชิญผู้รับผิดชอบที่มีอีเมลในรายชื่อด้วย", value=_invites_default(), key=f"cal_invites_{mid}")

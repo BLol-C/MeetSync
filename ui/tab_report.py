@@ -178,13 +178,13 @@ def _agenda_cards(mid: int, content: dict, warnings: list[dict], editable: bool)
     return current
 
 
-def _collect(mid: int, summary: str, other: str, agenda: list[dict], actions_edited: pd.DataFrame) -> dict:
+def _collect(mid: int, summary: str, other: str, agenda: list[dict], action_items: list[dict]) -> dict:
     return {
         "summary": summary, "other_matters": other.strip() or None,
         "agenda": [{"section": a["section"], "title": a["title"], "discussion": a["discussion"],
                     "resolution": a["resolution"].strip() or None, "evidence": a["evidence"]}
                    for a in agenda if a["title"].strip() or a["discussion"].strip()],
-        "action_items": actions_from_df(actions_edited),
+        "action_items": action_items,   # งานแก้ที่แท็บ ⑤ — ที่นี่ส่งต่อตามที่บันทึกไว้
     }
 
 
@@ -295,26 +295,6 @@ def render(user: dict, detail: dict):
     other = st.text_area("เรื่องอื่น ๆ", value=content["other_matters"] or "", key=f"other_{mid}_{rev}",
                          disabled=not editable, height=80, label_visibility="collapsed")
 
-    st.subheader("งานที่ได้รับมอบหมาย")
-    st.caption("แก้ไข/เพิ่ม/ลบงานได้ที่แท็บ ⑤ Calendar" if editable else "")
-    for w in warnings:
-        if w["path"].startswith("action_items"):
-            st.warning(w["message"])
-    names = [NO_ASSIGNEE] + [p["display_name"] for p in view["people"]]
-    actions_edit = st.data_editor(
-        actions_df(content["action_items"]), key=f"act_{mid}_{rev}", hide_index=True, width="stretch",
-        num_rows="fixed", disabled=True,
-        column_order=ACTION_COLS[1:],
-        column_config={
-            "งาน / นัดหมาย": st.column_config.TextColumn("งาน / นัดหมาย", width="large"),
-            "ผู้รับผิดชอบ": st.column_config.SelectboxColumn("ผู้รับผิดชอบ", options=names, default=NO_ASSIGNEE, width="medium"),
-            "วันที่": st.column_config.DateColumn("วันที่", format="YYYY-MM-DD", width="small"),
-            "เวลาเริ่ม": st.column_config.TimeColumn("เวลาเริ่ม", format="HH:mm", step=60, width="small"),
-            "เวลาสิ้นสุด": st.column_config.TimeColumn("เวลาสิ้นสุด", format="HH:mm", step=60, width="small"),
-            "หลักฐานจาก transcript": st.column_config.TextColumn("หลักฐานจาก transcript", width="large"),
-        },
-    )
-
     snapshot = report["ai_snapshot"]
     if snapshot and not approved:
         with st.expander("ดูฉบับที่ AI ร่างไว้เดิม (เทียบกับที่แก้)"):
@@ -328,7 +308,7 @@ def render(user: dict, detail: dict):
     if editable:
         if b1.button("💾 บันทึกร่าง", key=f"savedraft_{mid}"):
             try:
-                service.save_report_draft(user, mid, _collect(mid, summary, other, agenda, actions_edit))
+                service.save_report_draft(user, mid, _collect(mid, summary, other, agenda, content["action_items"]))
             except ServiceError as e:
                 st.error(str(e))
             else:
@@ -337,7 +317,6 @@ def render(user: dict, detail: dict):
                 st.rerun()
         if b2.button("✨ ให้ AI ร่างใหม่", key=f"regen_{mid}"):
             _regenerate_dialog(user, mid)
-        b3.caption("ตรวจเสร็จแล้ว → แท็บ ⑤ เพื่ออนุมัติ")
     elif status == "transcript_verified":
         if b1.button("✨ ให้ AI ร่างใหม่", key=f"regen_{mid}"):
             _regenerate_dialog(user, mid)
