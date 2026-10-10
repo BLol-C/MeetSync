@@ -159,6 +159,7 @@ class BotServiceTests(TempDbCase):
         self.assertEqual(live["meeting_id"], mid)
         self.assertEqual([x["name"] for x in live["rows"]], ["Alice (You)", "คนแปลกหน้า"])
         self.assertEqual(live["rows"][0]["text"], "สวัสดีครับทุกคน")
+        self.assertRegex(live["rows"][0]["t"], r"^\d{2}:\d{2}:\d{2}$")                # เวลาที่พูด ให้หน้าเว็บแสดงข้างชื่อ
         self.assertTrue(any("เข้าห้องแล้ว" in s["text"] for s in live["status"]))
         self.assertEqual(db.get_meeting(mid)["status"], "recording")
 

@@ -62,7 +62,8 @@ def _live_panel(user: dict, mid: int):
                 st.caption("ยังไม่มีคำบรรยาย — รอบอทเข้าห้องและเปิด CC (ถ้าอยู่ในห้องรอ ให้ผู้จัดกดอนุญาตให้บอทเข้า)")
             for r in rows:
                 name, text = common.md_escape(r["name"]), common.md_escape(r["text"])
-                st.markdown(f"**{name}:** {text}" if r["final"] else f":gray[**{name}:** {text}]")
+                who = f"{r['t']} · {name}" if r.get("t") else name         # เวลาที่พูด · ผู้พูด (รูปแบบเดียวกับแท็บ ③)
+                st.markdown(f"**{who}:** {text}" if r["final"] else f":gray[**{who}:** {text}]")
 
     panel()
 
