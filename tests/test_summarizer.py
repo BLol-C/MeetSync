@@ -124,6 +124,22 @@ class ValidateTests(unittest.TestCase):
         r = self.check(good_body(agenda=[], summary="  "))
         self.assertTrue({"no_agenda", "empty_summary"} <= set(codes(r)))
 
+    def test_bare_number_after_an_approximation_word_is_flagged_but_units_are_fine(self):
+        bad = good_body()
+        bad["agenda"][0]["discussion"] = "ลองรายงานว่าโครงการเสร็จไปแล้วประมาณ 1 ยังเหลือส่วนรายงานกับส่วนค้นหา"
+        result = self.check(bad)
+        self.assertEqual(codes(result), ["unclear_number"])
+        self.assertIn("ประมาณ 1", result["warnings"][0]["message"])
+        self.assertEqual(result["warnings"][0]["path"], "agenda[0].discussion")
+        for ok in ("จัดซื้อประมาณ 1 เครื่อง งบประมาณ 25,000 บาท", "เสร็จไปแล้วประมาณ 50%", "ใช้เวลากว่า 2 สัปดาห์",
+                   "มีผู้เข้าร่วมราว 30 คน", "งบกว่า 2 ล้านบาท", "ไม่มีตัวเลขเลย"):
+            good = good_body()
+            good["agenda"][0]["discussion"] = ok
+            self.assertEqual(codes(self.check(good)), [], ok)
+        action = good_body()
+        action["action_items"][0]["description"] = "เสร็จภายในประมาณ 3"
+        self.assertEqual(codes(self.check(action)), ["unclear_number"])
+
     def test_revalidation_is_idempotent_for_human_edits(self):
         first = self.check(good_body())
         again = summarizer.validate_minutes(first, PARTS, TEXTS, MEETING.date())

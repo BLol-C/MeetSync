@@ -80,6 +80,27 @@ class MinutesBodyAI(BaseModel):
 
 # ── ตรวจคุณภาพหลัง AI (ฟังก์ชันล้วน ไม่แตะ DB/เครือข่าย ทดสอบได้ตรงๆ) ──
 
+# ตัวเลขหลังคำประมาณค่าที่ไม่มีหน่วยตามหลัง เช่น "เสร็จไปแล้วประมาณ 1 ยังเหลือ…" (คำบรรยายสดมักถอด "ครึ่งหนึ่ง" เป็น "1")
+# อ่านแล้วไม่เป็นประโยค — ไม่เดาแก้ให้ แต่เตือนให้คนตรวจกับ transcript
+_APPROX_NUMBER_RE = re.compile(r"(ประมาณ|ราวๆ|ราว|เกือบ|กว่า)\s*([0-9๐-๙][0-9๐-๙,.]*)\s*(?P<rest>[^\n]{0,12})")
+_NUMBER_UNITS = (
+    "%", "บาท", "เครื่อง", "คน", "ท่าน", "ครั้ง", "วัน", "สัปดาห์", "เดือน", "ปี", "ชั่วโมง", "ชม", "นาที", "วินาที", "ชิ้น", "อัน",
+    "ห้อง", "โครงการ", "ร้าน", "แห่ง", "ราย", "รายการ", "หน้า", "เรื่อง", "ข้อ", "ชุด", "ตัว", "คัน", "หลัง", "ชั้น", "เมตร",
+    "กิโลเมตร", "ตารางเมตร", "กิโลกรัม", "กรัม", "ไร่", "เปอร์เซ็นต์", "เปอร์เซนต์", "ล้าน", "พัน", "หมื่น", "แสน", "ร้อย", "เท่า",
+    "เหรียญ", "ดอลลาร์", "หน่วย", "กลุ่ม", "ฝ่าย", "ทีม", "ระบบ", "ประเภท", "ด้าน", "ช่วง", "รอบ", "งวด", "แผ่น", "เล่ม", "ลำดับ",
+)
+
+
+def find_unclear_number(text: str | None) -> str | None:
+    """คืนข้อความสั้นๆ รอบตัวเลขที่อ่านแล้วไม่เป็นประโยค (ประมาณ/ราว/เกือบ/กว่า + ตัวเลขเปล่าไม่มีหน่วย) หรือ None ถ้าไม่พบ"""
+    for m in _APPROX_NUMBER_RE.finditer(text or ""):
+        rest = m.group("rest")
+        if rest.startswith(_NUMBER_UNITS):
+            continue
+        return (m.group(1) + " " + m.group(2) + (" " + rest if rest else "")).strip()
+    return None
+
+
 def _squash(s: str) -> str:
     """ตัดช่องว่างทั้งหมดทิ้งก่อนเทียบข้อความ: ASR ภาษาไทยเว้นวรรคไม่แน่นอน ('สวัสดี ครับ' = 'สวัสดีครับ')"""
     return re.sub(r"\s+", "", s or "")
@@ -181,7 +202,13 @@ def validate_minutes(
             warn("ungrounded", path, f"{what}อ้างอิงข้อความที่หาไม่เจอใน transcript (อาจเป็นข้อมูลที่ AI แต่งขึ้น)")
         return ok
 
+    def check_numbers(path: str, text: str | None, where: str):
+        hit = find_unclear_number(text)
+        if hit:
+            warn("unclear_number", path, f"{where}: มีตัวเลขที่อ่านแล้วไม่เป็นประโยค (“…{hit}…”) อาจเป็นการถอดเสียงผิด — ตรวจกับ transcript แล้วแก้")
+
     summary = _clean_str(content.get("summary")) or ""
+    check_numbers("summary", summary, "สรุปภาพรวม")
     if not summary:
         warn("empty_summary", "summary", "ไม่มีสรุปภาพรวมการประชุม")
 
@@ -196,6 +223,8 @@ def validate_minutes(
         }
         if not item["title"]:
             warn("agenda_title_missing", f"agenda[{i}].title", f"เรื่องที่ {i + 1} ไม่มีชื่อ")
+        for field in ("title", "discussion", "resolution"):
+            check_numbers(f"agenda[{i}].{field}", item[field], f"เรื่องที่ {i + 1}")
         if item["section"] in GROUNDED_SECTIONS:
             item["grounded"] = check_evidence(
                 f"agenda[{i}].resolution", item["evidence"], required=bool(item["resolution"]),
@@ -221,6 +250,7 @@ def validate_minutes(
             if key in a:
                 item[key] = a[key]
         label = f"งานที่ {i + 1}"
+        check_numbers(f"action_items[{i}].description", item["description"], label)
         if not item["description"]:
             warn("action_description_missing", f"action_items[{i}].description", f"{label}ไม่มีรายละเอียด")
 
