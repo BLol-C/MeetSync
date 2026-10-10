@@ -385,6 +385,11 @@ class UiTests(TempDbCase):
             invite_box = next(c for c in at.checkbox if c.key == f"cal_invites_{mid}")
             self.assertTrue(invite_box.disabled)                                           # ส่งครบแล้ว ติ๊กส่งอีเมลเชิญไม่ได้อีก
             self.assertTrue(any(b.key == f"reopen_cal_{mid}" for b in at.button))
+            pdf_buttons = [d.proto.label for d in at.get("download_button") if "PDF" in d.proto.label]
+            self.assertEqual(pdf_buttons, ["⬇ ดาวน์โหลด PDF ฉบับเต็ม"])                      # PDF ฉบับเต็มอยู่แท็บ ⑤ ที่เดียว ไม่ซ้ำที่ ④
+        draft = self.meeting("draft")
+        drafts = [d.proto.label for d in self.app(m=draft).get("download_button") if "PDF" in d.proto.label]
+        self.assertEqual(drafts, ["⬇ ดาวน์โหลด PDF (ฉบับร่าง)"])                            # ฉบับร่างยังดาวน์โหลดที่แท็บ ④ เหมือนเดิม
 
     def test_calendar_tab_offers_retry_for_unsent_items_and_shows_failures(self):
         from integrations import calendar_sync

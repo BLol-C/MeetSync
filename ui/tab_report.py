@@ -331,10 +331,11 @@ def render(user: dict, detail: dict):
     elif approved:
         if b1.button("✎ ยกเลิกการอนุมัติเพื่อแก้", key=f"reopen_rep_{mid}"):
             reopen_dialog(user, mid)
-    try:
-        pdf, name = service.build_pdf(user, mid)
-        b4.download_button("⬇ ดาวน์โหลด PDF" + ("" if approved else " (ฉบับร่าง)"), data=pdf, file_name=name,
-                           mime="application/pdf", key=f"pdf_{mid}")
-    except ServiceError as e:
-        b4.caption(str(e))
+    if not approved:        # PDF ฉบับเต็มหลังอนุมัติดาวน์โหลดที่แท็บ ⑤
+        try:
+            pdf, name = service.build_pdf(user, mid)
+            b4.download_button("⬇ ดาวน์โหลด PDF (ฉบับร่าง)", data=pdf, file_name=name,
+                               mime="application/pdf", key=f"pdf_{mid}")
+        except ServiceError as e:
+            b4.caption(str(e))
 

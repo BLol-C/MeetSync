@@ -140,6 +140,13 @@ def render(user: dict, detail: dict):
     def collect() -> dict:
         return {**content, "action_items": tab_report.actions_from_df(edited)}
 
+    if approved:    # อนุมัติแล้วไม่มีอะไรต้องแก้อีก — ดาวน์โหลด PDF ฉบับเต็ม (ไม่มีลายน้ำ) ได้เลยที่นี่
+        try:
+            pdf, name = service.build_pdf(user, mid)
+            st.download_button("⬇ ดาวน์โหลด PDF ฉบับเต็ม", data=pdf, file_name=name, mime="application/pdf",
+                               key=f"pdf_{mid}", type="primary")
+        except ServiceError as e:
+            st.caption(str(e))
     b1, b2, _ = st.columns([1.3, 3, 2])
     if not approved:
         if b1.button("💾 บันทึกงาน", key=f"save_cal_{mid}"):
