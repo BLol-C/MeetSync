@@ -496,6 +496,22 @@ class ServiceTests(TempDbCase):
         self.assertEqual({p["display_name"]: p["email"] for p in d["people"]}["Bob"], "bob@x.com")
         self.assertEqual(sorted(p["display_name"] for p in d["people"]), ["Alice", "Bob", "Carol", "Dave", "สมชาย ใจดี"])
 
+    def test_people_table_leaves_meet_names_alone_and_rematches_after_the_english_name_is_added(self):
+        mid = self.new_meeting()
+        silent = db.get_or_create_speaker(mid, "BOZZISX")                      # Meet เห็นชื่อนี้ก่อนที่จะมีใครกรอกชื่อภาษาอังกฤษ
+        room_only = db.get_or_create_speaker(mid, "Someone Else")
+        rows = [r for r in self.table_rows(mid) if r.get("speaker_id") not in (silent, room_only)]   # ตารางในหน้าเว็บไม่มีแถวพบจาก Meet
+        result = service.apply_people_table(self.owner, mid, rows)             # บันทึกโดยไม่แก้อะไร
+        self.assertEqual((result["deleted"], result["matched"], result["errors"]), (0, 0, []))
+        self.assertEqual({db.get_speaker(silent)["display_name"], db.get_speaker(room_only)["display_name"]},
+                         {"BOZZISX", "Someone Else"})                          # ชื่อจาก Meet ไม่ถูกลบเพราะไม่อยู่ในตาราง
+        bob = next(r for r in rows if r["display_name"] == "Bob")
+        bob["meet_alias"] = "bozzisx"                                          # พิมพ์เล็ก ตรงกับ "BOZZISX" โดยไม่สนตัวพิมพ์
+        result = service.apply_people_table(self.owner, mid, rows)
+        self.assertEqual(result["matched"], 1)
+        self.assertIsNone(db.get_speaker(silent))                              # รวมเข้ากับ Bob แล้ว
+        self.assertIsNotNone(db.get_speaker(room_only))                        # ที่ยังไม่ตรงคงอยู่
+
     def test_people_table_reports_row_errors_without_losing_the_rest(self):
         mid = self.new_meeting()
         rows = self.table_rows(mid)

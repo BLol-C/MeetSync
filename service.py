@@ -219,7 +219,7 @@ def apply_people_table(user: dict, meeting_id: int, rows: list[dict]) -> dict:
     meeting = meeting_for(user, meeting_id)
     _require_status(meeting, *EDITABLE_STATUSES, hint="รายงานที่อนุมัติแล้วแก้รายชื่อไม่ได้")
     current = {p["speaker_id"]: p for p in db.list_speakers(meeting_id)}
-    result = {"updated": 0, "added": 0, "deleted": 0, "errors": []}
+    result = {"updated": 0, "added": 0, "deleted": 0, "matched": 0, "errors": []}
 
     def clean(value):
         return (value or "").strip() if isinstance(value, str) else (value or "")
@@ -244,7 +244,7 @@ def apply_people_table(user: dict, meeting_id: int, rows: list[dict]) -> dict:
 
     # ลบก่อน: คนที่หายจากตาราง (เฉพาะที่ไม่มีข้อความ)
     for sid, person in current.items():
-        if sid not in seen:
+        if sid not in seen and person["source"] != "meet":      # ชื่อที่พบจาก Meet ไม่แสดงในตาราง จึงไม่ถือว่าถูกลบ
             try:
                 db.delete_speaker(sid)
                 result["deleted"] += 1
@@ -267,6 +267,7 @@ def apply_people_table(user: dict, meeting_id: int, rows: list[dict]) -> dict:
             result["added"] += 1
         except ValueError as e:
             result["errors"].append(f"{clean(row.get('display_name'))}: {e}")
+    result["matched"] = db.rematch_meet_speakers(meeting_id)     # ชื่ออังกฤษที่เพิ่งแก้อาจตรงกับชื่อใน Meet ที่ค้างอยู่
     return result
 
 

@@ -30,6 +30,11 @@ def _people_df(people: list[dict]) -> pd.DataFrame:
     )
 
 
+def table_people(people: list[dict]) -> list[dict]:
+    """คนที่แสดงในตารางผู้เข้าร่วม = ที่ลงทะเบียนไว้เท่านั้น — ชื่อที่ Meet แสดงแต่ยังจับคู่ไม่ได้ไปจับคู่ที่แท็บ ③"""
+    return [p for p in people if p["source"] != "meet"]
+
+
 def people_rows(df: pd.DataFrame) -> list[dict]:
     """ตารางผู้เข้าร่วมที่แก้ในหน้าเว็บ -> แถวสำหรับ service.apply_people_table"""
     rows = []
@@ -85,7 +90,7 @@ def render(user: dict, detail: dict):
         if w["code"] in ("no_chair", "no_secretary"):
             st.warning(w["message"])
 
-    df = _people_df(detail["people"])
+    df = _people_df(table_people(detail["people"]))
     edited = st.data_editor(
         df, key=f"people_{mid}_{_rev(mid)}", hide_index=True, width="stretch",
         height=common.table_height(len(df), max_px=PEOPLE_MAX_H, spare_rows=0 if locked else 2),
@@ -107,7 +112,7 @@ def render(user: dict, detail: dict):
     if st.button("💾 บันทึกรายชื่อ", key=f"save_people_{mid}", disabled=locked):
         result = service.apply_people_table(user, mid, people_rows(edited))
         st.session_state[f"rev_people_{mid}"] = _rev(mid) + 1
-        parts = [f"{label} {result[k]} คน" for k, label in (("added", "เพิ่ม"), ("updated", "แก้"), ("deleted", "ลบ")) if result[k]]
+        parts = [f"{label} {result[k]} คน" for k, label in (("added", "เพิ่ม"), ("updated", "แก้"), ("deleted", "ลบ"), ("matched", "จับคู่ชื่อใน Meet ได้")) if result[k]]
         if parts:
             common.flash("success", "บันทึกรายชื่อแล้ว: " + ", ".join(parts))
         for err in result["errors"]:

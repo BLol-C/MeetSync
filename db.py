@@ -810,6 +810,28 @@ def merge_speakers(source_id: int, target_id: int) -> int:
         return moved
 
 
+def rematch_meet_speakers(meeting_id: int) -> int:
+    """จับคู่ชื่อที่ Meet แสดง (source = 'meet') ที่ยังค้างอยู่ กับผู้ที่ลงทะเบียนไว้ — ใช้หลังผู้ใช้แก้ชื่อ/ชื่อภาษาอังกฤษในตาราง
+    ตรงคนเดียวเท่านั้น (เทียบแบบเดียวกับตอนบอทจับชื่อ) ชื่อกำกวมไม่เดา คืนจำนวนที่จับคู่ได้"""
+    people = list_speakers(meeting_id)
+    registered = [p for p in people if p["source"] == "registered"]
+    matched = 0
+    for meet in (p for p in people if p["source"] == "meet"):
+        target = normalize_name(meet["display_name"])
+        if not target:
+            continue
+        hits = [r["speaker_id"] for r in registered
+                if normalize_name(r["display_name"]) == target
+                or (r["meet_alias"] and normalize_name(r["meet_alias"]) == target)]
+        if len(hits) == 1:
+            try:
+                merge_speakers(meet["speaker_id"], hits[0])
+                matched += 1
+            except ValueError:
+                pass
+    return matched
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Transcript
 # ─────────────────────────────────────────────────────────────────────────────
