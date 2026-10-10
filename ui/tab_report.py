@@ -11,7 +11,6 @@ from service import ServiceError
 from ui import common
 from ui.common import clean_str
 
-ACTION_COLS = ["_ev", "งาน / นัดหมาย", "ผู้รับผิดชอบ", "วันที่", "เวลาเริ่ม", "เวลาสิ้นสุด", "หลักฐานจาก transcript"]
 NO_ASSIGNEE = "— ไม่ระบุ —"
 
 
@@ -69,19 +68,6 @@ def _evidence_text(evidence: list[str], grounded) -> str:
     if grounded is False:
         return "⚠ ไม่พบใน transcript  " + quotes
     return "⚠ ไม่มีข้อความอ้างอิง" if not evidence else quotes
-
-
-def actions_df(items: list[dict]) -> pd.DataFrame:
-    rows = []
-    for it in items:
-        rows.append({
-            "_ev": json.dumps(it.get("evidence") or [], ensure_ascii=False),
-            "งาน / นัดหมาย": it["description"], "ผู้รับผิดชอบ": it.get("assignee") or NO_ASSIGNEE,
-            "วันที่": _to_date(it.get("due_date")), "เวลาเริ่ม": _to_time(it.get("due_time")),
-            "เวลาสิ้นสุด": _to_time(it.get("due_time_end")),
-            "หลักฐานจาก transcript": _evidence_text(it.get("evidence") or [], it.get("grounded")),
-        })
-    return pd.DataFrame(rows, columns=ACTION_COLS)
 
 
 def actions_from_df(df: pd.DataFrame) -> list[dict]:
@@ -176,6 +162,19 @@ def _agenda_cards(mid: int, content: dict, warnings: list[dict], editable: bool)
             st.session_state[f"agenda_work_{mid}_{rev + 1}"] = new_items
             st.rerun()
     return current
+
+
+def _agenda_key(items: list[dict]) -> list[tuple]:
+    """วาระในรูปที่เทียบกันได้ (ตัดช่องว่าง ข้ามเรื่องที่ว่างทั้งชื่อและเนื้อหา — ตรงกับที่ _collect จะบันทึกจริง)"""
+    return [(a["section"], (a["title"] or "").strip(), (a["discussion"] or "").strip(), (a.get("resolution") or "").strip())
+            for a in items if (a["title"] or "").strip() or (a["discussion"] or "").strip()]
+
+
+def has_unsaved(content: dict, summary: str, other: str, agenda: list[dict]) -> bool:
+    """สิ่งที่พิมพ์ค้างอยู่ในช่องของแท็บ ④ ต่างจากที่บันทึกไว้หรือไม่ (ผู้ใช้ต้องกด "บันทึกร่าง" ก่อนไปขั้นอนุมัติ)"""
+    return (summary.strip() != (content["summary"] or "").strip()
+            or (other or "").strip() != (content["other_matters"] or "").strip()
+            or _agenda_key(agenda) != _agenda_key(content["agenda"]))
 
 
 def _collect(mid: int, summary: str, other: str, agenda: list[dict], action_items: list[dict]) -> dict:
@@ -304,6 +303,10 @@ def render(user: dict, detail: dict):
                             f"มติ: {common.md_escape(a.get('resolution') or '—')}")
 
     st.divider()
+    unsaved = editable and has_unsaved(content, summary, other, agenda)
+    st.session_state[f"report_unsaved_{mid}"] = unsaved      # แท็บ ⑤ อ่านค่านี้เพื่อไม่ให้อนุมัติทั้งที่ยังมีของค้างไม่ได้บันทึก
+    if unsaved:
+        st.warning("มีการแก้ไขที่ยังไม่ได้บันทึก — กด 💾 บันทึกร่าง ก่อนไปขั้นอนุมัติ")
     b1, b2, b3, b4 = st.columns([1.3, 1.5, 1.4, 1.5])
     if editable:
         if b1.button("💾 บันทึกร่าง", key=f"savedraft_{mid}"):

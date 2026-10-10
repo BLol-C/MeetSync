@@ -445,12 +445,7 @@ def save_report_draft(user: dict, meeting_id: int, content: dict) -> dict:
     return cleaned
 
 
-def approval_warnings(user: dict, meeting_id: int) -> list[dict]:
-    """สิ่งที่ควรตรวจก่อนอนุมัติ (คำเตือนในเนื้อหา + คำเตือนส่วนหัวรายงาน)"""
-    view = get_report_view(user, meeting_id)
-    if not view["report"]:
-        return []
-    return view["report"]["content"]["warnings"] + view["header_warnings"]
+
 
 
 def approve_report(user: dict, meeting_id: int, confirm_warnings: bool = False) -> None:
@@ -494,7 +489,6 @@ def reopen_report(user: dict, meeting_id: int, force: bool = False) -> dict:
         raise ServiceError("ลบนัดที่ส่งไปแล้วออกจาก Google Calendar ไม่สำเร็จ จึงยังไม่ยกเลิกการอนุมัติ", "calendar_failed", {"failed": failed})
     if not db.reopen_report(meeting_id):
         raise ServiceError("ยกเลิกการอนุมัติได้เฉพาะรายงานที่อนุมัติแล้ว", "conflict")
-    db.clear_calendar_marks(report["summary_id"])
     return {"deleted": deleted, "failed": failed}
 
 

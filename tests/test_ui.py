@@ -362,6 +362,35 @@ class UiTests(TempDbCase):
         self.assertEqual(len(approve), 1)                                      # ปุ่มอนุมัติอยู่แท็บ ⑤ แท็บเดียว ไม่ซ้ำที่ ④
         self.assertIn("ส่งเข้า Calendar", approve[0].label)
 
+    def test_unsaved_edits_are_flagged_and_block_approval_until_saved(self):
+        mid = self.meeting("draft")
+        at = self.app(m=mid)
+        self.assertFalse(any("ยังไม่ได้บันทึก" in v for v in texts(at.warning)))            # ยังไม่แก้ = ไม่เตือน
+        next(t for t in at.text_area if t.key == f"sum_{mid}_0").set_value("สรุปที่พิมพ์ค้างไว้ ยังไม่กดบันทึก").run()
+        self.assertTrue(any("แท็บ ④ รายงาน มีการแก้ไขที่ยังไม่ได้บันทึก" in v for v in texts(at.warning)))   # เตือนที่แท็บ ⑤
+        self.assertTrue(any("กด 💾 บันทึกร่าง ก่อนไปขั้นอนุมัติ" in v for v in texts(at.warning)))         # และที่แท็บ ④
+        self.assertTrue(next(b for b in at.button if b.key == f"approve_{mid}").disabled)               # อนุมัติไม่ได้จนกว่าจะบันทึก
+        next(b for b in at.button if b.key == f"savedraft_{mid}").click().run()
+        self.assertFalse(any("ยังไม่ได้บันทึก" in v for v in texts(at.warning)))
+        self.assertFalse(next(b for b in at.button if b.key == f"approve_{mid}").disabled)
+        self.assertEqual(db.get_report(mid)["content"]["summary"], "สรุปที่พิมพ์ค้างไว้ ยังไม่กดบันทึก")
+
+    def test_unsaved_comparison_helpers_ignore_whitespace_and_blank_cards(self):
+        from ui import tab_calendar, tab_report
+        content = {"summary": "สรุป", "other_matters": None,
+                   "agenda": [{"section": "consider_new", "title": "งบ", "discussion": "คุยงบ", "resolution": None}]}
+        same = [{"section": "consider_new", "title": " งบ ", "discussion": "คุยงบ ", "resolution": ""},
+                {"section": "consider_new", "title": " ", "discussion": "", "resolution": ""}]      # การ์ดว่างไม่นับ
+        self.assertFalse(tab_report.has_unsaved(content, "สรุป ", "", same))
+        self.assertTrue(tab_report.has_unsaved(content, "สรุปแก้", "", same))
+        self.assertTrue(tab_report.has_unsaved(content, "สรุป", "เรื่องอื่น", same))
+        changed = [{**same[0], "resolution": "เห็นชอบ"}]
+        self.assertTrue(tab_report.has_unsaved(content, "สรุป", "", changed))
+        saved = [{"description": "ส่งงาน", "assignee": "Alice", "due_date": "2026-10-16", "due_time": None, "due_time_end": None}]
+        self.assertFalse(tab_calendar.tasks_unsaved(saved, [dict(saved[0], description=" ส่งงาน ")]))
+        self.assertTrue(tab_calendar.tasks_unsaved(saved, [dict(saved[0], due_date="2026-10-17")]))
+        self.assertTrue(tab_calendar.tasks_unsaved(saved, saved + [dict(saved[0], description="งานใหม่")]))
+
     def test_approval_from_the_calendar_tab_sends_events_and_reports_the_result(self):
         from integrations import calendar_sync
         mid = self.meeting("draft")                       # fake_ai: งาน 1 มีวันที่ งาน 2 ไม่มีวันที่
@@ -483,14 +512,13 @@ class TableConversionTests(unittest.TestCase):
 
         import pandas as pd
 
-        from ui import tab_report
+        from ui import tab_calendar, tab_report
         items = [{"description": "ส่งรายงาน", "assignee": "Alice", "due_date": "2026-10-09", "due_time": "13:00",
-                  "due_time_end": None, "evidence": ["จะส่ง"], "grounded": True, "calendar_synced": True},
+                  "due_time_end": None, "evidence": ["จะส่ง"], "grounded": True},
                  {"description": "ไม่มีผู้รับผิดชอบ", "assignee": None, "due_date": None, "due_time": None,
                   "due_time_end": None, "evidence": [], "grounded": None}]
-        df = tab_report.actions_df(items)
+        df = tab_calendar.items_df(items, approved=False)
         self.assertEqual(df.loc[0, "วันที่"], datetime.date(2026, 10, 9))
-        self.assertIn("⚠ ไม่มีข้อความอ้างอิง", df.loc[1, "หลักฐานจาก transcript"])
         back = tab_report.actions_from_df(df)
         self.assertEqual([(b["description"], b["assignee"], b["due_date"], b["due_time"], b["due_time_end"], b["evidence"]) for b in back],
                          [("ส่งรายงาน", "Alice", "2026-10-09", "13:00", None, ["จะส่ง"]),

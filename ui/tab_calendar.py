@@ -3,6 +3,7 @@
 งานในตารางนี้คือ "งานที่ได้รับมอบหมาย" ชุดเดียวกับในรายงานและ PDF (ตาราง action_items) จึงแก้ที่นี่แล้ว PDF เปลี่ยนตามทันที
 """
 
+import json
 import os
 
 import pandas as pd
@@ -31,7 +32,7 @@ def status_text(item: dict, approved: bool) -> str:
 def items_df(items: list[dict], approved: bool) -> pd.DataFrame:
     return pd.DataFrame(
         [{
-            "_ev": tab_report.json.dumps(it.get("evidence") or [], ensure_ascii=False),
+            "_ev": json.dumps(it.get("evidence") or [], ensure_ascii=False),
             "งาน / นัดหมาย": it["description"], "ผู้รับผิดชอบ": it.get("assignee") or NO_ASSIGNEE,
             "วันที่": _to_date(it.get("due_date")), "เวลาเริ่ม": _to_time(it.get("due_time")),
             "เวลาสิ้นสุด": _to_time(it.get("due_time_end")),
@@ -39,6 +40,16 @@ def items_df(items: list[dict], approved: bool) -> pd.DataFrame:
         } for it in items],
         columns=COLS,
     )
+
+
+def _task_key(items: list[dict]) -> list[tuple]:
+    return [((it["description"] or "").strip(), it.get("assignee") or None, it.get("due_date") or None,
+             it.get("due_time") or None, it.get("due_time_end") or None) for it in items if (it["description"] or "").strip()]
+
+
+def tasks_unsaved(saved: list[dict], edited: list[dict]) -> bool:
+    """งานในตารางที่แก้ค้างอยู่ต่างจากที่บันทึกไว้หรือไม่"""
+    return _task_key(saved) != _task_key(edited)
 
 
 def _invites_default() -> bool:
@@ -122,14 +133,14 @@ def render(user: dict, detail: dict):
         num_rows="fixed" if approved else "dynamic", height=common.table_height(len(items), max_px=TABLE_MAX_H, spare_rows=0 if approved else 2),
         disabled=True if approved else ["สถานะ", "นัดใน Calendar"], column_order=VISIBLE,
         column_config={
-            # ความกว้างเป็นพิกเซล (รวมราว 1,000) ให้ทุกคอลัมน์อยู่ในหน้าจอ — เกินกว่านี้ตารางเลื่อนซ้าย-ขวาในตัวเอง
-            "งาน / นัดหมาย": st.column_config.TextColumn("งาน / นัดหมาย", width=290),
-            "ผู้รับผิดชอบ": st.column_config.SelectboxColumn("ผู้รับผิดชอบ", options=names, default=NO_ASSIGNEE, width=140),
-            "วันที่": st.column_config.DateColumn("วันที่", format="YYYY-MM-DD", width=105),
-            "เวลาเริ่ม": st.column_config.TimeColumn("เวลาเริ่ม", format="HH:mm", step=60, width=85),
-            "เวลาสิ้นสุด": st.column_config.TimeColumn("เวลาสิ้นสุด", format="HH:mm", step=60, width=95),
-            "สถานะ": st.column_config.TextColumn("สถานะ", width=170),
-            "นัดใน Calendar": st.column_config.LinkColumn("นัดใน Calendar", display_text="เปิดนัด", width=105),
+            # ความกว้างเป็นพิกเซล (รวมราว 900 ให้พอดีหน้าจอที่มีแถบด้านข้าง) ให้ทุกคอลัมน์อยู่ในหน้าจอ — เกินกว่านี้ตารางเลื่อนซ้าย-ขวาในตัวเอง
+            "งาน / นัดหมาย": st.column_config.TextColumn("งาน / นัดหมาย", width=250),
+            "ผู้รับผิดชอบ": st.column_config.SelectboxColumn("ผู้รับผิดชอบ", options=names, default=NO_ASSIGNEE, width=120),
+            "วันที่": st.column_config.DateColumn("วันที่", format="YYYY-MM-DD", width=100),
+            "เวลาเริ่ม": st.column_config.TimeColumn("เวลาเริ่ม", format="HH:mm", step=60, width=80),
+            "เวลาสิ้นสุด": st.column_config.TimeColumn("เวลาสิ้นสุด", format="HH:mm", step=60, width=90),
+            "สถานะ": st.column_config.TextColumn("สถานะ", width=150),
+            "นัดใน Calendar": st.column_config.LinkColumn("นัดใน Calendar", display_text="เปิดนัด", width=100),
         },
     )
     pending = [it for it in items if it.get("due_date") and not it.get("google_calendar_event_id")]
@@ -137,8 +148,17 @@ def render(user: dict, detail: dict):
     invites = st.checkbox("ส่งอีเมลเชิญผู้รับผิดชอบที่มีอีเมลในรายชื่อด้วย", value=_invites_default(), key=f"cal_invites_{mid}",
                           disabled=approved and not pending)
 
+    edited_items = tab_report.actions_from_df(edited)
+
     def collect() -> dict:
-        return {**content, "action_items": tab_report.actions_from_df(edited)}
+        return {**content, "action_items": edited_items}
+
+    report_unsaved = (not approved) and bool(st.session_state.get(f"report_unsaved_{mid}"))
+    if not approved:
+        if report_unsaved:
+            st.warning("แท็บ ④ รายงาน มีการแก้ไขที่ยังไม่ได้บันทึก — กลับไปกด 💾 บันทึกร่าง ก่อนอนุมัติ (ปุ่มอนุมัติปิดไว้จนกว่าจะบันทึก)")
+        if tasks_unsaved(items, edited_items):
+            st.warning("มีการแก้ไขงานที่ยังไม่ได้บันทึก — กด 💾 บันทึกงาน")
 
     b1, b2, _ = st.columns([1.3, 3, 2])
     if not approved:
@@ -151,7 +171,7 @@ def render(user: dict, detail: dict):
                 tab_report._bump(mid)
                 common.flash("success", "บันทึกงานแล้ว (แก้ในรายงาน/PDF ตามด้วย)")
                 st.rerun()
-        if b2.button("✅ อนุมัติรายงานและส่งเข้า Calendar…", key=f"approve_{mid}", type="primary"):
+        if b2.button("✅ อนุมัติรายงานและส่งเข้า Calendar…", key=f"approve_{mid}", type="primary", disabled=report_unsaved):
             try:   # บันทึกงานที่แก้ค้างไว้ก่อนเสมอ แล้วเอาคำเตือนล่าสุดมาให้ยืนยัน
                 cleaned = service.save_report_draft(user, mid, collect())
             except ServiceError as e:

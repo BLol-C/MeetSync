@@ -692,7 +692,7 @@ class ServiceTests(TempDbCase):
         self.assertIs(view["report"]["content"]["agenda"][0]["grounded"], True)
         item = view["report"]["content"]["action_items"][0]
         self.assertIn("action_item_id", item)                # แถวงานจริงในฐานข้อมูล (ไม่ใช่ JSON)
-        self.assertFalse(item["calendar_synced"])
+        self.assertIsNone(item["google_calendar_event_id"])
 
     def test_regenerating_replaces_the_draft_instead_of_stacking(self):
         mid = self.draft()
@@ -762,7 +762,9 @@ class ServiceTests(TempDbCase):
             body["action_items"][0]["due_date"] = (datetime.date.today() + datetime.timedelta(days=7)).isoformat()   # วันประชุมคือวันนี้ กำหนดส่งต้องไม่อยู่ก่อนวันประชุม
             return json.dumps(body)
         service.generate_report(self.owner, mid, generate=clean_ai)
-        self.assertEqual(service.approval_warnings(self.owner, mid), [], service.approval_warnings(self.owner, mid))
+        view = service.get_report_view(self.owner, mid)
+        left = view["report"]["content"]["warnings"] + view["header_warnings"]
+        self.assertEqual(left, [], left)
         service.approve_report(self.owner, mid)           # ไม่มีอะไรต้องยืนยัน
 
     def test_pdf_watermark_until_approved(self):
@@ -814,9 +816,9 @@ class ServiceTests(TempDbCase):
             self.assertEqual(body["start"]["dateTime"], "2026-10-09T13:00:00")
             self.assertEqual(db.get_meeting(mid)["status"], "approved")
             items = db.get_report(mid)["content"]["action_items"]
-            self.assertEqual((items[0]["calendar_synced"], items[0]["google_calendar_link"]),
-                             (True, "https://calendar.google.com/event?eid=evt1"))
-            self.assertFalse(items[1]["calendar_synced"])
+            self.assertEqual((items[0]["google_calendar_event_id"], items[0]["google_calendar_link"]),
+                             ("evt1", "https://calendar.google.com/event?eid=evt1"))
+            self.assertIsNone(items[1]["google_calendar_event_id"])
             self.assertEqual(service.sync_calendar(self.owner, mid), [])                       # ส่งครบแล้ว ไม่ส่งซ้ำ
             self.assertEqual(len(fake.inserted), 1)
             with self.assertRaises(ServiceError) as cm:                                         # คนอื่นแตะไม่ได้
@@ -851,7 +853,7 @@ class ServiceTests(TempDbCase):
             out = service.reopen_report(self.owner, mid)
             self.assertEqual((out["deleted"], out["failed"], fake.deleted), (1, [], ["evt1"]))   # นัดถูกลบออกจาก Calendar
             self.assertEqual(db.get_meeting(mid)["status"], "draft")
-            self.assertFalse(any(i["calendar_synced"] or i["google_calendar_event_id"]
+            self.assertFalse(any(i["google_calendar_event_id"] or i["google_calendar_link"]
                                  for i in db.get_report(mid)["content"]["action_items"]))
             service.approve_and_send(self.owner, mid, confirm_warnings=True)                     # อนุมัติใหม่ = ส่งใหม่
             self.assertEqual(len(fake.inserted), 2)

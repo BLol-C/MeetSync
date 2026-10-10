@@ -129,7 +129,6 @@ CREATE TABLE action_items (
     due_time                 TIME NULL,
     due_time_end             TIME NULL,
     evidence                 TEXT NULL,
-    calendar_synced          BOOLEAN NOT NULL DEFAULT FALSE,
     google_calendar_event_id VARCHAR(255) NULL,
     google_calendar_link     VARCHAR(500) NULL,
     FOREIGN KEY (summary_id) REFERENCES summaries(summary_id) ON DELETE CASCADE
@@ -302,17 +301,7 @@ def upsert_user(google_sub: str, email: str, name: str | None, picture: str | No
         conn.close()
 
 
-def get_user_name(user_id: int | None) -> str | None:
-    if user_id is None:
-        return None
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COALESCE(name, email) AS n FROM users WHERE user_id = %s", (user_id,))
-            row = cur.fetchone()
-            return row["n"] if row else None
-    finally:
-        conn.close()
+
 
 
 def save_calendar_token(user_id: int, token_json: str) -> None:
@@ -977,8 +966,8 @@ def edit_segment(
 #   เนื้อหาในโปรแกรมเป็น dict {"summary", "agenda": [...], "other_matters", "action_items": [...]}
 #   ในฐานข้อมูลเก็บเป็นแถวตามตาราง ไม่มี JSON ซ้ำซ้อน ยกเว้น ai_snapshot (ภาพถ่ายผลดิบของ AI ไว้เทียบกับฉบับที่คนแก้)
 # ─────────────────────────────────────────────────────────────────────────────
-def _insert_report_rows(cur, summary_id: int, content: dict, carry: list[dict] | None = None):
-    """เขียนวาระและงานของรายงาน (carry = แถวงานเดิมที่มีสถานะส่ง Calendar ไว้ ให้ย้ายสถานะไปยังรายการที่ไม่เปลี่ยน)"""
+def _insert_report_rows(cur, summary_id: int, content: dict):
+    """เขียนวาระและงานของรายงาน (งานของรายงานที่ยังเป็นฉบับร่างยังไม่เคยส่งเข้า Calendar จึงไม่มีสถานะส่งให้พกต่อ)"""
     for i, a in enumerate(content.get("agenda") or [], start=1):
         cur.execute(
             """INSERT INTO agenda_items (summary_id, order_no, section, title, discussion, resolution, evidence)
@@ -987,34 +976,14 @@ def _insert_report_rows(cur, summary_id: int, content: dict, carry: list[dict] |
              (a.get("title") or "")[:255], a.get("discussion") or None,
              a.get("resolution") or None, _dump_list(a.get("evidence"))),
         )
-    pool = list(carry or [])
     for it in content.get("action_items") or []:
-        key = (it.get("description") or "", it.get("assignee") or None, str(it.get("due_date") or "") or None,
-               it.get("due_time") or None, it.get("due_time_end") or None)
-        synced, event_id = False, None
-        for old in pool:   # งานที่ไม่ได้ถูกแก้ ยังเป็นรายการเดิมใน Calendar — ไม่ส่งซ้ำ
-            if old["_key"] == key:
-                synced, event_id = bool(old["calendar_synced"]), old["google_calendar_event_id"]
-                pool.remove(old)
-                break
         cur.execute(
             """INSERT INTO action_items
-               (summary_id, description, assignee, due_date, due_time, due_time_end, evidence,
-                calendar_synced, google_calendar_event_id)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+               (summary_id, description, assignee, due_date, due_time, due_time_end, evidence)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
             (summary_id, it.get("description") or "", it.get("assignee") or None, it.get("due_date") or None,
-             it.get("due_time") or None, it.get("due_time_end") or None, _dump_list(it.get("evidence")),
-             synced, event_id),
+             it.get("due_time") or None, it.get("due_time_end") or None, _dump_list(it.get("evidence"))),
         )
-
-
-def _existing_action_rows(cur, summary_id: int) -> list[dict]:
-    cur.execute("SELECT * FROM action_items WHERE summary_id = %s", (summary_id,))
-    rows = list(cur.fetchall())
-    for r in rows:
-        r["_key"] = (r["description"], r["assignee"], str(r["due_date"]) if r["due_date"] else None,
-                     _fmt_time(r["due_time"]), _fmt_time(r["due_time_end"]))
-    return rows
 
 
 def _report_row_to_dict(cur, row: dict) -> dict:
@@ -1029,8 +998,7 @@ def _report_row_to_dict(cur, row: dict) -> dict:
             "action_item_id": a["action_item_id"], "description": a["description"], "assignee": a["assignee"],
             "due_date": a["due_date"].isoformat() if a["due_date"] else None,
             "due_time": _fmt_time(a["due_time"]), "due_time_end": _fmt_time(a["due_time_end"]),
-            "evidence": _json_list(a["evidence"]), "calendar_synced": bool(a["calendar_synced"]),
-            "google_calendar_event_id": a["google_calendar_event_id"], "google_calendar_link": a.get("google_calendar_link"),
+            "evidence": _json_list(a["evidence"]), "google_calendar_event_id": a["google_calendar_event_id"], "google_calendar_link": a.get("google_calendar_link"),
         })
     cur.execute("SELECT COALESCE(name, email) AS n FROM users WHERE user_id = %s", (row["approved_by"],))
     approver = cur.fetchone()
@@ -1101,14 +1069,13 @@ def update_report_content(summary_id: int, content: dict) -> bool:
         row = cur.fetchone()
         if not row or row["approved_at"] is not None:
             return False
-        carry = _existing_action_rows(cur, summary_id)
         cur.execute(
             "UPDATE summaries SET executive_summary = %s, other_matters = %s, edited_at = NOW() WHERE summary_id = %s",
             (content.get("summary") or "", content.get("other_matters") or None, summary_id),
         )
         cur.execute("DELETE FROM agenda_items WHERE summary_id = %s", (summary_id,))
         cur.execute("DELETE FROM action_items WHERE summary_id = %s", (summary_id,))
-        _insert_report_rows(cur, summary_id, content, carry)
+        _insert_report_rows(cur, summary_id, content)
         return True
 
 
@@ -1136,7 +1103,7 @@ def approve_report(meeting_id: int, user_id: int | None) -> bool:
 
 def reopen_report(meeting_id: int) -> bool:
     """ยกเลิกการอนุมัติเพื่อแก้รายงาน: รายงานกลับเป็นฉบับร่าง (ล้างผู้อนุมัติ/เวลาอนุมัติ) และการประชุมกลับเป็น draft
-    เนื้อหาและสถานะส่ง Calendar ของแต่ละงานคงเดิม (งานที่ไม่ถูกแก้จึงไม่ถูกส่งซ้ำ) ต้องอนุมัติใหม่หลังแก้
+    เนื้อหาคงเดิม แต่ล้างข้อมูลนัดใน Google Calendar ของทุกงาน (service ลบนัดออกจาก Google ไปแล้วก่อนเรียก) ต้องอนุมัติใหม่หลังแก้
     คืน False ถ้าการประชุมไม่ได้อยู่ในสถานะ approved
     """
     with _tx() as cur:
@@ -1145,6 +1112,11 @@ def reopen_report(meeting_id: int) -> bool:
             return False
         cur.execute(
             "UPDATE summaries SET approved_by = NULL, approved_at = NULL WHERE meeting_id = %s", (meeting_id,)
+        )
+        cur.execute(
+            """UPDATE action_items a JOIN summaries s ON s.summary_id = a.summary_id
+               SET a.google_calendar_event_id = NULL, a.google_calendar_link = NULL WHERE s.meeting_id = %s""",
+            (meeting_id,),
         )
         return True
 
@@ -1187,24 +1159,9 @@ def mark_action_item_synced(action_item_id: int, event_id: str, link: str | None
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """UPDATE action_items SET calendar_synced = TRUE, google_calendar_event_id = %s, google_calendar_link = %s
+                """UPDATE action_items SET google_calendar_event_id = %s, google_calendar_link = %s
                    WHERE action_item_id = %s""",
                 (event_id, link, action_item_id),
             )
     finally:
         conn.close()
-
-
-def clear_calendar_marks(summary_id: int) -> None:
-    """ล้างสถานะ "ส่งเข้า Calendar แล้ว" ของทุกงานในรายงาน (ใช้หลังลบนัดออกจาก Calendar ตอนยกเลิกการอนุมัติ)"""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """UPDATE action_items SET calendar_synced = FALSE, google_calendar_event_id = NULL, google_calendar_link = NULL
-                   WHERE summary_id = %s""",
-                (summary_id,),
-            )
-    finally:
-        conn.close()
-
