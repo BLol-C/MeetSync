@@ -132,7 +132,10 @@ def render(user: dict, detail: dict):
             "นัดใน Calendar": st.column_config.LinkColumn("นัดใน Calendar", display_text="เปิดนัด", width=105),
         },
     )
-    invites = st.checkbox("ส่งอีเมลเชิญผู้รับผิดชอบที่มีอีเมลในรายชื่อด้วย", value=_invites_default(), key=f"cal_invites_{mid}")
+    pending = [it for it in items if it.get("due_date") and not it.get("google_calendar_event_id")]
+    # อนุมัติแล้ว และส่งครบแล้ว = ตัวเลือกนี้ไม่มีผลอีก จึงล็อกไว้ (ยังใช้ได้เมื่อมีงานค้างให้กดส่งซ้ำ)
+    invites = st.checkbox("ส่งอีเมลเชิญผู้รับผิดชอบที่มีอีเมลในรายชื่อด้วย", value=_invites_default(), key=f"cal_invites_{mid}",
+                          disabled=approved and not pending)
 
     def collect() -> dict:
         return {**content, "action_items": tab_report.actions_from_df(edited)}
@@ -158,7 +161,6 @@ def render(user: dict, detail: dict):
                 _approve_dialog(user, mid, cleaned["warnings"] + view["header_warnings"], dated, connected, invites)
         return
 
-    pending = [it for it in items if it.get("due_date") and not it.get("google_calendar_event_id")]
     if pending and b1.button(f"📅 ส่งงานที่ยังไม่ส่ง ({len(pending)})", key=f"sync_{mid}", disabled=not connected):
         with st.spinner("กำลังส่งเข้า Google Calendar…"):
             _store_results(mid, service.sync_calendar(user, mid, invites))

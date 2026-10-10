@@ -382,6 +382,8 @@ class UiTests(TempDbCase):
             self.assertTrue(any("อนุมัติแล้วโดย" in v for v in texts(at.success)))
             self.assertFalse(any(b.key == f"approve_{mid}" for b in at.button))             # อนุมัติแล้ว ปุ่มอนุมัติหาย
             self.assertFalse(any(b.key == f"sync_{mid}" for b in at.button))                # ส่งครบแล้ว ไม่มีปุ่มส่งซ้ำ
+            invite_box = next(c for c in at.checkbox if c.key == f"cal_invites_{mid}")
+            self.assertTrue(invite_box.disabled)                                           # ส่งครบแล้ว ติ๊กส่งอีเมลเชิญไม่ได้อีก
             self.assertTrue(any(b.key == f"reopen_cal_{mid}" for b in at.button))
 
     def test_calendar_tab_offers_retry_for_unsent_items_and_shows_failures(self):
@@ -394,6 +396,7 @@ class UiTests(TempDbCase):
         with mock.patch.object(service, "calendar_connected", lambda user: True), \
                 mock.patch.object(calendar_sync, "create_event", broken):
             at = self.app(m=mid)
+            self.assertFalse(next(c for c in at.checkbox if c.key == f"cal_invites_{mid}").disabled)   # ยังมีงานค้าง ตัวเลือกยังมีผล
             button(at, "ส่งงานที่ยังไม่ส่ง (1)").click().run()
             self.assertTrue(any("ส่งไม่สำเร็จ" in v and "Google ปฏิเสธคำขอ" in v for v in texts(at.error)))
             self.assertFalse(any("ส่งเข้า Google Calendar เรียบร้อยแล้ว" in v for v in texts(at.success)))   # ไม่บอกว่าสำเร็จถ้าไม่สำเร็จ
