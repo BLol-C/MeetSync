@@ -267,23 +267,27 @@ class UiTests(TempDbCase):
         next(b for b in at.button if b.key == f"unc_go_{away}").click().run()
         self.assertEqual(db.get_speaker(away)["attendance"], "absent")
 
-    def test_unmatched_meet_names_are_hidden_from_the_people_table_and_matched_from_the_transcript_tab(self):
+    def test_unmatched_meet_names_are_hidden_from_the_people_table_and_matched_in_the_single_panel(self):
         mid = self.meeting("transcript_review")
-        s = db.get_or_create_speaker(mid, "46 Alice Wonderland")             # Meet แสดงชื่อพ่วงเลข ไม่ตรงรายชื่อ
-        db.insert_segment(mid, s, 3, "ผมคือ Alice เอง")
-        setup = self.app(m=mid)                                               # แท็บ ① ไม่แสดงชื่อที่พบจาก Meet ในตารางรายชื่อ
+        carol = service.add_person(self.user, mid, "แครอล", None, "attendee", "invited")   # ลงทะเบียนไว้ ยังไม่ยืนยัน
+        s = db.get_or_create_speaker(mid, "46 Carol Wonderland")                          # Meet แสดงชื่อพ่วงเลข ไม่ตรงรายชื่อ
+        db.insert_segment(mid, s, 3, "ผมคือ Carol เอง")
+        at = self.app(m=mid)
         from ui import tab_setup
         shown = [p["display_name"] for p in tab_setup.table_people(service.get_detail(self.user, mid)["people"])]
-        self.assertNotIn("46 Alice Wonderland", shown)
-        self.assertIn("Alice", shown)
-        self.assertTrue(any("ยังจับคู่ไม่ได้" in v for v in texts(setup.subheader)))
-        alice = next(p for p in db.list_speakers(mid) if p["display_name"] == "Alice")["speaker_id"]
-        next(x for x in setup.selectbox if x.key == f"merge_to_{s}").select(alice).run()
-        next(b for b in setup.button if b.key == f"merge_{s}").click().run()
+        self.assertNotIn("46 Carol Wonderland", shown)                                      # แท็บ ① ไม่แสดงชื่อที่พบจาก Meet ในตารางรายชื่อ
+        self.assertIn("แครอล", shown)
+        subheaders = texts(at.subheader)
+        self.assertTrue(any("ยังไม่ยืนยันการเข้าร่วม" in v for v in subheaders))
+        self.assertFalse(any("ยังจับคู่ไม่ได้" in v for v in subheaders))                    # ไม่มีหน้าจอจับคู่แยกอีกอัน
+        select = next(x for x in at.selectbox if x.key == f"unc_{carol}")
+        self.assertTrue(any("46 Carol Wonderland" in o for o in select.options))
+        select.select(f"meet:{s}").run()
+        next(b for b in at.button if b.key == f"unc_go_{carol}").click().run()
         people = {p["display_name"]: p for p in db.list_speakers(mid)}
-        self.assertNotIn("46 Alice Wonderland", people)
-        self.assertEqual(people["Alice"]["meet_alias"], "46 Alice Wonderland")   # จำเป็นชื่อภาษาอังกฤษของ Alice
-        self.assertEqual(people["Alice"]["segment_count"], 2)
+        self.assertNotIn("46 Carol Wonderland", people)
+        self.assertEqual((people["แครอล"]["meet_alias"], people["แครอล"]["segment_count"], people["แครอล"]["attendance"]),
+                         ("46 Carol Wonderland", 1, "present"))                             # จำเป็นชื่อภาษาอังกฤษ ข้อความย้ายมา และนับว่าเข้าร่วม
         at = self.app(m=mid)
         next(b for b in at.button if b.key == f"verify_{mid}").click().run()
         self.assertEqual(db.get_meeting(mid)["status"], "transcript_verified")
