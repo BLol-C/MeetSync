@@ -140,13 +140,6 @@ def render(user: dict, detail: dict):
     def collect() -> dict:
         return {**content, "action_items": tab_report.actions_from_df(edited)}
 
-    if approved:    # อนุมัติแล้วไม่มีอะไรต้องแก้อีก — ดาวน์โหลด PDF ฉบับเต็ม (ไม่มีลายน้ำ) ได้เลยที่นี่
-        try:
-            pdf, name = service.build_pdf(user, mid)
-            st.download_button("⬇ ดาวน์โหลด PDF ฉบับเต็ม", data=pdf, file_name=name, mime="application/pdf",
-                               key=f"pdf_{mid}", type="primary")
-        except ServiceError as e:
-            st.caption(str(e))
     b1, b2, _ = st.columns([1.3, 3, 2])
     if not approved:
         if b1.button("💾 บันทึกงาน", key=f"save_cal_{mid}"):
@@ -168,10 +161,18 @@ def render(user: dict, detail: dict):
                 _approve_dialog(user, mid, cleaned["warnings"] + view["header_warnings"], dated, connected, invites)
         return
 
-    if pending and b1.button(f"📅 ส่งงานที่ยังไม่ส่ง ({len(pending)})", key=f"sync_{mid}", disabled=not connected):
+    # อนุมัติแล้ว: ปุ่มเรียงแถวเดียวชิดซ้าย ขนาดเท่ากัน — ดาวน์โหลด PDF ฉบับเต็ม (ไม่มีลายน้ำ) | ส่งงานที่ค้าง (ถ้ามี) | ยกเลิกการอนุมัติ
+    d, r, y, _ = st.columns([1.5, 1.7, 1.7, 1.1])
+    try:
+        pdf, name = service.build_pdf(user, mid)
+        d.download_button("⬇ ดาวน์โหลด PDF ฉบับเต็ม", data=pdf, file_name=name, mime="application/pdf",
+                          key=f"pdf_{mid}", type="primary", width="stretch")
+    except ServiceError as e:
+        d.caption(str(e))
+    if r.button("✎ ยกเลิกการอนุมัติเพื่อแก้", key=f"reopen_cal_{mid}", width="stretch"):
+        tab_report.reopen_dialog(user, mid)
+    if pending and y.button(f"📅 ส่งงานที่ยังไม่ส่ง ({len(pending)})", key=f"sync_{mid}", disabled=not connected, width="stretch"):
         with st.spinner("กำลังส่งเข้า Google Calendar…"):
             _store_results(mid, service.sync_calendar(user, mid, invites))
         tab_report._bump(mid)
         st.rerun()
-    if b2.button("✎ ยกเลิกการอนุมัติเพื่อแก้", key=f"reopen_cal_{mid}"):
-        tab_report.reopen_dialog(user, mid)
