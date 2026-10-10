@@ -4,6 +4,7 @@
 และปุ่มสำคัญเรียก service/บอทถูกที่ (การคลิกในตารางแก้ไขต้องดูด้วยเบราว์เซอร์: tools/ui_smoke.py)
 """
 
+import datetime
 import os
 import unittest
 from unittest import mock
@@ -168,7 +169,7 @@ class UiTests(TempDbCase):
                 mid = self.meeting(status)
                 at = self.app(m=mid)
                 self.assertIn("ประชุมทดสอบหน้าเว็บ", at.title[0].value)
-                self.assertEqual(len(at.tabs), 4)
+                self.assertEqual(len(at.tabs), 5)
                 body = " ".join(texts(at.caption))
                 self.assertIn(common.STATUS_LABEL[status], body)                      # บรรทัดสถานะยังอยู่ (ไม่มีลิงก์ Meet)
                 self.assertNotIn("meet.google.com", body)
@@ -350,43 +351,71 @@ class UiTests(TempDbCase):
         with self.assertRaises(service.ServiceError):
             service.keep_existing_report(self.user, mid2)
 
-    def test_calendar_card_shows_clear_sent_status(self):
-        """กดส่งเข้า Calendar แล้วต้องเห็นสถานะ "ส่งเรียบร้อยแล้ว" ในการ์ดเอง และเห็นต่อเนื่องเมื่อเปิดหน้าใหม่"""
+    def test_calendar_tab_is_locked_until_approval_then_lists_the_tasks(self):
+        draft = self.meeting("draft")
+        at = self.app(m=draft)
+        self.assertTrue(any("ใช้ได้หลังอนุมัติรายงานแล้ว" in v for v in texts(at.info)))
+        mid = self.meeting("approved")                    # fake_ai: งาน 1 มีวันที่ งาน 2 ไม่มีวันที่
+        with mock.patch.object(service, "calendar_connected", lambda user: True):
+            at = self.app(m=mid)
+        self.assertFalse(any("ใช้ได้หลังอนุมัติรายงานแล้ว" in v for v in texts(at.info)))
+        self.assertTrue(button(at, "ส่งเข้า Calendar (1 งาน)"))                  # นับเฉพาะงานที่มีวันที่และยังไม่ส่ง
+
+    def test_calendar_tab_send_shows_clear_result_and_survives_reload(self):
         from integrations import calendar_sync
-        mid = self.meeting("approved")               # fake_ai: งาน 1 มีวันที่, งาน 2 ไม่มีวันที่
+        mid = self.meeting("approved")
         sent = []
 
-        def fake_sync(item_id, user_id, service=None):
-            sent.append(item_id)
-            db.mark_action_item_synced(item_id, "evt-" + str(item_id))
-            return "evt"
+        def fake_push(task_id, user_id, send_invites=False, service=None):
+            sent.append((task_id, send_invites))
+            task = db.get_calendar_task(task_id)
+            db.mark_calendar_task_synced(task_id, "evt-" + str(task_id), "https://calendar.google.com/x", task["content_version"])
+            return {"action": "created", "event_id": "evt", "link": None}
 
         with mock.patch.object(service, "calendar_connected", lambda user: True), \
-                mock.patch.object(calendar_sync, "sync_action_item", fake_sync):
+                mock.patch.object(calendar_sync, "push_task", fake_push):
             at = self.app(m=mid)
-            self.assertTrue(any("ยังไม่ได้ส่งงานเข้า Calendar" in v for v in texts(at.caption)))
-            self.assertTrue(any("ไม่ได้ส่ง (ไม่มีวันที่กำหนด)" in v for v in texts(at.caption)))
-            button(at, "ส่งงานทั้งหมดเข้า Calendar").click().run()
-            self.assertEqual(len(sent), 1)                                        # ส่งเฉพาะงานที่มีวันที่
-            self.assertTrue(any("ส่งเข้า Google Calendar เรียบร้อยแล้ว 1 รายการ" in v for v in texts(at.success)))
-            self.assertTrue(any("ส่งเข้า Google Calendar แล้วครบ 1/1" in v for v in texts(at.success)))
-            self.assertTrue(button(at, "ส่งงานทั้งหมดเข้า Calendar").disabled)  # ส่งครบแล้ว กดซ้ำไม่ได้
-            at = self.app(m=mid)                                                  # เปิดหน้าใหม่ภายหลัง ยังเห็นสถานะ
-            self.assertTrue(any("แล้วครบ 1/1" in v for v in texts(at.success)))
+            button(at, "ส่งเข้า Calendar").click().run()
+            self.assertEqual(len(sent), 1)                                         # ส่งเฉพาะงานที่มีวันที่
+            self.assertEqual(sent[0][1], False)                                    # ไม่ติ๊กส่งอีเมลเชิญ = ไม่ส่ง
+            self.assertTrue(any("ส่งเข้า Google Calendar แล้ว" in v and "สร้างนัดใหม่ 1 รายการ" in v for v in texts(at.success)))
+            self.assertTrue(button(at, "ส่งเข้า Calendar").disabled)               # ส่งครบแล้ว ไม่มีอะไรค้าง
+            self.app(m=mid)
+        self.assertEqual([t["sync_status"] for t in db.list_calendar_tasks(mid)], ["synced", "none"])
 
-    def test_calendar_card_reports_failures_clearly(self):
+    def test_calendar_tab_reports_failures_clearly(self):
         from integrations import calendar_sync
         mid = self.meeting("approved")
 
-        def broken(item_id, user_id, service=None):
+        def broken(task_id, user_id, send_invites=False, service=None):
             raise RuntimeError("Google ปฏิเสธคำขอ")
 
         with mock.patch.object(service, "calendar_connected", lambda user: True), \
-                mock.patch.object(calendar_sync, "sync_action_item", broken):
+                mock.patch.object(calendar_sync, "push_task", broken):
             at = self.app(m=mid)
-            button(at, "ส่งงานทั้งหมดเข้า Calendar").click().run()
+            button(at, "ส่งเข้า Calendar").click().run()
             self.assertTrue(any("ส่งไม่สำเร็จ" in v and "Google ปฏิเสธคำขอ" in v for v in texts(at.error)))
-            self.assertFalse(any("เรียบร้อยแล้ว" in v for v in texts(at.success)))   # ไม่บอกว่าสำเร็จถ้าไม่สำเร็จ
+            self.assertFalse(any("ส่งเข้า Google Calendar แล้ว" in v for v in texts(at.success)))   # ไม่บอกว่าสำเร็จถ้าไม่สำเร็จ
+
+    def test_calendar_table_conversions_and_status_labels(self):
+        import pandas as pd
+        from ui import tab_calendar
+        tasks = [
+            {"calendar_task_id": 7, "description": "ส่งรายงาน", "assignee": "Alice", "due_date": "2026-10-16", "due_time": "13:00",
+             "due_time_end": None, "sync_status": "changed", "google_calendar_link": "https://calendar.google.com/x"},
+            {"calendar_task_id": 8, "description": "จองห้อง", "assignee": None, "due_date": None, "due_time": None,
+             "due_time_end": None, "sync_status": "none", "google_calendar_link": None},
+        ]
+        df = tab_calendar.tasks_df(tasks)
+        self.assertEqual((df.loc[0, "วันที่"], df.loc[0, "สถานะ"]), (datetime.date(2026, 10, 16), "⚠ แก้หลังส่ง"))
+        self.assertEqual(df.loc[1, "สถานะ"], "ไม่มีวันที่ — ส่งไม่ได้")
+        rows = tab_calendar.rows_from_df(df)
+        self.assertEqual((rows[0]["calendar_task_id"], rows[0]["due_date"], rows[0]["due_time"], rows[0]["assignee"]),
+                         (7, "2026-10-16", "13:00", "Alice"))
+        self.assertEqual((rows[1]["assignee"], rows[1]["due_date"]), (None, None))
+        new = pd.DataFrame([{"calendar_task_id": float("nan"), "งาน / นัดหมาย": "งานใหม่", "ผู้รับผิดชอบ": "— ไม่ระบุ —",
+                             "วันที่": pd.NaT, "เวลาเริ่ม": float("nan"), "เวลาสิ้นสุด": None, "สถานะ": None, "นัดใน Calendar": None}])
+        self.assertEqual(tab_calendar.rows_from_df(new)[0]["calendar_task_id"], None)       # แถวใหม่ ไม่มี id
 
     def test_after_editing_transcript_of_an_approved_report_ai_can_regenerate(self):
         """อนุมัติแล้ว -> ยกเลิกอนุมัติ -> กลับไปแก้ transcript -> ยืนยันใหม่ ต้องมีปุ่มให้ AI ร่างใหม่ (เคยไม่มีปุ่ม ค้างอยู่)"""
@@ -456,7 +485,6 @@ class TableConversionTests(unittest.TestCase):
                   "due_time_end": None, "evidence": [], "grounded": None}]
         df = tab_report.actions_df(items)
         self.assertEqual(df.loc[0, "วันที่"], datetime.date(2026, 10, 9))
-        self.assertEqual(df.loc[0, "Calendar"], "✓ ส่งแล้ว")
         self.assertIn("⚠ ไม่มีข้อความอ้างอิง", df.loc[1, "หลักฐานจาก transcript"])
         back = tab_report.actions_from_df(df)
         self.assertEqual([(b["description"], b["assignee"], b["due_date"], b["due_time"], b["due_time_end"], b["evidence"]) for b in back],
@@ -494,11 +522,11 @@ class TableConversionTests(unittest.TestCase):
         self.assertGreater(common.table_height(1, spare_rows=2), common.table_height(1))
         self.assertEqual(common.table_height(500, max_px=420), 420)       # ยาวกว่านั้นเลื่อนในตาราง
 
-    def test_progress_text_numbers_match_the_four_tabs(self):
+    def test_progress_text_numbers_match_the_five_tabs(self):
         from ui import common
-        self.assertIn("ขั้นที่ 1 จาก 4", common.progress_text("scheduled"))
-        self.assertIn("ขั้นที่ 3 จาก 4", common.progress_text("transcript_review"))
-        self.assertIn("ขั้นที่ 4 จาก 4", common.progress_text("draft"))
+        self.assertIn("ขั้นที่ 1 จาก 5", common.progress_text("scheduled"))
+        self.assertIn("ขั้นที่ 3 จาก 5", common.progress_text("transcript_review"))
+        self.assertIn("ขั้นที่ 4 จาก 5", common.progress_text("draft"))
         self.assertNotIn("ขั้นที่", common.progress_text("approved"))
 
 

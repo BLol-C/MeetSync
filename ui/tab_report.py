@@ -1,4 +1,4 @@
-"""แท็บ ④ รายงานการประชุม: ให้ AI ร่าง -> ตรวจ/แก้ (พร้อมคำเตือน) -> อนุมัติ -> PDF / Calendar"""
+"""แท็บ ④ รายงานการประชุม: ให้ AI ร่าง -> ตรวจ/แก้ (พร้อมคำเตือน) -> อนุมัติ -> PDF (ส่งเข้า Calendar อยู่แท็บ ⑤)"""
 
 import datetime
 import json
@@ -6,13 +6,12 @@ import json
 import pandas as pd
 import streamlit as st
 
-from bot import botclient
 import service
 from service import ServiceError
 from ui import common
 from ui.common import clean_str
 
-ACTION_COLS = ["_ev", "งาน / นัดหมาย", "ผู้รับผิดชอบ", "วันที่", "เวลาเริ่ม", "เวลาสิ้นสุด", "หลักฐานจาก transcript", "Calendar"]
+ACTION_COLS = ["_ev", "งาน / นัดหมาย", "ผู้รับผิดชอบ", "วันที่", "เวลาเริ่ม", "เวลาสิ้นสุด", "หลักฐานจาก transcript"]
 NO_ASSIGNEE = "— ไม่ระบุ —"
 
 
@@ -81,7 +80,6 @@ def actions_df(items: list[dict]) -> pd.DataFrame:
             "วันที่": _to_date(it.get("due_date")), "เวลาเริ่ม": _to_time(it.get("due_time")),
             "เวลาสิ้นสุด": _to_time(it.get("due_time_end")),
             "หลักฐานจาก transcript": _evidence_text(it.get("evidence") or [], it.get("grounded")),
-            "Calendar": "✓ ส่งแล้ว" if it.get("calendar_synced") else "",
         })
     return pd.DataFrame(rows, columns=ACTION_COLS)
 
@@ -230,14 +228,14 @@ def _approve_dialog(user: dict, mid: int, warnings: list[dict]):
             st.error(str(e))
             return
         _bump(mid)
-        common.flash("success", "อนุมัติรายงานแล้ว — ดาวน์โหลด PDF หรือส่งงานเข้า Calendar ได้")
+        common.flash("success", "อนุมัติรายงานแล้ว — ดาวน์โหลด PDF ได้ และส่งงานเข้า Calendar ที่แท็บ ⑤")
         st.rerun()
 
 
 @st.dialog("ยกเลิกการอนุมัติเพื่อแก้รายงาน")
 def _reopen_dialog(user: dict, mid: int):
     st.warning("รายงานจะกลับเป็นฉบับร่าง (PDF จะมีลายน้ำ “ฉบับร่าง”) และต้องอนุมัติใหม่หลังแก้ — "
-               "งานที่ส่งเข้า Calendar ไปแล้วและไม่ถูกแก้จะไม่ถูกส่งซ้ำ")
+               "งานในแท็บ Calendar ไม่ถูกลบหรือเปลี่ยนตาม")
     if st.button("ยกเลิกการอนุมัติ", type="primary"):
         try:
             service.reopen_report(user, mid)
@@ -246,52 +244,6 @@ def _reopen_dialog(user: dict, mid: int):
             return
         _bump(mid)
         common.flash("info", "รายงานกลับเป็นฉบับร่างแล้ว — แก้ไขได้")
-        st.rerun()
-
-
-def _calendar_card(user: dict, mid: int, report: dict):
-    st.subheader("ส่งงานเข้า Google Calendar")
-    items = report["content"]["action_items"]
-    if not service.calendar_connected(user):
-        st.caption("ยังไม่ได้เชื่อมต่อ Google Calendar ของบัญชีนี้ (ขอสิทธิ์สร้างนัดหมายอย่างเดียว แยกจากการล็อกอิน)")
-        st.link_button("เชื่อมต่อ Google Calendar", botclient.calendar_connect_url(user, f"{botclient.UI_URL}/?m={mid}"))
-        return
-    with_date = [i for i in items if i["due_date"]]
-    no_date = [i for i in items if not i["due_date"]]
-    synced = [i for i in with_date if i["calendar_synced"]]
-    st.caption(f"ส่งได้เฉพาะงานที่มีวันที่ ({len(with_date)}/{len(items)} รายการ) ผู้รับผิดชอบที่มีอีเมลในรายชื่อจะถูกเพิ่มเป็นผู้ร่วมงาน "
-               "(ไม่ส่งอีเมลเชิญ เว้นแต่ตั้ง CALENDAR_SEND_INVITES=1) งานที่ส่งแล้วไม่ถูกส่งซ้ำ")
-
-    # ผลการกดส่งรอบล่าสุด (เก็บข้ามการ rerun เพื่อให้เห็นตรงนี้ ไม่ใช่ที่หัวหน้าซึ่งอยู่ไกลจากปุ่ม)
-    last = st.session_state.pop(f"sync_result_{mid}", None)
-    if last:
-        if last["sent"]:
-            st.success(f"✅ ส่งเข้า Google Calendar เรียบร้อยแล้ว {last['sent']} รายการ")
-        for r in last["failed"]:
-            st.error(f"ส่งไม่สำเร็จ: {common.md_escape(r['description'])} — {r['error']}")
-        if not last["sent"] and not last["failed"]:
-            st.info("ไม่มีงานใหม่ให้ส่ง (ส่งครบแล้ว หรือไม่มีงานที่ระบุวันที่)")
-
-    # สถานะปัจจุบัน (ดึงจากฐานข้อมูล เห็นตลอดแม้เปิดหน้านี้ใหม่ภายหลัง)
-    if with_date and len(synced) == len(with_date):
-        st.success(f"✅ ส่งเข้า Google Calendar แล้วครบ {len(synced)}/{len(with_date)} รายการ")
-    elif synced:
-        st.info(f"ส่งเข้า Calendar แล้ว {len(synced)}/{len(with_date)} รายการ — ที่เหลือยังไม่ได้ส่ง")
-    else:
-        st.caption("ยังไม่ได้ส่งงานเข้า Calendar")
-    if no_date:
-        st.caption("ไม่ได้ส่ง (ไม่มีวันที่กำหนด): " + ", ".join(common.md_escape(i["description"]) for i in no_date))
-
-    pending = [i for i in with_date if not i["calendar_synced"]]
-    label = "📅 ส่งงานที่ยังไม่ได้ส่งเข้า Calendar" if synced and pending else "📅 ส่งงานทั้งหมดเข้า Calendar"
-    if st.button(label, key=f"sync_{mid}", disabled=not pending):
-        with st.spinner("กำลังส่งเข้า Google Calendar…"):
-            results = service.sync_all(user, mid)
-        st.session_state[f"sync_result_{mid}"] = {
-            "sent": sum(1 for r in results if r["ok"] and not r.get("already")),
-            "failed": [r for r in results if not r["ok"]],
-        }
-        _bump(mid)
         st.rerun()
 
 
@@ -359,7 +311,7 @@ def render(user: dict, detail: dict):
     actions_edit = st.data_editor(
         actions_df(content["action_items"]), key=f"act_{mid}_{rev}", hide_index=True, width="stretch",
         num_rows="dynamic" if editable else "fixed",
-        disabled=True if not editable else ["หลักฐานจาก transcript", "Calendar"],
+        disabled=True if not editable else ["หลักฐานจาก transcript"],
         column_order=ACTION_COLS[1:],
         column_config={
             "งาน / นัดหมาย": st.column_config.TextColumn("งาน / นัดหมาย", width="large"),
@@ -368,7 +320,6 @@ def render(user: dict, detail: dict):
             "เวลาเริ่ม": st.column_config.TimeColumn("เวลาเริ่ม", format="HH:mm", step=60, width="small"),
             "เวลาสิ้นสุด": st.column_config.TimeColumn("เวลาสิ้นสุด", format="HH:mm", step=60, width="small"),
             "หลักฐานจาก transcript": st.column_config.TextColumn("หลักฐานจาก transcript", width="large"),
-            "Calendar": st.column_config.TextColumn("Calendar", width="small"),
         },
     )
 
@@ -422,6 +373,3 @@ def render(user: dict, detail: dict):
     except ServiceError as e:
         b4.caption(str(e))
 
-    if approved:
-        st.divider()
-        _calendar_card(user, mid, report)

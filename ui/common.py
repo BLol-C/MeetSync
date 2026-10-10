@@ -29,7 +29,7 @@ NEXT_STEP = {
     "approved": ("เสร็จแล้ว", "ดาวน์โหลด PDF หรือส่งงานที่มอบหมายเข้า Google Calendar ได้ที่แท็บ “④ รายงาน”"),
 }
 
-TAB_LABELS = ["① ข้อมูล", "② บอท", "③ Transcript", "④ รายงาน"]
+TAB_LABELS = ["① ข้อมูล", "② บอท", "③ Transcript", "④ รายงาน", "⑤ Calendar"]
 _DEFAULT_TAB = {"scheduled": 0, "recording": 1, "transcript_review": 2, "transcript_verified": 3, "draft": 3, "approved": 3}
 
 

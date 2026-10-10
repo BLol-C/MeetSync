@@ -27,7 +27,7 @@ class SchemaTests(TempDbCase):
     def test_empty_database_gets_every_table_and_no_migration_table(self):
         db.init_schema()
         self.assertEqual(self.tables(), {"users", "meetings", "speakers", "transcript_segments", "summaries",
-                                         "agenda_items", "action_items"})
+                                         "agenda_items", "action_items", "calendar_tasks"})
 
     def test_init_schema_twice_keeps_data(self):
         db.init_schema()
@@ -55,7 +55,7 @@ class SchemaTests(TempDbCase):
         for t in threads:
             t.join(timeout=120)
         self.assertEqual(errors, [])
-        self.assertEqual(len(self.tables()), 7)
+        self.assertEqual(len(self.tables()), 8)
 
     def test_database_with_an_older_structure_is_reported_clearly(self):
         db.init_schema()
@@ -68,7 +68,7 @@ class SchemaTests(TempDbCase):
     def test_expected_columns_cover_all_tables_in_the_schema(self):
         cols = db._expected_columns()
         self.assertEqual(set(cols), {"users", "meetings", "speakers", "transcript_segments", "summaries",
-                                     "agenda_items", "action_items"})
+                                     "agenda_items", "action_items", "calendar_tasks"})
         self.assertIn("absence_reason", cols["speakers"])
         self.assertNotIn("PRIMARY", cols["users"])
 
@@ -476,6 +476,51 @@ class WorkflowTests(TempDbCase):
         for table in ("speakers", "transcript_segments", "summaries"):
             self.assertEqual(self.rows(f"SELECT COUNT(*) n FROM {table} WHERE meeting_id=%s", (mid,))[0]["n"], 0, table)
         self.assertEqual(self.rows("SELECT COUNT(*) n FROM agenda_items a LEFT JOIN summaries s ON s.summary_id=a.summary_id WHERE s.summary_id IS NULL")[0]["n"], 0)
+
+    def test_calendar_tasks_track_whether_their_latest_content_was_sent(self):
+        uid = db.upsert_user("sub-cal", "cal@x.com", "C", None)
+        mid = db.create_meeting_setup(uid, meet_url=URL)
+        tid = db.add_calendar_task(mid, "  ส่งรายงาน ", " Alice ", "2026-10-16", "13:00", None)
+        t = db.get_calendar_task(tid)
+        self.assertEqual((t["description"], t["assignee"], t["due_date"], t["due_time"], t["sync_status"]),
+                         ("ส่งรายงาน", "Alice", "2026-10-16", "13:00", "none"))
+        db.mark_calendar_task_synced(tid, "evt-1", "https://calendar.google.com/e/1", t["content_version"])
+        self.assertEqual(db.get_calendar_task(tid)["sync_status"], "synced")
+        self.assertFalse(db.update_calendar_task(tid, description="ส่งรายงาน", due_time="13:00"))     # ไม่เปลี่ยนจริง = ไม่ถือว่าแก้
+        self.assertEqual(db.get_calendar_task(tid)["sync_status"], "synced")
+        self.assertTrue(db.update_calendar_task(tid, due_date="2026-10-17"))
+        t = db.get_calendar_task(tid)
+        self.assertEqual((t["sync_status"], t["google_calendar_event_id"]), ("changed", "evt-1"))    # ยังรู้ว่านัดเดิมคืออะไร
+        db.mark_calendar_task_synced(tid, "evt-1", "https://calendar.google.com/e/1", t["content_version"])
+        self.assertEqual(db.get_calendar_task(tid)["sync_status"], "synced")
+        stale = db.get_calendar_task(tid)["content_version"]
+        db.update_calendar_task(tid, assignee=None)
+        db.mark_calendar_task_synced(tid, "evt-1", None, stale)                                       # แก้ระหว่างกำลังส่ง = ยังต้องส่งอีกครั้ง
+        self.assertEqual(db.get_calendar_task(tid)["sync_status"], "changed")
+        with self.assertRaises(ValueError):
+            db.update_calendar_task(tid, description="   ")
+        with self.assertRaises(ValueError):
+            db.add_calendar_task(mid, "  ")
+        db.delete_calendar_task(tid)
+        self.assertEqual(db.list_calendar_tasks(mid), [])
+
+    def test_seeding_calendar_tasks_copies_report_items_once_and_keeps_sent_state(self):
+        uid = db.upsert_user("sub-seed", "seed@x.com", "S", None)
+        mid = db.create_meeting_setup(uid, meet_url=URL)
+        items = [
+            {"description": "ส่งรายงาน", "assignee": "Alice", "due_date": "2026-10-16", "due_time": None, "due_time_end": None,
+             "calendar_synced": True, "google_calendar_event_id": "evt-9"},
+            {"description": "จองห้อง", "assignee": None, "due_date": None, "due_time": None, "due_time_end": None,
+             "calendar_synced": False, "google_calendar_event_id": None},
+        ]
+        self.assertEqual(db.seed_calendar_tasks(mid, items), 2)
+        self.assertEqual(db.seed_calendar_tasks(mid, items), 0)                      # ซ้ำไม่เพิ่ม
+        by = {t["description"]: t for t in db.list_calendar_tasks(mid)}
+        self.assertEqual((by["ส่งรายงาน"]["sync_status"], by["ส่งรายงาน"]["google_calendar_event_id"]), ("synced", "evt-9"))
+        self.assertEqual(by["จองห้อง"]["sync_status"], "none")
+        db.update_calendar_task(by["จองห้อง"]["calendar_task_id"], due_date="2026-10-20")
+        items.append({"description": "งานใหม่ในรายงาน", "assignee": None, "due_date": None})
+        self.assertEqual(db.seed_calendar_tasks(mid, items), 2)                       # "จองห้อง" เดิมที่ถูกแก้ ถือเป็นงานใหม่อีกอัน + งานใหม่
 
     def test_calendar_token_lives_on_the_user(self):
         a = db.upsert_user("sub-t1", "t1@x.com", "T1", None)
