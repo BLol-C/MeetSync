@@ -419,6 +419,29 @@ class ServiceTests(TempDbCase):
         self.assertEqual(service.apply_people_table(self.owner, mid, rows)["errors"], [])
         self.assertEqual(next(p for p in db.list_speakers(mid) if p["display_name"] == "ภาม")["meet_alias"], "Pharm S")
 
+    def test_action_table_rows_are_tall_enough_for_wrapped_text_and_dates_are_thai(self):
+        from fpdf import FPDF
+        from reports import pdf_report
+        pdf = pdf_report._ReportPDF(draft=False, watermark="")
+        pdf.add_page()
+        pdf.set_font(pdf_report.FONT, "", 14)
+        width = 290
+        inner = width - 2 * pdf_report.CELL_PAD
+        text = "เตรียมพื้นที่ทำงานให้เรียบร้อยเพื่อรองรับผู้ตรวจจากส่วนกลางในสัปดาห์หน้า"
+        # ข้อความที่พอดีช่องเต็มความกว้าง แต่ยาวเกินความกว้างข้างในช่อง ต้องนับเป็น 2 บรรทัดเพราะตอนวาดใช้ความกว้างข้างใน
+        fit = ""
+        for ch in text:
+            if pdf.get_string_width(fit + ch) > inner:
+                break
+            fit += ch
+        spill = fit + text[len(fit):len(fit) + 3]
+        self.assertEqual(pdf_report._cell_lines(pdf, width, fit, 20.0), 1)
+        self.assertGreaterEqual(pdf_report._cell_lines(pdf, width, spill, 20.0), 2)
+        self.assertEqual(pdf_report._fmt_due({"due_date": "2026-10-16"}), "16 ตุลาคม 2569")
+        self.assertEqual(pdf_report._fmt_due({"due_date": "2026-10-16", "due_time": "13:00", "due_time_end": "14:00"}),
+                         "16 ตุลาคม 2569 13:00-14:00")
+        self.assertEqual(pdf_report._fmt_due({"due_date": None}), "-")
+
     def test_pdf_follows_the_meeting_minutes_form(self):
         import io
         from pypdf import PdfReader

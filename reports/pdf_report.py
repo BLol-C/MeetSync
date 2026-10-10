@@ -14,6 +14,7 @@ import pathlib
 
 from fpdf import FPDF
 
+from reports.report_data import thai_date
 from reports.thai_text import ZWSP, break_thai, strip_breaks, wrap_chunks
 
 HERE = pathlib.Path(__file__).resolve().parent.parent
@@ -136,8 +137,23 @@ def _dots(pdf: FPDF, x: float, reserve: float = 0) -> str:
     return "." * max(n, 3)
 
 
+CELL_PAD = 4   # เว้นขอบซ้าย/ขวาในช่องตาราง (pt) — ต้องใช้ค่าเดียวกันทั้งตอนวัดจำนวนบรรทัดและตอนวาด
+
+
+def _cell_lines(pdf: FPDF, width: float, text: str, row_h: float) -> int:
+    """จำนวนบรรทัดของข้อความในช่องตารางที่กว้าง width (วัดที่ความกว้างข้างในช่องเท่ากับตอนวาดจริง ไม่งั้นแถวสูงไม่พอแล้วข้อความทับแถวถัดไป)"""
+    return len(pdf.multi_cell(width - 2 * CELL_PAD, row_h, text, dry_run=True, output="LINES"))
+
+
 def _fmt_due(item: dict) -> str:
-    when = str(item["due_date"]) if item.get("due_date") else "-"
+    import datetime
+    due = item.get("due_date")
+    if isinstance(due, str):
+        try:
+            due = datetime.date.fromisoformat(due)
+        except ValueError:
+            pass                       # รูปแบบแปลกที่แก้มือ — แสดงตามที่เก็บไว้
+    when = (thai_date(due) if isinstance(due, datetime.date) else str(due)) if due else "-"
     if item.get("due_time"):
         when += f" {item['due_time']}"
         if item.get("due_time_end"):
@@ -323,7 +339,7 @@ def build_minutes_pdf(
             _line(pdf, L["no_action_items"], x=INDENT)
             _blank(pdf)
             return
-        col_no, col_who, col_when = 40, 110, 73
+        col_no, col_who, col_when = 40, 110, 100
         col_task = RIGHT_X - LEFT - col_no - col_who - col_when
         row_h = 20.0
         size = 14
@@ -343,12 +359,8 @@ def build_minutes_pdf(
         _font(pdf, "", size)
         for i, item in enumerate(items, start=1):
             desc, who, when = item.get("description") or "-", item.get("assignee") or "-", _fmt_due(item)
-            lines = max(
-                len(pdf.multi_cell(col_task, row_h, desc, dry_run=True, output="LINES")),
-                len(pdf.multi_cell(col_who, row_h, who, dry_run=True, output="LINES")),
-                len(pdf.multi_cell(col_when, row_h, when, dry_run=True, output="LINES")),
-                1,
-            )
+            lines = max(_cell_lines(pdf, col_task, desc, row_h), _cell_lines(pdf, col_who, who, row_h),
+                        _cell_lines(pdf, col_when, when, row_h), 1)
             h = row_h * lines
             if pdf.get_y() + h > pdf.page_break_trigger:
                 pdf.add_page()
@@ -359,8 +371,8 @@ def build_minutes_pdf(
             cx = LEFT
             for width, txt, align in ((col_no, str(i), "C"), (col_task, desc, "L"), (col_who, who, "L"), (col_when, when, "C")):
                 pdf.rect(cx, y, width, h)
-                pdf.set_xy(cx + 4, y)          # เว้นขอบในช่อง 4 pt (c_margin ตั้งเป็น 0 เพื่อให้ข้อความนอกตารางเริ่มที่ x ตรง ๆ)
-                pdf.multi_cell(width - 8, row_h, txt, align=align, max_line_height=row_h, new_x="LEFT", new_y="TOP")
+                pdf.set_xy(cx + CELL_PAD, y)   # เว้นขอบในช่อง (c_margin ตั้งเป็น 0 เพื่อให้ข้อความนอกตารางเริ่มที่ x ตรง ๆ)
+                pdf.multi_cell(width - 2 * CELL_PAD, row_h, txt, align=align, max_line_height=row_h, new_x="LEFT", new_y="TOP")
                 cx += width
             pdf.set_xy(LEFT, y + h)
         _blank(pdf)
