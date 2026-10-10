@@ -27,7 +27,7 @@ def good_body(**over):
     body = {
         "summary": "ที่ประชุมอนุมัติงบประมาณ",
         "agenda": [{
-            "title": "งบประมาณ", "discussion": "นายสมชายเสนอให้อนุมัติงบ",
+            "section": "consider_new", "title": "งบประมาณ", "discussion": "นายสมชายเสนอให้อนุมัติงบ",
             "resolution": "อนุมัติงบสองหมื่นบาท", "evidence": ["ผมเสนอให้อนุมัติงบสองหมื่นบาท"],
         }],
         "other_matters": None,
@@ -91,7 +91,10 @@ class ValidateTests(unittest.TestCase):
     def test_missing_assignee_warns(self):
         body = good_body()
         body["action_items"][0]["assignee"] = None
-        self.assertIn("assignee_missing", codes(self.check(body)))
+        result = self.check(body)
+        self.assertIn("assignee_missing", codes(result))
+        self.assertEqual(next(w["message"] for w in result["warnings"] if w["code"] == "assignee_missing"),
+                         "งานที่ 1 ยังไม่ระบุผู้รับผิดชอบ")                  # เว้นวรรคระหว่างเลขกับข้อความ
 
     def test_bad_date_is_cleared_and_flagged(self):
         body = good_body()
@@ -123,6 +126,22 @@ class ValidateTests(unittest.TestCase):
     def test_empty_agenda_and_summary_warn(self):
         r = self.check(good_body(agenda=[], summary="  "))
         self.assertTrue({"no_agenda", "empty_summary"} <= set(codes(r)))
+
+    def test_bare_number_after_an_approximation_word_is_flagged_but_units_are_fine(self):
+        bad = good_body()
+        bad["agenda"][0]["discussion"] = "ลองรายงานว่าโครงการเสร็จไปแล้วประมาณ 1 ยังเหลือส่วนรายงานกับส่วนค้นหา"
+        result = self.check(bad)
+        self.assertEqual(codes(result), ["unclear_number"])
+        self.assertIn("ประมาณ 1", result["warnings"][0]["message"])
+        self.assertEqual(result["warnings"][0]["path"], "agenda[0].discussion")
+        for ok in ("จัดซื้อประมาณ 1 เครื่อง งบประมาณ 25,000 บาท", "เสร็จไปแล้วประมาณ 50%", "ใช้เวลากว่า 2 สัปดาห์",
+                   "มีผู้เข้าร่วมราว 30 คน", "งบกว่า 2 ล้านบาท", "ไม่มีตัวเลขเลย"):
+            good = good_body()
+            good["agenda"][0]["discussion"] = ok
+            self.assertEqual(codes(self.check(good)), [], ok)
+        action = good_body()
+        action["action_items"][0]["description"] = "เสร็จภายในประมาณ 3"
+        self.assertEqual(codes(self.check(action)), ["unclear_number"])
 
     def test_revalidation_is_idempotent_for_human_edits(self):
         first = self.check(good_body())
@@ -178,6 +197,31 @@ class GenerateTests(unittest.TestCase):
         self.assertIn("[09:30] Alice: เห็นด้วยค่ะ", prompt)
         self.assertNotRegex(prompt, r"\{(meeting_title|weekday|date|participants|transcript|source_label)\}")
         self.assertEqual(out["warnings"], [])
+
+    def test_ai_chooses_the_agenda_section_and_it_is_kept(self):
+        body = good_body(agenda=[
+            {"section": "inform", "title": "แจ้งงบประมาณ", "discussion": "ประธานฯ แจ้งต่อที่ประชุมว่ามีงบ",
+             "resolution": None, "evidence": []},
+            good_body()["agenda"][0],
+        ])
+        out = summarizer.generate_minutes_content(ROWS, PARTS, None, MEETING, self.make([json.dumps(body)]))
+        self.assertEqual([a["section"] for a in out["agenda"]], ["inform", "consider_new"])
+        self.assertEqual([a["section"] for a in summarizer.for_storage(out)["agenda"]], ["inform", "consider_new"])
+
+    def test_section_outside_the_two_ai_choices_is_rejected_by_the_schema(self):
+        body = good_body()
+        body["agenda"][0]["section"] = "approve_prev"            # วาระ 2 ระบบเติมเอง ไม่ใช่งานของ AI
+        with self.assertRaises(ValueError):
+            summarizer.generate_minutes_content(ROWS, PARTS, None, MEETING, self.make([json.dumps(body)]))
+
+    def test_prompt_v4_tells_the_ai_not_to_invent_resolutions_and_to_write_by_speaker(self):
+        text = summarizer.load_prompt("minutes_v4")
+        for phrase in ("รายงานต่อที่ประชุมว่า", "ประธานฯ กล่าวว่า", "ห้ามเติม \"รับทราบ\" หรือ \"เห็นชอบ\" เอง",
+                       '"consider_new"', '"inform"'):
+            self.assertIn(phrase, text)
+        for phrase in ("เรื่องนั้นโดยตรง", "ผู้สรุปมติ ไม่ใช่ผู้เสนอ", "ห้ามเพิ่มรายละเอียด", "ตรงกันทุกจุดของรายงาน"):   # บทเรียนจากการทดสอบกับ Meet จริง
+            self.assertIn(phrase, text)
+        self.assertEqual(summarizer.PROMPT_NAME, "minutes_v4")
 
     def test_long_meeting_uses_map_reduce(self):
         old = summarizer.SINGLE_PASS_CHARS, summarizer.CHUNK_CHARS

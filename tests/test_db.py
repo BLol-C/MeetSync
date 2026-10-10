@@ -104,6 +104,56 @@ class WorkflowTests(TempDbCase):
         self.assertEqual(db.get_speaker(c)["absence_reason"], "ลา")
         self.assertEqual(db.mark_unconfirmed_absent(mid), [])         # เรียกซ้ำไม่เปลี่ยนอะไร
 
+    def test_deleting_the_previous_meeting_clears_the_link_and_sections_roundtrip(self):
+        uid, prev = self.new_meeting()
+        cur = db.create_meeting_setup(uid, meet_url=URL, previous_meeting_id=prev)
+        self.assertEqual(db.get_meeting(cur)["previous_meeting_id"], prev)
+        db.update_meeting_setup(cur, previous_meeting_id=None)
+        self.assertIsNone(db.get_meeting(cur)["previous_meeting_id"])
+        db.update_meeting_setup(cur, previous_meeting_id=prev)
+        self.assertTrue(db.delete_scheduled_meeting(prev))             # ตัวที่ถูกอ้างอิงถูกลบ -> ลิงก์ว่าง ไม่ทำให้ลบไม่ได้
+        self.assertIsNone(db.get_meeting(cur)["previous_meeting_id"])
+        db.begin_recording(cur)
+        db.end_meeting(cur)
+        content = {"summary": "s", "other_matters": None, "action_items": [], "agenda": [
+            {"section": "followup", "title": "ก", "discussion": "", "resolution": None, "evidence": []},
+            {"title": "ไม่ระบุหมวด", "discussion": "", "resolution": None, "evidence": []},
+            {"section": "nonsense", "title": "หมวดผิด", "discussion": "", "resolution": None, "evidence": []}]}
+        db.save_report(cur, content)
+        self.assertEqual([(a["title"], a["section"]) for a in db.get_report(cur)["content"]["agenda"]],
+                         [("ก", "followup"), ("ไม่ระบุหมวด", "consider_new"), ("หมวดผิด", "consider_new")])
+
+    def test_mark_present_by_names_only_changes_registered_invited_people(self):
+        uid, mid = self.new_meeting()
+        a = db.add_speaker(mid, "ธนาวีร์ บุญเกิด")
+        db.update_speaker(a, meet_alias="46 ธนาวีร์ บุญเกิด")
+        b = db.add_speaker(mid, "Bob")
+        c = db.add_speaker(mid, "Carol", attendance="absent", absence_reason="ลา")
+        d = db.add_speaker(mid, "Dan", attendance="present")
+        before = {r["display_name"] for r in db.list_speakers(mid)}
+        changed = db.mark_present_by_names(mid, ["46 ธนาวีร์ บุญเกิด (You)", "bob", "Carol", "Dan", "คนไม่รู้จัก", ""])
+        self.assertEqual(sorted(changed), sorted(["ธนาวีร์ บุญเกิด", "Bob"]))
+        got = {s: db.get_speaker(s)["attendance"] for s in (a, b, c, d)}
+        self.assertEqual(got, {a: "present", b: "present", c: "absent", d: "present"})   # ที่ตั้ง "ไม่มา" ไว้เองไม่ถูกแตะ
+        self.assertEqual({r["display_name"] for r in db.list_speakers(mid)}, before)       # ไม่สร้างผู้เข้าร่วมใหม่
+        self.assertEqual(db.mark_present_by_names(mid, ["bob"]), [])                       # เรียกซ้ำไม่เปลี่ยนอะไร
+        self.assertEqual(db.mark_present_by_names(mid, []), [])
+
+    def test_unknown_room_names_are_kept_as_meet_guests_so_they_can_be_matched_later(self):
+        uid, mid = self.new_meeting()
+        a = db.add_speaker(mid, "ธนาวีร์")
+        out = db.record_room_names(mid, ["Thanawee BOONKERD", "  ", "Thanawee BOONKERD", "ธนาวีร์"])
+        self.assertEqual(out, {"marked": ["ธนาวีร์"], "new": ["Thanawee BOONKERD"]})
+        people = {p["display_name"]: p for p in db.list_speakers(mid)}
+        room = people["Thanawee BOONKERD"]
+        self.assertEqual((room["source"], room["role"], room["attendance"], room["segment_count"]),
+                         ("meet", "guest", "present", 0))
+        self.assertEqual(db.record_room_names(mid, ["Thanawee BOONKERD"]), {"marked": [], "new": []})   # ไม่สร้างซ้ำ
+        db.merge_speakers(room["speaker_id"], a)                      # ผู้ใช้จับคู่ว่าเป็นคนเดียวกับ "ธนาวีร์"
+        self.assertEqual(db.get_speaker(a)["meet_alias"], "Thanawee BOONKERD")
+        self.assertEqual(db.record_room_names(mid, ["Thanawee BOONKERD"]), {"marked": [], "new": []})   # จำชื่อไว้ ไม่สร้างใหม่
+        self.assertEqual([p["display_name"] for p in db.list_speakers(mid)], ["ธนาวีร์"])
+
     def test_setup_then_record_then_end(self):
         uid, mid = self.new_meeting(title="  ประชุม  ", venue="", meeting_no="3/2569")
         m = db.get_meeting(mid)
@@ -322,11 +372,12 @@ class WorkflowTests(TempDbCase):
         saved = db.save_report(mid, self.report_content(), "gemini", "minutes_v2")
         rep = db.get_report(mid)
         self.assertEqual(rep["summary_id"], saved["summary_id"])
-        self.assertEqual(rep["content"], {**self.report_content(), "action_items": [
+        self.assertEqual(rep["content"], {**self.report_content(), "agenda": [
+            {**a, "section": "consider_new"} for a in self.report_content()["agenda"]], "action_items": [
             {**self.report_content()["action_items"][0], "action_item_id": rep["content"]["action_items"][0]["action_item_id"],
-             "calendar_synced": False, "google_calendar_event_id": None},
+             "google_calendar_event_id": None, "google_calendar_link": None},
             {**self.report_content()["action_items"][1], "action_item_id": rep["content"]["action_items"][1]["action_item_id"],
-             "calendar_synced": False, "google_calendar_event_id": None}]})
+             "google_calendar_event_id": None, "google_calendar_link": None}]})
         self.assertFalse(rep["approved"])
         self.assertEqual(self.rows("SELECT COUNT(*) n FROM agenda_items")[0]["n"] >= 2, True)
         self.assertEqual(rep["ai_snapshot"]["summary"], "สรุป")
@@ -340,21 +391,6 @@ class WorkflowTests(TempDbCase):
         rep = db.get_report(mid)
         self.assertEqual((rep["content"]["summary"], rep["content"]["agenda"]), ("รอบสอง", []))
         self.assertEqual(self.rows("SELECT COUNT(*) n FROM agenda_items WHERE summary_id=%s", (rep["summary_id"],))[0]["n"], 0)
-
-    def test_edit_draft_keeps_calendar_sync_for_unchanged_items_only(self):
-        _, mid = self.to_draft()
-        db.save_report(mid, self.report_content())
-        item = db.get_report(mid)["content"]["action_items"][0]
-        db.mark_action_item_synced(item["action_item_id"], "evt-1")
-        content = db.get_report(mid)["content"]
-        content["action_items"][1]["description"] = "จองห้องใหญ่"              # แก้งานที่สอง
-        self.assertTrue(db.update_report_content(db.get_report(mid)["summary_id"], content))
-        items = db.get_report(mid)["content"]["action_items"]
-        self.assertEqual([(i["description"], i["calendar_synced"], i["google_calendar_event_id"]) for i in items],
-                         [("ส่งรายงาน", True, "evt-1"), ("จองห้องใหญ่", False, None)])   # งานที่ไม่ถูกแก้ไม่ถูกส่งซ้ำ
-        content["action_items"][0]["due_date"] = "2026-10-10"                   # แก้วันที่ -> เป็นงานใหม่ใน Calendar
-        db.update_report_content(db.get_report(mid)["summary_id"], content)
-        self.assertFalse(db.get_report(mid)["content"]["action_items"][0]["calendar_synced"])
 
     def test_approve_is_atomic_and_locks_the_report(self):
         uid, mid = self.to_draft()
@@ -374,12 +410,12 @@ class WorkflowTests(TempDbCase):
         self.assertFalse(db.approve_report(mid, uid))
         self.assertEqual(db.get_report(mid)["content"]["summary"], "สรุป")
 
-    def test_reopen_clears_approval_but_keeps_content_and_calendar_flags(self):
+    def test_reopen_clears_approval_and_calendar_marks_but_keeps_content(self):
         uid, mid = self.to_draft()
         self.assertFalse(db.reopen_report(mid))                                  # ยังไม่อนุมัติ
         db.save_report(mid, self.report_content())
-        db.mark_action_item_synced(db.get_report(mid)["content"]["action_items"][0]["action_item_id"], "evt-1")
         db.approve_report(mid, uid)
+        db.mark_action_item_synced(db.get_report(mid)["content"]["action_items"][0]["action_item_id"], "evt-1", "https://x/e")
         with self.assertRaises(ValueError):                                      # อนุมัติแล้วเขียนทับด้วยรายงานใหม่ไม่ได้
             db.save_report(mid, self.report_content(summary="แอบสร้างใหม่"))
         self.assertTrue(db.reopen_report(mid))
@@ -388,7 +424,9 @@ class WorkflowTests(TempDbCase):
         self.assertEqual((rep["approved"], rep["approved_by"], rep["approved_at"]), (False, None, None))
         self.assertEqual(rep["content"]["summary"], "สรุป")
         self.assertEqual(rep["content"]["agenda"][0]["evidence"], ["ข้อความอ้างอิง"])
-        self.assertTrue(rep["content"]["action_items"][0]["calendar_synced"])    # ไม่ส่งซ้ำ
+        self.assertEqual([(i["google_calendar_event_id"], i["google_calendar_link"]) for i in rep["content"]["action_items"]],
+                         [(None, None), (None, None)])                           # นัดถูกลบแล้ว ต้องส่งใหม่ตอนอนุมัติครั้งหน้า
+        self.assertEqual(len(rep["content"]["action_items"]), 2)
         self.assertEqual(self.rows("SELECT COUNT(*) n FROM summaries WHERE meeting_id=%s", (mid,))[0]["n"], 1)
         # แก้ได้อีกครั้งและต้องอนุมัติใหม่
         content = rep["content"]
@@ -426,6 +464,18 @@ class WorkflowTests(TempDbCase):
             self.assertEqual(self.rows(f"SELECT COUNT(*) n FROM {table} WHERE meeting_id=%s", (mid,))[0]["n"], 0, table)
         self.assertEqual(self.rows("SELECT COUNT(*) n FROM agenda_items a LEFT JOIN summaries s ON s.summary_id=a.summary_id WHERE s.summary_id IS NULL")[0]["n"], 0)
 
+    def test_calendar_marks_store_event_and_link(self):
+        uid = db.upsert_user("sub-cal", "cal@x.com", "C", None)
+        mid = db.create_meeting_setup(uid, meet_url=URL)
+        db.save_report(mid, {"summary": "x", "agenda": [], "other_matters": None, "action_items": [
+            {"description": "ส่งรายงาน", "assignee": "Alice", "due_date": "2026-10-16", "evidence": []},
+            {"description": "จองห้อง", "evidence": []}]})
+        ids = [i["action_item_id"] for i in db.get_report(mid)["content"]["action_items"]]
+        db.mark_action_item_synced(ids[0], "evt-1", "https://calendar.google.com/e/1")
+        first, second = db.get_report(mid)["content"]["action_items"]
+        self.assertEqual((first["google_calendar_event_id"], first["google_calendar_link"]), ("evt-1", "https://calendar.google.com/e/1"))
+        self.assertEqual((second["google_calendar_event_id"], second["google_calendar_link"]), (None, None))
+
     def test_calendar_token_lives_on_the_user(self):
         a = db.upsert_user("sub-t1", "t1@x.com", "T1", None)
         b = db.upsert_user("sub-t2", "t2@x.com", "T2", None)
@@ -437,7 +487,7 @@ class WorkflowTests(TempDbCase):
         first = db.upsert_user("sub-same", "s@x.com", "ชื่อเดิม", None)
         again = db.upsert_user("sub-same", "s2@x.com", "ชื่อใหม่", "http://pic")
         self.assertEqual(first, again)
-        self.assertEqual(db.get_user_name(first), "ชื่อใหม่")
+        self.assertEqual(self.rows("SELECT name FROM users WHERE user_id=%s", (first,))[0]["name"], "ชื่อใหม่")
 
 
 class NormalizeNameTests(unittest.TestCase):

@@ -14,6 +14,7 @@ import pathlib
 
 from fpdf import FPDF
 
+from reports.report_data import thai_date
 from reports.thai_text import ZWSP, break_thai, strip_breaks, wrap_chunks
 
 HERE = pathlib.Path(__file__).resolve().parent.parent
@@ -136,8 +137,23 @@ def _dots(pdf: FPDF, x: float, reserve: float = 0) -> str:
     return "." * max(n, 3)
 
 
+CELL_PAD = 4   # เว้นขอบซ้าย/ขวาในช่องตาราง (pt) — ต้องใช้ค่าเดียวกันทั้งตอนวัดจำนวนบรรทัดและตอนวาด
+
+
+def _cell_lines(pdf: FPDF, width: float, text: str, row_h: float) -> int:
+    """จำนวนบรรทัดของข้อความในช่องตารางที่กว้าง width (วัดที่ความกว้างข้างในช่องเท่ากับตอนวาดจริง ไม่งั้นแถวสูงไม่พอแล้วข้อความทับแถวถัดไป)"""
+    return len(pdf.multi_cell(width - 2 * CELL_PAD, row_h, text, dry_run=True, output="LINES"))
+
+
 def _fmt_due(item: dict) -> str:
-    when = str(item["due_date"]) if item.get("due_date") else "-"
+    import datetime
+    due = item.get("due_date")
+    if isinstance(due, str):
+        try:
+            due = datetime.date.fromisoformat(due)
+        except ValueError:
+            pass                       # รูปแบบแปลกที่แก้มือ — แสดงตามที่เก็บไว้
+    when = (thai_date(due) if isinstance(due, datetime.date) else str(due)) if due else "-"
     if item.get("due_time"):
         when += f" {item['due_time']}"
         if item.get("due_time_end"):
@@ -194,9 +210,12 @@ def build_minutes_pdf(
             pdf.set_xy(INDENT, y)
             pdf.cell(POS_X - INDENT - 6, PITCH, f"{i}. {p['name']}")
             if third == "position":
-                role = {"chair": L["chair_suffix"], "secretary": L["secretary_suffix"],
-                        "attendee": L["member_suffix"]}.get(p["role"], "")
+                # ตำแหน่งที่กรอกไว้มาก่อน ถ้าไม่ได้กรอกใช้บทบาทในที่ประชุมแทน
+                role = p.get("position") or {"chair": L["chair_suffix"], "secretary": L["secretary_suffix"],
+                                             "attendee": L["member_suffix"]}.get(p["role"], "")
                 text = f"{L['position']} {role}".strip() if role else ""
+            elif third == "guest":   # ผู้เข้าร่วมที่ไม่ใช่กรรมการ: แสดงเฉพาะเมื่อกรอกตำแหน่งไว้
+                text = f"{L['position']} {p['position']}" if p.get("position") else ""
             elif third == "reason":
                 text = p.get("reason") or ""
             else:
@@ -215,7 +234,7 @@ def build_minutes_pdf(
     def sec_guests():
         if hdr["guests"]:   # ผู้เข้าร่วมประชุม (ถ้ามี) — ไม่มีก็ไม่ต้องแสดงหัวข้อ
             _line(pdf, L["guests"], bold=True)
-            people_list(hdr["guests"], L["none"], third=None)
+            people_list(hdr["guests"], L["none"], third="guest")
             _blank(pdf)
 
     def sec_absent():
@@ -244,27 +263,55 @@ def build_minutes_pdf(
         _para(pdf, parts)
 
     def sec_agenda():
+        all_items = content.get("agenda") or []
+
+        def items_of(section: str) -> list[dict]:
+            return [x for x in all_items if (x.get("section") or "consider_new") == section]
+
+        def item_block(label: str, a: dict, *, always_resolution: bool):
+            """หนึ่งเรื่อง: ชื่อเรื่อง + สาระ + มติ (เรื่องที่ไม่ต้องมีมติ เช่น แจ้งให้ทราบ แสดงมติเฉพาะเมื่อมีข้อความ)"""
+            _line(pdf, f"{label} {a.get('title') or ''}", x=INDENT)
+            if a.get("discussion"):
+                _para(pdf, a["discussion"])
+            if always_resolution or a.get("resolution"):
+                _resolution(a.get("resolution"))
+
         for n, entry in enumerate(TEMPLATE["agenda"], start=1):
-            _agenda_heading(n, entry["title"])
             kind = entry["kind"]
+            mine = items_of(entry.get("section", "")) if kind == "blank" else []
+            approve = items_of("approve_prev")[:1] if kind == "approve" else []
+            title = f"เรื่อง{approve[0]['title']}" if approve and approve[0].get("title") else entry["title"]
+            _agenda_heading(n, title)
             if kind == "blank":
-                _line(pdf, _dots(pdf, INDENT), x=INDENT)
+                if not mine:
+                    _line(pdf, _dots(pdf, INDENT), x=INDENT)
+                for k, a in enumerate(mine, start=1):
+                    item_block(f"{n}.{k}", a, always_resolution=False)
+                    if k < len(mine):
+                        _blank(pdf)
             elif kind == "approve":
-                _resolution(None, blank=True)
+                if approve and approve[0].get("discussion"):
+                    _para(pdf, approve[0]["discussion"])
+                if approve and approve[0].get("resolution"):
+                    _resolution(approve[0]["resolution"])
+                else:
+                    _resolution(None, blank=True)
             elif kind == "consider":
+                old, new = items_of("consider_old"), items_of("consider_new")
                 _line(pdf, f"{n}.1 {entry['old']}", x=INDENT, bold=True)
-                _line(pdf, _dots(pdf, INDENT), x=INDENT)
+                if not old:
+                    _line(pdf, _dots(pdf, INDENT), x=INDENT)
+                for k, a in enumerate(old, start=1):
+                    item_block(f"{n}.1.{k}", a, always_resolution=True)
+                    if k < len(old):
+                        _blank(pdf)
                 _blank(pdf)
                 _line(pdf, f"{n}.2 {entry['new']}", x=INDENT, bold=True)
-                items = content.get("agenda") or []
-                if not items:
+                if not new:
                     _line(pdf, _dots(pdf, INDENT), x=INDENT)
-                for k, a in enumerate(items, start=1):
-                    _line(pdf, f"{n}.2.{k} {a.get('title') or ''}", x=INDENT)
-                    if a.get("discussion"):
-                        _para(pdf, a["discussion"])
-                    _resolution(a.get("resolution"))
-                    if k < len(items):
+                for k, a in enumerate(new, start=1):
+                    item_block(f"{n}.2.{k}", a, always_resolution=True)
+                    if k < len(new):
                         _blank(pdf)
             elif kind == "other":
                 if content.get("other_matters"):
@@ -292,7 +339,7 @@ def build_minutes_pdf(
             _line(pdf, L["no_action_items"], x=INDENT)
             _blank(pdf)
             return
-        col_no, col_who, col_when = 40, 110, 73
+        col_no, col_who, col_when = 40, 110, 100
         col_task = RIGHT_X - LEFT - col_no - col_who - col_when
         row_h = 20.0
         size = 14
@@ -312,12 +359,8 @@ def build_minutes_pdf(
         _font(pdf, "", size)
         for i, item in enumerate(items, start=1):
             desc, who, when = item.get("description") or "-", item.get("assignee") or "-", _fmt_due(item)
-            lines = max(
-                len(pdf.multi_cell(col_task, row_h, desc, dry_run=True, output="LINES")),
-                len(pdf.multi_cell(col_who, row_h, who, dry_run=True, output="LINES")),
-                len(pdf.multi_cell(col_when, row_h, when, dry_run=True, output="LINES")),
-                1,
-            )
+            lines = max(_cell_lines(pdf, col_task, desc, row_h), _cell_lines(pdf, col_who, who, row_h),
+                        _cell_lines(pdf, col_when, when, row_h), 1)
             h = row_h * lines
             if pdf.get_y() + h > pdf.page_break_trigger:
                 pdf.add_page()
@@ -328,8 +371,8 @@ def build_minutes_pdf(
             cx = LEFT
             for width, txt, align in ((col_no, str(i), "C"), (col_task, desc, "L"), (col_who, who, "L"), (col_when, when, "C")):
                 pdf.rect(cx, y, width, h)
-                pdf.set_xy(cx + 4, y)          # เว้นขอบในช่อง 4 pt (c_margin ตั้งเป็น 0 เพื่อให้ข้อความนอกตารางเริ่มที่ x ตรง ๆ)
-                pdf.multi_cell(width - 8, row_h, txt, align=align, max_line_height=row_h, new_x="LEFT", new_y="TOP")
+                pdf.set_xy(cx + CELL_PAD, y)   # เว้นขอบในช่อง (c_margin ตั้งเป็น 0 เพื่อให้ข้อความนอกตารางเริ่มที่ x ตรง ๆ)
+                pdf.multi_cell(width - 2 * CELL_PAD, row_h, txt, align=align, max_line_height=row_h, new_x="LEFT", new_y="TOP")
                 cx += width
             pdf.set_xy(LEFT, y + h)
         _blank(pdf)

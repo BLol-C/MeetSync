@@ -121,11 +121,23 @@ def _persist_segment(meeting_id: int, row_id: int | None, name: str, text: str):
             _segment_by_row.popitem(last=False)
 
 
+def _persist_participants(meeting_id: int, names: list[str]):
+    """ตั้ง "เข้าร่วม" ให้คนที่อยู่ในห้องและชื่อตรงกับรายชื่อที่ลงทะเบียนไว้ (รันใน thread เดียวกับ worker)"""
+    result = db.record_room_names(meeting_id, names)
+    if result["marked"]:
+        _log("✅ เห็นในห้อง จึงตั้ง \"เข้าร่วม\" ให้: " + ", ".join(result["marked"]))
+    if result["new"]:
+        _log("พบชื่อในห้องที่ไม่ตรงกับรายชื่อ: " + ", ".join(result["new"]) + " — จับคู่ได้ที่แท็บ ③")
+
+
 async def _save_worker_loop(q: asyncio.Queue):
     while True:
         item = await q.get()
         try:
-            await asyncio.to_thread(_persist_segment, *item)
+            if item and item[0] == "participants":   # งานตั้งสถานะผู้เข้าร่วม ใช้คิว/worker เดียวกับ transcript (เขียน DB ทีละงาน)
+                await asyncio.to_thread(_persist_participants, *item[1:])
+            else:
+                await asyncio.to_thread(_persist_segment, *item)
         except Exception as e:  # noqa: BLE001 — เขียน DB พลาดต้องไม่ทำให้ worker/บริการล่ม
             _log(f"⚠️ บันทึกลง DB ไม่สำเร็จ: {e!r}")
         finally:
@@ -141,12 +153,18 @@ def _handle_event(ev: dict):
     elif kind == "error":
         _last_error = ev.get("text", "")
         _log("ผิดพลาด: " + _last_error)
+    elif kind == "participants":
+        names = [n for n in (ev.get("names") or []) if isinstance(n, str) and n.strip()]
+        _log(f"เห็นผู้เข้าร่วมในห้อง {len(names)} คน")
+        if names and _db_ready and _current_meeting_id is not None and _save_queue is not None:
+            _save_queue.put_nowait(("participants", _current_meeting_id, names))
     elif kind == "caption":
         name, text = ev.get("name"), (ev.get("text") or "").strip()
         if not name or name == "(raw)" or not text:
             return
         row_id = ev.get("id")
-        _live_rows[row_id] = {"id": row_id, "name": name, "text": text, "final": bool(ev.get("final"))}
+        first_seen = (_live_rows.get(row_id) or {}).get("t") or time.strftime("%H:%M:%S")   # เวลาที่เริ่มพูด (แถวเดิมที่ถูกแก้ข้อความคงเวลาแรกไว้)
+        _live_rows[row_id] = {"id": row_id, "name": name, "text": text, "final": bool(ev.get("final")), "t": first_seen}
         _live_rows.move_to_end(row_id)
         while len(_live_rows) > _LIVE_ROWS_MAX:
             _live_rows.popitem(last=False)

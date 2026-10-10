@@ -1,4 +1,4 @@
-"""หน้าการประชุม: หัวเรื่อง + สถานะ/ขั้นที่ + กล่อง "ขั้นตอนต่อไป" + 4 แท็บ
+"""หน้าการประชุม: หัวเรื่อง + สถานะ/ขั้นที่ + 5 แท็บ
 
 ทุกแท็บถูกวาดพร้อมกันทุกครั้ง (st.tabs) เพื่อให้ข้อมูลที่แก้ค้างไว้ในแท็บหนึ่งไม่หายตอนสลับไปแท็บอื่น
 """
@@ -8,7 +8,7 @@ import streamlit as st
 from bot import botclient
 import service
 from service import ServiceError
-from ui import common, tab_bot, tab_report, tab_setup, tab_transcript
+from ui import common, tab_bot, tab_calendar, tab_report, tab_setup, tab_transcript
 
 
 def _bot_info(user: dict, meeting_id: int) -> dict:
@@ -52,8 +52,7 @@ def render(user: dict, meeting_id: int):
     top.title(common.md_escape(meeting["title"] or "การประชุม"))
     if back.button("← รายการประชุม", width="stretch"):
         common.go("home")
-    st.caption(f"{common.progress_text(status)}  ·  {common.meet_link_text(meeting['meet_url'])}")
-    common.render_next_step(status)
+    st.caption(common.progress_text(status))
 
     tab_key = f"tabs_{meeting_id}"
     tabs = st.tabs(common.TAB_LABELS, default=common.default_tab(status), key=tab_key)
@@ -65,3 +64,5 @@ def render(user: dict, meeting_id: int):
         tab_transcript.render(user, detail)
     with tabs[3]:
         tab_report.render(user, detail)
+    with tabs[4]:
+        tab_calendar.render(user, detail)

@@ -17,7 +17,7 @@ import os
 import pathlib
 import re
 import time
-from typing import Callable
+from typing import Callable, Literal
 
 from pydantic import BaseModel, ValidationError
 
@@ -25,10 +25,14 @@ import db
 
 HERE = pathlib.Path(__file__).resolve().parent.parent
 PROMPT_DIR = HERE / "prompts"
-PROMPT_NAME = os.environ.get("MINUTES_PROMPT", "minutes_v2")          # ชื่อไฟล์ใน prompts/ (ไม่รวม .md)
+PROMPT_NAME = os.environ.get("MINUTES_PROMPT", "minutes_v4")          # ชื่อไฟล์ใน prompts/ (ไม่รวม .md)
                                                                       # v2: ห้ามข้ามหัวข้อที่ไม่มีข้อสรุป + เขียนปี พ.ศ. ในเนื้อความ
-                                                                      # (v1 ยังเก็บไว้ให้ไล่ย้อนรายงานที่เคยสร้างด้วย v1 ได้)
-MAP_PROMPT_NAME = os.environ.get("MINUTES_MAP_PROMPT", "minutes_map_v1")
+                                                                      # v3: บันทึกการอภิปรายละเอียดแบบรายงานจริง (ใครรายงาน/ใครกล่าวอะไร) + AI เลือกหมวดวาระ
+                                                                      #     + มติว่างเมื่อไม่มีใครสรุปชัดเจน (ห้ามเติม "รับทราบ" เอง)
+                                                                      # v4: จากการทดสอบกับ Meet จริง — ห้ามเติม "รับทราบ" ให้เรื่องที่ไม่มีใครรับทราบ, บันทึกการกระทำของผู้พูดตรงตามจริง,
+                                                                      #     ห้ามเสริมรายละเอียด, คำที่ถอดเสียงผิดต้องแก้ให้ตรงกันทุกจุด
+                                                                      # (v1/v2 ยังเก็บไว้ให้ไล่ย้อนรายงานที่เคยสร้างด้วยเวอร์ชันเก่าได้)
+MAP_PROMPT_NAME = os.environ.get("MINUTES_MAP_PROMPT", "minutes_map_v2")
 
 _MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 _MAX_RETRIES = 4
@@ -40,6 +44,8 @@ _REQUEST_TIMEOUT_MS = 120_000   # รายงานยาว + ประชุ�
 SINGLE_PASS_CHARS = int(os.environ.get("MINUTES_SINGLE_PASS_CHARS", "60000"))
 CHUNK_CHARS = int(os.environ.get("MINUTES_CHUNK_CHARS", "30000"))
 
+# วาระที่ AI สกัดจาก transcript จึงต้องมีหลักฐานอ้างอิง — วาระที่ระบบเติมจากครั้งก่อน/คนเพิ่มเองไม่ต้องตรวจหลักฐาน
+GROUNDED_SECTIONS = ("inform", "consider_new")
 GROUNDED_THRESHOLD = 0.8   # สัดส่วนของข้อความอ้างอิงที่ต้องหาเจอใน transcript ถึงถือว่า "มีที่มาจริง"
 
 _THAI_WEEKDAYS = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์", "อาทิตย์"]
@@ -49,6 +55,7 @@ _ROLE_LABEL = {"chair": "ประธาน", "secretary": "เลขา", "atte
 # ── schema ที่บังคับให้ Gemini ตอบ ──
 
 class AgendaItemAI(BaseModel):
+    section: Literal["inform", "consider_new"]    # AI เลือกได้เฉพาะสองหมวดนี้ ส่วนวาระ 2, 3, 4.1 ระบบเติมจากการประชุมครั้งก่อน
     title: str
     discussion: str
     resolution: str | None
@@ -72,6 +79,27 @@ class MinutesBodyAI(BaseModel):
 
 
 # ── ตรวจคุณภาพหลัง AI (ฟังก์ชันล้วน ไม่แตะ DB/เครือข่าย ทดสอบได้ตรงๆ) ──
+
+# ตัวเลขหลังคำประมาณค่าที่ไม่มีหน่วยตามหลัง เช่น "เสร็จไปแล้วประมาณ 1 ยังเหลือ…" (คำบรรยายสดมักถอด "ครึ่งหนึ่ง" เป็น "1")
+# อ่านแล้วไม่เป็นประโยค — ไม่เดาแก้ให้ แต่เตือนให้คนตรวจกับ transcript
+_APPROX_NUMBER_RE = re.compile(r"(ประมาณ|ราวๆ|ราว|เกือบ|กว่า)\s*([0-9๐-๙][0-9๐-๙,.]*)\s*(?P<rest>[^\n]{0,12})")
+_NUMBER_UNITS = (
+    "%", "บาท", "เครื่อง", "คน", "ท่าน", "ครั้ง", "วัน", "สัปดาห์", "เดือน", "ปี", "ชั่วโมง", "ชม", "นาที", "วินาที", "ชิ้น", "อัน",
+    "ห้อง", "โครงการ", "ร้าน", "แห่ง", "ราย", "รายการ", "หน้า", "เรื่อง", "ข้อ", "ชุด", "ตัว", "คัน", "หลัง", "ชั้น", "เมตร",
+    "กิโลเมตร", "ตารางเมตร", "กิโลกรัม", "กรัม", "ไร่", "เปอร์เซ็นต์", "เปอร์เซนต์", "ล้าน", "พัน", "หมื่น", "แสน", "ร้อย", "เท่า",
+    "เหรียญ", "ดอลลาร์", "หน่วย", "กลุ่ม", "ฝ่าย", "ทีม", "ระบบ", "ประเภท", "ด้าน", "ช่วง", "รอบ", "งวด", "แผ่น", "เล่ม", "ลำดับ",
+)
+
+
+def find_unclear_number(text: str | None) -> str | None:
+    """คืนข้อความสั้นๆ รอบตัวเลขที่อ่านแล้วไม่เป็นประโยค (ประมาณ/ราว/เกือบ/กว่า + ตัวเลขเปล่าไม่มีหน่วย) หรือ None ถ้าไม่พบ"""
+    for m in _APPROX_NUMBER_RE.finditer(text or ""):
+        rest = m.group("rest")
+        if rest.startswith(_NUMBER_UNITS):
+            continue
+        return (m.group(1) + " " + m.group(2) + (" " + rest if rest else "")).strip()
+    return None
+
 
 def _squash(s: str) -> str:
     """ตัดช่องว่างทั้งหมดทิ้งก่อนเทียบข้อความ: ASR ภาษาไทยเว้นวรรคไม่แน่นอน ('สวัสดี ครับ' = 'สวัสดีครับ')"""
@@ -174,26 +202,38 @@ def validate_minutes(
             warn("ungrounded", path, f"{what}อ้างอิงข้อความที่หาไม่เจอใน transcript (อาจเป็นข้อมูลที่ AI แต่งขึ้น)")
         return ok
 
+    def check_numbers(path: str, text: str | None, where: str):
+        hit = find_unclear_number(text)
+        if hit:
+            warn("unclear_number", path, f"{where}: มีตัวเลขที่อ่านแล้วไม่เป็นประโยค (“…{hit}…”) อาจเป็นการถอดเสียงผิด — ตรวจกับ transcript แล้วแก้")
+
     summary = _clean_str(content.get("summary")) or ""
+    check_numbers("summary", summary, "สรุปภาพรวม")
     if not summary:
         warn("empty_summary", "summary", "ไม่มีสรุปภาพรวมการประชุม")
 
     agenda = []
     for i, a in enumerate(content.get("agenda") or []):
         item = {
+            "section": a.get("section") if a.get("section") in db.AGENDA_SECTIONS else db.DEFAULT_AGENDA_SECTION,
             "title": _clean_str(a.get("title")) or "",
             "discussion": _clean_str(a.get("discussion")) or "",
             "resolution": _clean_str(a.get("resolution")),
             "evidence": _clean_evidence(a.get("evidence")),
         }
         if not item["title"]:
-            warn("agenda_title_missing", f"agenda[{i}].title", f"วาระที่ {i + 1} ไม่มีชื่อวาระ")
-        item["grounded"] = check_evidence(
-            f"agenda[{i}].resolution", item["evidence"], required=bool(item["resolution"]),
-            what=f"มติของวาระที่ {i + 1} ",
-        )
+            warn("agenda_title_missing", f"agenda[{i}].title", f"เรื่องที่ {i + 1} ไม่มีชื่อ")
+        for field in ("title", "discussion", "resolution"):
+            check_numbers(f"agenda[{i}].{field}", item[field], f"เรื่องที่ {i + 1}")
+        if item["section"] in GROUNDED_SECTIONS:
+            item["grounded"] = check_evidence(
+                f"agenda[{i}].resolution", item["evidence"], required=bool(item["resolution"]),
+                what=f"มติของเรื่องที่ {i + 1} ",
+            )
+        else:
+            item["grounded"] = None
         agenda.append(item)
-    if not agenda:
+    if not any(a["section"] in GROUNDED_SECTIONS for a in agenda):
         warn("no_agenda", "agenda", "ไม่พบวาระการประชุมที่ AI สกัดได้ — ตรวจสอบ transcript หรือเพิ่มวาระเอง")
 
     actions = []
@@ -206,12 +246,13 @@ def validate_minutes(
             "due_time_end": _norm_time(a.get("due_time_end")),
             "evidence": _clean_evidence(a.get("evidence")),
         }
-        for key in ("action_item_id", "calendar_synced", "google_calendar_event_id"):   # ข้อมูลของแถวที่มีอยู่แล้ว ส่งต่อไว้
+        for key in ("action_item_id", "google_calendar_event_id", "google_calendar_link"):   # ข้อมูลของแถวที่มีอยู่แล้ว ส่งต่อไว้
             if key in a:
                 item[key] = a[key]
         label = f"งานที่ {i + 1}"
+        check_numbers(f"action_items[{i}].description", item["description"], label)
         if not item["description"]:
-            warn("action_description_missing", f"action_items[{i}].description", f"{label}ไม่มีรายละเอียด")
+            warn("action_description_missing", f"action_items[{i}].description", f"{label} ไม่มีรายละเอียด")
 
         if item["assignee"]:
             matched = match_participant_name(item["assignee"], participants)
@@ -221,7 +262,7 @@ def validate_minutes(
                 warn("assignee_unknown", f"action_items[{i}].assignee",
                      f"{label}: ผู้รับผิดชอบ \"{item['assignee']}\" ไม่อยู่ในรายชื่อผู้เข้าร่วม")
         else:
-            warn("assignee_missing", f"action_items[{i}].assignee", f"{label}ยังไม่ระบุผู้รับผิดชอบ")
+            warn("assignee_missing", f"action_items[{i}].assignee", f"{label} ยังไม่ระบุผู้รับผิดชอบ")
 
         if item["due_date"]:
             try:
@@ -403,9 +444,11 @@ def for_storage(content: dict) -> dict:
     return {
         "summary": content.get("summary") or "",
         "other_matters": content.get("other_matters"),
-        "agenda": [
-            {k: a.get(k) for k in ("title", "discussion", "resolution", "evidence")} for a in content.get("agenda") or []
-        ],
+        "agenda": sorted(     # เรียงตามหมวดวาระ (คงลำดับเดิมในหมวดเดียวกัน) ให้ตรงกับที่แสดงในรายงาน
+            ({k: a.get(k) for k in ("section", "title", "discussion", "resolution", "evidence")}
+             for a in content.get("agenda") or []),
+            key=lambda a: db.AGENDA_SECTIONS.index(a["section"]) if a.get("section") in db.AGENDA_SECTIONS else len(db.AGENDA_SECTIONS),
+        ),
         "action_items": [
             {k: it.get(k) for k in ("description", "assignee", "due_date", "due_time", "due_time_end", "evidence")}
             for it in content.get("action_items") or []
@@ -431,6 +474,8 @@ def generate_for_meeting(meeting_id: int, generate: Callable | None = None) -> d
         meeting.get("started_at") or datetime.datetime.now(), generate,
     )
     stored = for_storage(content)
-    saved = db.save_report(meeting_id, stored, _MODEL, PROMPT_NAME, ai_snapshot=stored)
+    from reports import continuity   # เติมวาระ 2, 3, 4.1 จากการประชุมครั้งก่อนที่เลือกไว้ (ถ้ามี) — ไม่ผ่าน AI
+    full = for_storage({**stored, "agenda": stored["agenda"] + continuity.prefill_items(meeting)})
+    saved = db.save_report(meeting_id, full, _MODEL, PROMPT_NAME, ai_snapshot=stored)   # ai_snapshot = เฉพาะที่ AI ร่าง
     db.set_meeting_status(meeting_id, "draft")
     return {**saved, "content": content}

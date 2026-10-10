@@ -12,7 +12,6 @@ def _start(user: dict, mid: int):
     except botclient.BotError as e:
         st.error(str(e))
         return
-    common.flash("success", "สั่งบอทแล้ว — รอสักครู่ บอทจะเปิดหน้าต่าง Chrome เข้าห้องประชุม")
     st.rerun()
 
 
@@ -26,6 +25,13 @@ def _stop(user: dict):
         return
     common.flash("success", "หยุดบอทแล้ว — ไปตรวจทาน transcript ที่แท็บ ③ ได้เลย")
     st.rerun()
+
+
+def phase_text(state: dict) -> str:
+    """สถานะบอทบรรทัดเดียว: ยังไม่ได้เข้าห้อง (รอ host กดยอมรับ) หรือเข้าห้องแล้วและอ่านคำบรรยายอยู่"""
+    joined = bool(state["rows"]) or any(
+        "✅" in line["text"] or "กำลังฟังคำบรรยาย" in line["text"] for line in state["status"])
+    return "เข้าห้องแล้ว — กำลังอ่านคำบรรยาย (CC)" if joined else "รอให้กดยอมรับเข้าห้อง"
 
 
 def _live_panel(user: dict, mid: int):
@@ -44,8 +50,10 @@ def _live_panel(user: dict, mid: int):
             if not st.session_state.get("_bot_stopping"):
                 st.rerun()
             return
-        for line in state["status"][-3:]:
-            st.caption(f"{line['t']}  {line['text']}")
+        st.caption(phase_text(state))
+        last = state["status"][-1]["text"] if state["status"] else ""
+        if last.startswith("⚠️"):       # ปัญหาที่บอทแจ้งล่าสุดยังต้องเห็น (เช่น เปิด CC ไม่ได้ อ่านรายชื่อในห้องไม่ได้)
+            st.warning(last)
         if state["error"]:
             st.error(state["error"])
         rows = state["rows"][-60:][::-1]      # ล่าสุดอยู่บนสุด ไม่ต้องเลื่อนตาม
@@ -54,7 +62,8 @@ def _live_panel(user: dict, mid: int):
                 st.caption("ยังไม่มีคำบรรยาย — รอบอทเข้าห้องและเปิด CC (ถ้าอยู่ในห้องรอ ให้ผู้จัดกดอนุญาตให้บอทเข้า)")
             for r in rows:
                 name, text = common.md_escape(r["name"]), common.md_escape(r["text"])
-                st.markdown(f"**{name}:** {text}" if r["final"] else f":gray[**{name}:** {text}]")
+                who = f"{r['t']} · {name}" if r.get("t") else name         # เวลาที่พูด · ผู้พูด (รูปแบบเดียวกับแท็บ ③)
+                st.markdown(f"**{who}:** {text}" if r["final"] else f":gray[**{who}:** {text}]")
 
     panel()
 
@@ -72,7 +81,6 @@ def render(user: dict, detail: dict):
         st.error(bot["error"])
 
     if bot["running_here"]:
-        st.success("🔴 บอทกำลังบันทึกการประชุมนี้อยู่")
         if st.button("⏹ หยุดบอท (ประชุมจบแล้ว)", key=f"stop_{mid}", type="primary"):
             _stop(user)
         _live_panel(user, mid)
@@ -83,12 +91,6 @@ def render(user: dict, detail: dict):
 
     if status in ("scheduled", "recording", "transcript_review") and bot["reachable"] and not bot["running_other"]:
         if status == "scheduled":
-            st.markdown(
-                "กดเริ่มเมื่อถึงเวลาประชุม บอทจะเปิดหน้าต่าง Chrome เข้าห้อง Google Meet และเปิดคำบรรยาย (CC) เอง\n\n"
-                "- ครั้งแรกอาจต้องล็อกอิน Google ในหน้าต่าง Chrome ที่บอทเปิด (จำไว้ให้ครั้งต่อไป)\n"
-                "- ถ้าห้องมีห้องรอ ต้องให้ผู้จัดการประชุมกดอนุญาตให้บอทเข้า\n"
-                "- หน้าต่าง Chrome ของบอทห้ามปิดระหว่างประชุม"
-            )
             label = "▶ เริ่มบอทเข้าห้องประชุม"
         else:
             if status == "recording":

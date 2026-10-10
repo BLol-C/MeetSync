@@ -220,6 +220,55 @@ JS_CAPTION_WATCHER = r"""
 """
 
 
+# อ่านรายชื่อคนในห้องจากแผง "บุคคล" ของ Meet — ไว้ตั้ง "เข้าร่วม" ให้คนที่มาแต่ไม่ได้พูด
+# โครงสร้างรายการ (role=list "ผู้เข้าร่วม" > role=listitem) และปุ่ม div[jsname=ocqpFe] ยืนยันจากผลสคริปต์ tools/meet_people_probe.js
+# ที่รันบนห้อง Meet ภาษาไทยจริงเมื่อ 9 ต.ค. 2569 — แต่บอท "กดเปิดแผงเอง" ด้วยปุ่มนี้ยังไม่ได้ทดสอบกับห้องจริง
+# (jsname เป็นชื่อภายในของ Meet เปลี่ยนได้โดยไม่แจ้ง) ถ้าอ่านไม่ได้ ระบบแจ้งในสถานะบอทและไม่กระทบการจับคำบรรยาย
+JS_READ_PARTICIPANTS = """
+() => {
+  // โครงสร้างที่เห็นจาก Meet จริง (ห้องภาษาไทย): role=list ชื่อ "ผู้เข้าร่วม" > role=listitem (aria-label = ชื่อ, มี data-participant-id)
+  const labelRe = /participants|people|everyone|contributors|ผู้เข้าร่วม|ผู้คน|ทุกคน|บุคคล|ผู้มีส่วนร่วม|ผู้ร่วมประชุม/i;
+  const waitingRe = /waiting|request|admit|รอ|ขอเข้า/i;   // รายการคนที่ยังรออนุญาตเข้าห้อง ไม่ใช่คนที่อยู่ในห้อง
+  const all = [...document.querySelectorAll('[role="list"]')];
+  const lists = all.filter((l) => {
+    const label = l.getAttribute('aria-label') || '';
+    return labelRe.test(label) && !waitingRe.test(label);
+  });
+  if (!lists.length) {
+    // ไม่พบแผง: ส่งสิ่งที่เห็นในหน้ากลับไปด้วย เพื่อให้ปรับ selector ตาม Meet จริงได้ (ไม่ใช่การเดา)
+    const buttons = [...document.querySelectorAll('button[aria-label], [role="button"][jsname]')]
+      .map((b) => b.getAttribute('aria-label') || ('jsname=' + b.getAttribute('jsname') + ' ' + (b.textContent || '').trim().slice(0, 20)))
+      .filter((t) => labelRe.test(t) || t.includes('ocqpFe')).slice(0, 6);
+    return { panel: false, names: [], lists: all.map((l) => l.getAttribute('aria-label') || '(ไม่มีชื่อ)').slice(0, 8), buttons };
+  }
+  const names = [];
+  for (const list of lists) {
+    for (const item of list.querySelectorAll('[role="listitem"]')) {
+      // แถวของตัวเอง (บอทเอง) มีข้อความ "(คุณ)" / "(You)" — ไม่นับเป็นผู้เข้าร่วม
+      if (/[(](คุณ|you)[)]/i.test(item.textContent || '')) continue;
+      let name = (item.getAttribute('aria-label') || '').trim();
+      if (!name) {
+        const leaves = [...item.querySelectorAll('span, div')].filter((e) => !e.children.length)
+          .map((e) => (e.textContent || '').trim()).filter((t) => t);
+        name = leaves[0] || '';
+      }
+      if (name && name.length <= 100 && !names.includes(name)) names.push(name);
+    }
+  }
+  return { panel: true, names: names.slice(0, 300) };
+}
+"""
+# jsname="ocqpFe" ใช้ร่วมกันหลายปุ่มในแถบเครื่องมือ (ผลจากห้องจริง) จึงเลือกด้วยข้อความของปุ่มด้วย ห้ามหยิบตัวแรก
+# และห้ามจับ aria-label แบบ "มีคำว่า" — จะไปโดนปุ่ม "การประชุมนี้เปิดให้ทุกคนเข้าร่วมได้" แทน
+PEOPLE_LABEL_RE = r"^\s*(บุคคล|ผู้คน|ผู้เข้าร่วม|People|Participants|Show everyone)"
+PEOPLE_BUTTON_FALLBACK = (
+    'button[aria-label^="บุคคล"], button[aria-label^="ผู้คน"], button[aria-label^="ผู้เข้าร่วม"], '
+    'button[aria-label^="People" i], button[aria-label^="Show everyone" i], button[aria-label^="Participants" i]'
+)
+PARTICIPANT_SCAN_S = int(os.environ.get("BOT_PARTICIPANT_SCAN_S", "60"))   # อ่านรายชื่อคนในห้องทุกกี่วินาที (0 = ปิด)
+PEOPLE_OPEN_ATTEMPTS = 2   # กดปุ่มผู้คนเพื่อเปิดแผงได้ติดกันกี่ครั้งก่อนยอมแพ้ (ยอมแพ้ที่รอบคู่ = แผงกลับมาปิดเหมือนเดิม)
+
+
 WATCHDOG_INTERVAL_S = 15     # ตรวจสุขภาพบอททุกกี่วินาที
 LEFT_ROOM_STRIKES = 3        # ไม่เจอปุ่มวางสายติดกันกี่รอบ ถึงถือว่าประชุมจบ/หลุดห้อง (3 x 15 = 45 วิ)
 EVAL_FAIL_STRIKES = 5        # สั่ง JS ในหน้าไม่ได้ติดกันกี่รอบ ถึงถือว่าหน้าตาย
@@ -245,6 +294,8 @@ class MeetCaptionEngine:
         self._stop = asyncio.Event()
         self._task: asyncio.Task | None = None
         self._seq_base = 0
+        self._people_attempts = 0
+        self._people_warned = False
 
     # ── lifecycle ──
     def start(self, url: str) -> asyncio.Task:
@@ -410,6 +461,28 @@ class MeetCaptionEngine:
         )
         await page.evaluate(JS_CAPTION_WATCHER)
 
+    async def _scan_participants(self, page):
+        """อ่านรายชื่อคนในห้อง (เปิดแผงผู้คนให้ถ้ายังไม่เปิด) แล้วส่ง event "participants" — อ่านไม่ได้ก็แค่แจ้งครั้งเดียว"""
+        result = await page.evaluate(JS_READ_PARTICIPANTS)
+        if not result["panel"] and self._people_attempts < PEOPLE_OPEN_ATTEMPTS:
+            self._people_attempts += 1
+            button = page.locator('[role="button"][jsname="ocqpFe"]').filter(has_text=re.compile(PEOPLE_LABEL_RE, re.I)).first
+            if not await button.count():
+                button = page.locator(PEOPLE_BUTTON_FALLBACK).first
+            if await button.count():
+                await button.click(timeout=3000)
+                await page.wait_for_timeout(1000)
+                result = await page.evaluate(JS_READ_PARTICIPANTS)
+        if result["panel"]:
+            self._people_attempts = 0
+            self._people_warned = False
+            self._emit(type="participants", names=result["names"])
+        elif self._people_attempts >= PEOPLE_OPEN_ATTEMPTS and not self._people_warned:
+            self._people_warned = True
+            seen = (f" [บอทเห็นรายการ: {result.get('lists') or '-'} · ปุ่ม: {result.get('buttons') or '-'}]")[:300]
+            self._emit(type="status", text="⚠️ อ่านรายชื่อผู้เข้าร่วมในห้องไม่ได้ (ไม่พบแผงผู้คนของ Meet) — "
+                                           "คนที่มาฟังเฉยๆ ต้องตั้ง \"เข้าร่วม\" เองที่แท็บ ①" + seen)
+
     async def _monitor(self, page, context, joined):
         """เฝ้าสุขภาพบอทตลอดการประชุม — คืนค่าไม่ได้ ออกได้ทาง _Stopped (สั่งหยุด) หรือ _EngineLost เท่านั้น
 
@@ -431,7 +504,7 @@ class MeetCaptionEngine:
 
         gone = 0
         eval_fail = 0
-        last_reenable = last_silence_warn = started
+        last_reenable = last_silence_warn = last_scan = started
 
         while True:
             try:
@@ -476,6 +549,16 @@ class MeetCaptionEngine:
                 continue
 
             now = loop.time()
+            if PARTICIPANT_SCAN_S and now - last_scan >= PARTICIPANT_SCAN_S:
+                last_scan = now
+                try:
+                    await self._guard(self._scan_participants(page), timeout=20)
+                except asyncio.TimeoutError:
+                    pass
+                except _Stopped:
+                    raise
+                except Exception:  # noqa: BLE001 — อ่านรายชื่อพลาดต้องไม่กระทบการจับคำบรรยาย
+                    pass
             if region_gap_ms > REGION_GONE_S * 1000 and now - last_reenable >= REGION_GONE_S:
                 last_reenable = now
                 self._emit(

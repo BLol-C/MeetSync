@@ -8,7 +8,7 @@
   transcript_segments  คำพูดทีละช่วง (เก็บข้อความต้นฉบับไว้เมื่อมีการแก้)
   summaries            "รายงานการประชุม" หนึ่งฉบับต่อหนึ่งการประชุม (1:1 ตาม SA) approved_at ว่าง = ฉบับร่าง
   agenda_items         วาระ/มติของรายงาน
-  action_items         งานที่ได้รับมอบหมายของรายงาน (ส่งเข้า Calendar จากตารางนี้)
+  action_items         งานที่ได้รับมอบหมายของรายงาน (อยู่ในรายงาน/PDF และเป็นรายการที่ส่งเข้า Google Calendar ตอนอนุมัติ)
 
 ตั้งค่าการเชื่อมต่อผ่าน .env: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
 ต้องสร้างฐานข้อมูลเปล่าไว้ก่อน (เช่น `CREATE DATABASE meetsync CHARACTER SET utf8mb4;`) — ตารางสร้างให้อัตโนมัติ
@@ -57,7 +57,9 @@ CREATE TABLE meetings (
     started_at    DATETIME NOT NULL,
     ended_at      DATETIME NULL,
     status        VARCHAR(20) NOT NULL DEFAULT 'recording',
-    CONSTRAINT fk_meetings_owner FOREIGN KEY (owner_user_id) REFERENCES users(user_id) ON DELETE SET NULL
+    previous_meeting_id INT NULL,
+    CONSTRAINT fk_meetings_owner FOREIGN KEY (owner_user_id) REFERENCES users(user_id) ON DELETE SET NULL,
+    CONSTRAINT fk_meetings_previous FOREIGN KEY (previous_meeting_id) REFERENCES meetings(meeting_id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE speakers (
@@ -69,6 +71,7 @@ CREATE TABLE speakers (
     role          VARCHAR(20) NOT NULL DEFAULT 'attendee',
     attendance    VARCHAR(10) NOT NULL DEFAULT 'invited',
     absence_reason VARCHAR(255) NULL,
+    position      VARCHAR(100) NULL,
     source        VARCHAR(10) NOT NULL DEFAULT 'registered',
     UNIQUE KEY uq_speaker (meeting_id, display_name),
     FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id) ON DELETE CASCADE
@@ -108,6 +111,7 @@ CREATE TABLE agenda_items (
     agenda_item_id INT AUTO_INCREMENT PRIMARY KEY,
     summary_id     INT NOT NULL,
     order_no       INT NOT NULL,
+    section        VARCHAR(20) NOT NULL DEFAULT 'consider_new',
     title          VARCHAR(255) NOT NULL,
     discussion     TEXT NULL,
     resolution     TEXT NULL,
@@ -125,8 +129,8 @@ CREATE TABLE action_items (
     due_time                 TIME NULL,
     due_time_end             TIME NULL,
     evidence                 TEXT NULL,
-    calendar_synced          BOOLEAN NOT NULL DEFAULT FALSE,
     google_calendar_event_id VARCHAR(255) NULL,
+    google_calendar_link     VARCHAR(500) NULL,
     FOREIGN KEY (summary_id) REFERENCES summaries(summary_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
@@ -146,6 +150,11 @@ _STATUS_TRANSITIONS: dict[str, set[str]] = {
 
 ROLES = ("chair", "secretary", "attendee", "guest")  # ประธาน / เลขา / กรรมการ-สมาชิก (ผู้มาประชุม) / ผู้เข้าร่วม (ไม่ใช่กรรมการ)
 UNIQUE_ROLES = ("chair", "secretary")               # แต่ละการประชุมมีได้คนเดียว
+# หมวดของวาระในรายงานตามแบบฟอร์ม (วาระที่ 5 เรื่องอื่น ๆ เก็บเป็นข้อความ summaries.other_matters ไม่ใช่แถววาระ)
+#   inform = วาระ 1 แจ้งให้ที่ประชุมทราบ · approve_prev = วาระ 2 รับรองรายงานครั้งก่อน · followup = วาระ 3 เรื่องสืบเนื่อง
+#   consider_old = วาระ 4.1 เรื่องค้างพิจารณา · consider_new = วาระ 4.2 เรื่องพิจารณาใหม่ (ค่าเริ่มต้น — เรื่องที่ AI สรุป)
+AGENDA_SECTIONS = ("inform", "approve_prev", "followup", "consider_old", "consider_new")
+DEFAULT_AGENDA_SECTION = "consider_new"
 ATTENDANCE = ("invited", "present", "absent")       # เชิญไว้ (ยังไม่ยืนยัน) / เข้าร่วม / ไม่มา
 
 
@@ -292,17 +301,7 @@ def upsert_user(google_sub: str, email: str, name: str | None, picture: str | No
         conn.close()
 
 
-def get_user_name(user_id: int | None) -> str | None:
-    if user_id is None:
-        return None
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COALESCE(name, email) AS n FROM users WHERE user_id = %s", (user_id,))
-            row = cur.fetchone()
-            return row["n"] if row else None
-    finally:
-        conn.close()
+
 
 
 def save_calendar_token(user_id: int, token_json: str) -> None:
@@ -328,7 +327,7 @@ def get_calendar_token(user_id: int) -> str | None:
 # ─────────────────────────────────────────────────────────────────────────────
 # การประชุม
 # ─────────────────────────────────────────────────────────────────────────────
-_SETUP_EDITABLE = ("meet_url", "title", "venue", "scheduled_at", "meeting_no", "org_name")
+_SETUP_EDITABLE = ("meet_url", "title", "venue", "scheduled_at", "meeting_no", "org_name", "previous_meeting_id")
 
 
 def _clean(value):
@@ -468,7 +467,7 @@ def get_meeting(meeting_id: int) -> dict | None:
         with conn.cursor() as cur:
             cur.execute(
                 """SELECT meeting_id, meet_url, title, venue, scheduled_at, meeting_no, org_name,
-                          started_at, ended_at, status, owner_user_id
+                          started_at, ended_at, status, owner_user_id, previous_meeting_id
                    FROM meetings WHERE meeting_id = %s""",
                 (meeting_id,),
             )
@@ -505,7 +504,7 @@ def list_meetings(owner_user_id: int, email: str | None = None, limit: int = 100
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT m.meeting_id, m.meet_url, m.title, m.started_at, m.ended_at, m.status, m.owner_user_id,
+                """SELECT m.meeting_id, m.meet_url, m.title, m.meeting_no, m.org_name, m.started_at, m.ended_at, m.status, m.owner_user_id,
                           (SELECT COUNT(*) FROM transcript_segments t
                             WHERE t.meeting_id = m.meeting_id AND t.deleted = FALSE) AS segment_count
                    FROM meetings m
@@ -562,6 +561,52 @@ def _mark_present(cur, speaker_id: int):
     )
 
 
+def mark_present_by_names(meeting_id: int, meet_names: list[str]) -> list[str]:
+    """ชื่อคนที่เห็นในห้อง Meet -> ตั้ง "เข้าร่วม" ให้ผู้เข้าร่วมที่ลงทะเบียนไว้และชื่อตรงกัน (ชื่อ/ชื่อเรียกใน Meet เดียวกับตอนจับผู้พูด)
+    เปลี่ยนเฉพาะที่ยังเป็น 'เชิญไว้' — คนที่ผู้ใช้ตั้ง 'ไม่มา' ไว้เองไม่ถูกเปลี่ยน และไม่สร้างผู้เข้าร่วมใหม่จากชื่อที่ไม่รู้จัก
+    คืนชื่อ (display_name) ของคนที่ถูกเปลี่ยนในรอบนี้"""
+    changed: list[str] = []
+    with _tx() as cur:
+        for name in meet_names or []:
+            speaker_id = _find_speaker_for_name(cur, meeting_id, (name or "").strip()[:100])
+            if speaker_id is None:
+                continue
+            cur.execute(
+                "UPDATE speakers SET attendance = 'present' WHERE speaker_id = %s AND attendance = 'invited'", (speaker_id,)
+            )
+            if cur.rowcount == 1:
+                cur.execute("SELECT display_name FROM speakers WHERE speaker_id = %s", (speaker_id,))
+                changed.append(cur.fetchone()["display_name"])
+    return changed
+
+
+def record_room_names(meeting_id: int, meet_names: list[str]) -> dict:
+    """รายชื่อที่บอทเห็นในห้อง Meet: ตั้ง "เข้าร่วม" ให้คนที่ลงทะเบียนไว้และชื่อตรงกัน (mark_present_by_names) ส่วนชื่อที่ไม่ตรงกับใครเลย
+    เก็บเป็นผู้เข้าร่วมแยก (source = 'meet', บทบาท guest, เข้าร่วม, ไม่มีข้อความ) เพื่อให้ผู้ใช้เลือกจับคู่กับคนที่ลงทะเบียนไว้ภายหลัง
+    (รวมแล้วระบบจำชื่อไว้ ครั้งหน้าตรงเอง) คืน {"marked": [ชื่อที่ถูกตั้งเข้าร่วม], "new": [ชื่อที่เก็บใหม่]}"""
+    names = []
+    for n in meet_names or []:
+        n = (n or "").strip()[:100]
+        if n and n not in names:
+            names.append(n)
+    marked = mark_present_by_names(meeting_id, names)
+    created: list[str] = []
+    with _tx() as cur:
+        for name in names:
+            if _find_speaker_for_name(cur, meeting_id, name) is not None:
+                continue
+            try:
+                cur.execute(
+                    """INSERT INTO speakers (meeting_id, display_name, role, attendance, source)
+                       VALUES (%s, %s, 'guest', 'present', 'meet')""",
+                    (meeting_id, name),
+                )
+                created.append(name)
+            except pymysql.err.IntegrityError:    # ชื่อซ้ำกับที่มีอยู่ (เช่น กำกวมหลายคน) — ไม่สร้างซ้ำ
+                pass
+    return {"marked": marked, "new": created}
+
+
 def _find_speaker_for_name(cur, meeting_id: int, meet_name: str) -> int | None:
     """ชื่อที่ Meet แสดง -> ผู้เข้าร่วมที่ตรงกัน (ชื่อ/ชื่อเรียกใน Meet) — ตรงคนเดียวเท่านั้น ชื่อกำกวมไม่เดา"""
     cur.execute(
@@ -611,8 +656,10 @@ def add_speaker(
     role: str = "attendee",
     attendance: str = "invited",
     absence_reason: str | None = None,
+    position: str | None = None,
+    meet_alias: str | None = None,
 ) -> int:
-    """ลงทะเบียนผู้เข้าร่วม (ก่อนหรือหลังประชุมก็ได้)"""
+    """ลงทะเบียนผู้เข้าร่วม (ก่อนหรือหลังประชุมก็ได้) meet_alias = ชื่อที่ Meet แสดงของคนนี้ (ถ้ารู้ล่วงหน้า) ไว้จับคู่ผู้พูด/รายชื่อในห้อง"""
     display_name = (display_name or "").strip()
     if not display_name:
         raise ValueError("ต้องระบุชื่อผู้เข้าร่วม")
@@ -623,10 +670,10 @@ def add_speaker(
             _check_role_free(cur, meeting_id, role)
             try:
                 cur.execute(
-                    """INSERT INTO speakers (meeting_id, display_name, email, role, attendance, absence_reason, source)
-                       VALUES (%s, %s, %s, %s, %s, %s, 'registered')""",
-                    (meeting_id, display_name, (email or "").strip() or None, role, attendance,
-                     (absence_reason or "").strip() or None),
+                    """INSERT INTO speakers (meeting_id, display_name, meet_alias, email, role, attendance, absence_reason, position, source)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'registered')""",
+                    (meeting_id, display_name, (meet_alias or "").strip()[:100] or None, (email or "").strip() or None, role,
+                     attendance, (absence_reason or "").strip() or None, (position or "").strip() or None),
                 )
             except pymysql.err.IntegrityError:
                 raise ValueError(f"มีผู้เข้าร่วมชื่อ \"{display_name}\" ในการประชุมนี้แล้ว")
@@ -677,7 +724,7 @@ def list_speakers(meeting_id: int) -> list[dict]:
         conn.close()
 
 
-_SPEAKER_EDITABLE = ("display_name", "meet_alias", "email", "role", "attendance", "absence_reason")
+_SPEAKER_EDITABLE = ("display_name", "meet_alias", "email", "role", "attendance", "absence_reason", "position")
 
 
 def update_speaker(speaker_id: int, **fields) -> None:
@@ -690,7 +737,7 @@ def update_speaker(speaker_id: int, **fields) -> None:
         fields["display_name"] = (fields["display_name"] or "").strip()
         if not fields["display_name"]:
             raise ValueError("ต้องระบุชื่อผู้เข้าร่วม")
-    for key in ("email", "meet_alias", "absence_reason"):
+    for key in ("email", "meet_alias", "absence_reason", "position"):
         if key in fields:
             fields[key] = (fields[key] or "").strip() or None
     _check_person_fields(fields.get("role"), fields.get("attendance"))
@@ -740,7 +787,7 @@ def merge_speakers(source_id: int, target_id: int) -> int:
         src, dst = rows[source_id], rows[target_id]
         if src["meeting_id"] != dst["meeting_id"]:
             raise ValueError("ผู้เข้าร่วมต้องอยู่ในการประชุมเดียวกัน")
-        if src["role"] != "attendee":
+        if src["role"] in UNIQUE_ROLES:
             raise ValueError("ไม่รวมผู้ที่เป็นประธาน/เลขา — เปลี่ยนบทบาทก่อน")
         cur.execute("UPDATE transcript_segments SET speaker_id = %s WHERE speaker_id = %s", (target_id, source_id))
         moved = cur.rowcount
@@ -751,6 +798,28 @@ def merge_speakers(source_id: int, target_id: int) -> int:
         if moved or src["attendance"] == "present":
             _mark_present(cur, target_id)
         return moved
+
+
+def rematch_meet_speakers(meeting_id: int) -> int:
+    """จับคู่ชื่อที่ Meet แสดง (source = 'meet') ที่ยังค้างอยู่ กับผู้ที่ลงทะเบียนไว้ — ใช้หลังผู้ใช้แก้ชื่อ/ชื่อภาษาอังกฤษในตาราง
+    ตรงคนเดียวเท่านั้น (เทียบแบบเดียวกับตอนบอทจับชื่อ) ชื่อกำกวมไม่เดา คืนจำนวนที่จับคู่ได้"""
+    people = list_speakers(meeting_id)
+    registered = [p for p in people if p["source"] == "registered"]
+    matched = 0
+    for meet in (p for p in people if p["source"] == "meet"):
+        target = normalize_name(meet["display_name"])
+        if not target:
+            continue
+        hits = [r["speaker_id"] for r in registered
+                if normalize_name(r["display_name"]) == target
+                or (r["meet_alias"] and normalize_name(r["meet_alias"]) == target)]
+        if len(hits) == 1:
+            try:
+                merge_speakers(meet["speaker_id"], hits[0])
+                matched += 1
+            except ValueError:
+                pass
+    return matched
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -897,50 +966,31 @@ def edit_segment(
 #   เนื้อหาในโปรแกรมเป็น dict {"summary", "agenda": [...], "other_matters", "action_items": [...]}
 #   ในฐานข้อมูลเก็บเป็นแถวตามตาราง ไม่มี JSON ซ้ำซ้อน ยกเว้น ai_snapshot (ภาพถ่ายผลดิบของ AI ไว้เทียบกับฉบับที่คนแก้)
 # ─────────────────────────────────────────────────────────────────────────────
-def _insert_report_rows(cur, summary_id: int, content: dict, carry: list[dict] | None = None):
-    """เขียนวาระและงานของรายงาน (carry = แถวงานเดิมที่มีสถานะส่ง Calendar ไว้ ให้ย้ายสถานะไปยังรายการที่ไม่เปลี่ยน)"""
+def _insert_report_rows(cur, summary_id: int, content: dict):
+    """เขียนวาระและงานของรายงาน (งานของรายงานที่ยังเป็นฉบับร่างยังไม่เคยส่งเข้า Calendar จึงไม่มีสถานะส่งให้พกต่อ)"""
     for i, a in enumerate(content.get("agenda") or [], start=1):
         cur.execute(
-            """INSERT INTO agenda_items (summary_id, order_no, title, discussion, resolution, evidence)
-               VALUES (%s, %s, %s, %s, %s, %s)""",
-            (summary_id, i, (a.get("title") or "")[:255], a.get("discussion") or None,
+            """INSERT INTO agenda_items (summary_id, order_no, section, title, discussion, resolution, evidence)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (summary_id, i, a.get("section") if a.get("section") in AGENDA_SECTIONS else DEFAULT_AGENDA_SECTION,
+             (a.get("title") or "")[:255], a.get("discussion") or None,
              a.get("resolution") or None, _dump_list(a.get("evidence"))),
         )
-    pool = list(carry or [])
     for it in content.get("action_items") or []:
-        key = (it.get("description") or "", it.get("assignee") or None, str(it.get("due_date") or "") or None,
-               it.get("due_time") or None, it.get("due_time_end") or None)
-        synced, event_id = False, None
-        for old in pool:   # งานที่ไม่ได้ถูกแก้ ยังเป็นรายการเดิมใน Calendar — ไม่ส่งซ้ำ
-            if old["_key"] == key:
-                synced, event_id = bool(old["calendar_synced"]), old["google_calendar_event_id"]
-                pool.remove(old)
-                break
         cur.execute(
             """INSERT INTO action_items
-               (summary_id, description, assignee, due_date, due_time, due_time_end, evidence,
-                calendar_synced, google_calendar_event_id)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+               (summary_id, description, assignee, due_date, due_time, due_time_end, evidence)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
             (summary_id, it.get("description") or "", it.get("assignee") or None, it.get("due_date") or None,
-             it.get("due_time") or None, it.get("due_time_end") or None, _dump_list(it.get("evidence")),
-             synced, event_id),
+             it.get("due_time") or None, it.get("due_time_end") or None, _dump_list(it.get("evidence"))),
         )
-
-
-def _existing_action_rows(cur, summary_id: int) -> list[dict]:
-    cur.execute("SELECT * FROM action_items WHERE summary_id = %s", (summary_id,))
-    rows = list(cur.fetchall())
-    for r in rows:
-        r["_key"] = (r["description"], r["assignee"], str(r["due_date"]) if r["due_date"] else None,
-                     _fmt_time(r["due_time"]), _fmt_time(r["due_time_end"]))
-    return rows
 
 
 def _report_row_to_dict(cur, row: dict) -> dict:
     sid = row["summary_id"]
     cur.execute("SELECT * FROM agenda_items WHERE summary_id = %s ORDER BY order_no, agenda_item_id", (sid,))
-    agenda = [{"title": a["title"], "discussion": a["discussion"] or "", "resolution": a["resolution"],
-               "evidence": _json_list(a["evidence"])} for a in cur.fetchall()]
+    agenda = [{"section": a["section"], "title": a["title"], "discussion": a["discussion"] or "",
+               "resolution": a["resolution"], "evidence": _json_list(a["evidence"])} for a in cur.fetchall()]
     cur.execute("SELECT * FROM action_items WHERE summary_id = %s ORDER BY action_item_id", (sid,))
     actions = []
     for a in cur.fetchall():
@@ -948,8 +998,7 @@ def _report_row_to_dict(cur, row: dict) -> dict:
             "action_item_id": a["action_item_id"], "description": a["description"], "assignee": a["assignee"],
             "due_date": a["due_date"].isoformat() if a["due_date"] else None,
             "due_time": _fmt_time(a["due_time"]), "due_time_end": _fmt_time(a["due_time_end"]),
-            "evidence": _json_list(a["evidence"]), "calendar_synced": bool(a["calendar_synced"]),
-            "google_calendar_event_id": a["google_calendar_event_id"],
+            "evidence": _json_list(a["evidence"]), "google_calendar_event_id": a["google_calendar_event_id"], "google_calendar_link": a.get("google_calendar_link"),
         })
     cur.execute("SELECT COALESCE(name, email) AS n FROM users WHERE user_id = %s", (row["approved_by"],))
     approver = cur.fetchone()
@@ -1020,14 +1069,13 @@ def update_report_content(summary_id: int, content: dict) -> bool:
         row = cur.fetchone()
         if not row or row["approved_at"] is not None:
             return False
-        carry = _existing_action_rows(cur, summary_id)
         cur.execute(
             "UPDATE summaries SET executive_summary = %s, other_matters = %s, edited_at = NOW() WHERE summary_id = %s",
             (content.get("summary") or "", content.get("other_matters") or None, summary_id),
         )
         cur.execute("DELETE FROM agenda_items WHERE summary_id = %s", (summary_id,))
         cur.execute("DELETE FROM action_items WHERE summary_id = %s", (summary_id,))
-        _insert_report_rows(cur, summary_id, content, carry)
+        _insert_report_rows(cur, summary_id, content)
         return True
 
 
@@ -1055,7 +1103,7 @@ def approve_report(meeting_id: int, user_id: int | None) -> bool:
 
 def reopen_report(meeting_id: int) -> bool:
     """ยกเลิกการอนุมัติเพื่อแก้รายงาน: รายงานกลับเป็นฉบับร่าง (ล้างผู้อนุมัติ/เวลาอนุมัติ) และการประชุมกลับเป็น draft
-    เนื้อหาและสถานะส่ง Calendar ของแต่ละงานคงเดิม (งานที่ไม่ถูกแก้จึงไม่ถูกส่งซ้ำ) ต้องอนุมัติใหม่หลังแก้
+    เนื้อหาคงเดิม แต่ล้างข้อมูลนัดใน Google Calendar ของทุกงาน (service ลบนัดออกจาก Google ไปแล้วก่อนเรียก) ต้องอนุมัติใหม่หลังแก้
     คืน False ถ้าการประชุมไม่ได้อยู่ในสถานะ approved
     """
     with _tx() as cur:
@@ -1064,6 +1112,11 @@ def reopen_report(meeting_id: int) -> bool:
             return False
         cur.execute(
             "UPDATE summaries SET approved_by = NULL, approved_at = NULL WHERE meeting_id = %s", (meeting_id,)
+        )
+        cur.execute(
+            """UPDATE action_items a JOIN summaries s ON s.summary_id = a.summary_id
+               SET a.google_calendar_event_id = NULL, a.google_calendar_link = NULL WHERE s.meeting_id = %s""",
+            (meeting_id,),
         )
         return True
 
@@ -1101,14 +1154,14 @@ def get_action_item_meeting(action_item_id: int) -> int | None:
         conn.close()
 
 
-def mark_action_item_synced(action_item_id: int, event_id: str):
+def mark_action_item_synced(action_item_id: int, event_id: str, link: str | None = None):
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """UPDATE action_items SET calendar_synced = TRUE, google_calendar_event_id = %s
+                """UPDATE action_items SET google_calendar_event_id = %s, google_calendar_link = %s
                    WHERE action_item_id = %s""",
-                (event_id, action_item_id),
+                (event_id, link, action_item_id),
             )
     finally:
         conn.close()

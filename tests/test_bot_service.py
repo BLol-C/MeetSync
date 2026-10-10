@@ -159,6 +159,7 @@ class BotServiceTests(TempDbCase):
         self.assertEqual(live["meeting_id"], mid)
         self.assertEqual([x["name"] for x in live["rows"]], ["Alice (You)", "คนแปลกหน้า"])
         self.assertEqual(live["rows"][0]["text"], "สวัสดีครับทุกคน")
+        self.assertRegex(live["rows"][0]["t"], r"^\d{2}:\d{2}:\d{2}$")                # เวลาที่พูด ให้หน้าเว็บแสดงข้างชื่อ
         self.assertTrue(any("เข้าห้องแล้ว" in s["text"] for s in live["status"]))
         self.assertEqual(db.get_meeting(mid)["status"], "recording")
 
@@ -173,6 +174,27 @@ class BotServiceTests(TempDbCase):
         after = self.state()
         self.assertFalse(after["running"])
         self.assertEqual(len(after["rows"]), 2)              # ผู้จัดการยังเห็นผลของรอบล่าสุดหลังหยุด
+
+    def test_people_seen_in_the_room_are_marked_present_even_if_they_never_speak(self):
+        mid = self.meeting(people=("Alice", "Bob", "Carol", "Dan"))
+        db.update_speaker(next(p["speaker_id"] for p in db.list_speakers(mid) if p["display_name"] == "Dan"),
+                          attendance="absent", absence_reason="ลา")            # ผู้ใช้ตั้ง "ไม่มา" ไว้เอง
+        FakeEngine.script = [
+            {"type": "participants", "names": ["Alice (You)", "bob", "Dan", "คนไม่รู้จัก", "", 5]},
+            cap(1, "Alice (You)", "สวัสดี"),
+        ]
+        self.assertEqual(self.start(mid).status_code, 200)
+        self.assertTrue(wait_for(lambda: len(db.get_transcript(mid)) == 1))
+        self.assertTrue(wait_for(lambda: {p["display_name"]: p["attendance"] for p in db.list_speakers(mid)}.get("Bob") == "present"))
+        status = {p["display_name"]: p["attendance"] for p in db.list_speakers(mid)}
+        self.assertEqual({k: v for k, v in status.items() if k != "คนไม่รู้จัก"},
+                         {"Alice": "present", "Bob": "present", "Carol": "invited", "Dan": "absent"})
+        room = next(p for p in db.list_speakers(mid) if p["display_name"] == "คนไม่รู้จัก")   # ชื่อที่ไม่ตรงใครถูกเก็บไว้ให้จับคู่ภายหลัง
+        self.assertEqual((room["source"], room["role"], room["attendance"]), ("meet", "guest", "present"))
+        log = " ".join(s["text"] for s in self.state()["status"])
+        self.assertIn("เห็นผู้เข้าร่วมในห้อง", log)
+        self.assertIn("Bob", log)
+        self.assertIn("คนไม่รู้จัก", log)                                         # แจ้งว่ามีชื่อที่ต้องจับคู่
 
     def test_one_endless_monologue_is_split_into_segments_not_lost(self):
         # คนพูดไม่หยุด Meet ใช้แถวเดียวตลอด ข้อความสะสมยาวเกินคอลัมน์ได้ — ต้องแบ่งเป็นหลาย segment ครบ ไม่ error ไม่หาย

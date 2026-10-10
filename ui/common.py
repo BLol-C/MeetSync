@@ -4,6 +4,8 @@ import re
 
 import streamlit as st
 
+import service
+
 from bot import botclient
 from reports import report_data
 
@@ -27,8 +29,8 @@ NEXT_STEP = {
     "approved": ("เสร็จแล้ว", "ดาวน์โหลด PDF หรือส่งงานที่มอบหมายเข้า Google Calendar ได้ที่แท็บ “④ รายงาน”"),
 }
 
-TAB_LABELS = ["① ข้อมูล", "② บอท", "③ Transcript", "④ รายงาน"]
-_DEFAULT_TAB = {"scheduled": 0, "recording": 1, "transcript_review": 2, "transcript_verified": 3, "draft": 3, "approved": 3}
+TAB_LABELS = ["① ข้อมูล", "② บอท", "③ Transcript", "④ รายงาน", "⑤ Calendar"]
+_DEFAULT_TAB = {"scheduled": 0, "recording": 1, "transcript_review": 2, "transcript_verified": 3, "draft": 3, "approved": 4}
 
 
 def default_tab(status: str) -> str:
@@ -39,6 +41,14 @@ ROLE_LABEL = {"chair": "ประธาน", "secretary": "เลขา", "atten
 ROLE_BY_LABEL = {v: k for k, v in ROLE_LABEL.items()}
 ATT_LABEL = {"invited": "ยังไม่ยืนยัน", "present": "เข้าร่วม", "absent": "ไม่มา"}
 ATT_BY_LABEL = {v: k for k, v in ATT_LABEL.items()}
+AGENDA_SECTION_LABEL = {
+    "inform": "วาระ 1 · เรื่องแจ้งให้ที่ประชุมทราบ",
+    "approve_prev": "วาระ 2 · รับรองรายงานการประชุมครั้งก่อน",
+    "followup": "วาระ 3 · เรื่องสืบเนื่อง",
+    "consider_old": "วาระ 4.1 · เรื่องค้างพิจารณา",
+    "consider_new": "วาระ 4.2 · เรื่องพิจารณาใหม่",
+}
+AGENDA_SECTION_BY_LABEL = {v: k for k, v in AGENDA_SECTION_LABEL.items()}
 SOURCE_LABEL = {"registered": "ลงทะเบียนไว้", "meet": "พบจาก Meet"}
 
 
@@ -49,6 +59,11 @@ def inject_css():
         </style>""",
         unsafe_allow_html=True,
     )
+
+
+def table_height(n_rows: int, *, max_px: int = 420, spare_rows: int = 0) -> int:
+    """ความสูงตาราง (px) พอดีกับจำนวนแถว (+หัวตาราง +แถวว่างสำรอง) แต่ไม่เกิน max_px — เกินกว่านั้นเลื่อนดูภายในตาราง"""
+    return min(max_px, 35 * (max(n_rows, 1) + 1 + spare_rows) + 3)
 
 
 def clean_str(value) -> str:
@@ -63,13 +78,22 @@ def md_escape(text: str) -> str:
     return re.sub(r"([\\`*_{}\[\]()#+\-.!|>~$<&])", r"\\\1", text or "")
 
 
-_MEET_BASE = re.compile(r"https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}", re.I)
 
 
-def meet_link_text(url: str) -> str:
-    """ลิงก์ Meet สำหรับแสดงผล: ตัด query ออก เหลือส่วนที่ปลอดภัยต่อ Markdown (ถ้า escape ทั้งลิงก์ จะมีเครื่องหมาย backslash ปนในลิงก์ที่แสดง)"""
-    base = (url or "").split("?")[0]
-    return base if _MEET_BASE.fullmatch(base) else md_escape(url)
+def previous_meeting_select(user: dict, *, key: str, current_id: int | None = None, exclude_id: int | None = None,
+                            disabled: bool = False) -> int | None:
+    """ช่องเลือก "การประชุมครั้งก่อน" (เฉพาะที่อนุมัติรายงานแล้ว) — ระบบเติมวาระ 2, 3, 4.1 ของรายงานจากครั้งนั้น คืน meeting_id หรือ None"""
+    none_label = "— ไม่มี / ไม่ใช้ข้อมูลครั้งก่อน —"
+    labels: dict[str, int | None] = {none_label: None}
+    for m in service.previous_meeting_choices(user, exclude_id):
+        no = f" · ครั้งที่ {m['meeting_no']}" if m.get("meeting_no") else ""
+        labels[f"{m['title'] or '(ไม่ได้ตั้งชื่อ)'}{no} · {thai_date(m['started_at'])} (#{m['meeting_id']})"] = m["meeting_id"]
+    ids = list(labels.values())
+    wanted = current_id if current_id is not None and current_id in ids else None
+    return labels[st.selectbox(
+        "การประชุมครั้งก่อน", options=list(labels), index=ids.index(wanted), key=key, disabled=disabled,
+        help="ระบบเติมรายงานวาระที่ 2 (รับรองรายงานครั้งก่อน) วาระที่ 3 (งานที่มอบหมายไว้) และวาระที่ 4.1 (เรื่องที่ไม่มีมติ) "
+             "จากรายงานของการประชุมนี้ เลือกได้เฉพาะที่อนุมัติรายงานแล้ว — ตรวจและแก้ได้ที่แท็บ ④ ก่อนอนุมัติ")]
 
 
 # ── นำทาง ──
@@ -106,14 +130,6 @@ def progress_text(status: str) -> str:
     if status == "approved":
         return label
     return f"{label}  ·  ขั้นที่ {_DEFAULT_TAB.get(status, 0) + 1} จาก {len(TAB_LABELS)}"
-
-
-def render_next_step(status: str):
-    title, detail = NEXT_STEP.get(status, ("", ""))
-    if status == "approved":
-        st.success(f"**{title}** — {detail}")
-    else:
-        st.info(f"**ขั้นตอนต่อไป: {title}** — {detail}")
 
 
 # ── แถบด้านข้าง ──

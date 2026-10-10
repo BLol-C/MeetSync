@@ -8,8 +8,10 @@ from service import ServiceError
 from ui import common
 from ui.common import ATT_BY_LABEL, ATT_LABEL, ROLE_BY_LABEL, ROLE_LABEL, SOURCE_LABEL, clean_str
 
-COLS = ["speaker_id", "ชื่อ", "อีเมล", "บทบาท", "การเข้าร่วม", "สาเหตุที่ไม่มา", "ที่มา", "ข้อความที่พูด"]
-VISIBLE = ["ชื่อ", "อีเมล", "บทบาท", "การเข้าร่วม", "สาเหตุที่ไม่มา", "ที่มา", "ข้อความที่พูด"]
+COLS = ["speaker_id", "ชื่อภาษาไทย", "ชื่อภาษาอังกฤษ", "อีเมล", "บทบาท", "ตำแหน่ง", "การเข้าร่วม", "สาเหตุที่ไม่มา", "ที่มา", "ข้อความที่พูด"]
+VISIBLE = ["ชื่อภาษาไทย", "ชื่อภาษาอังกฤษ", "อีเมล", "บทบาท", "ตำแหน่ง", "การเข้าร่วม", "สาเหตุที่ไม่มา", "ที่มา", "ข้อความที่พูด"]
+
+PEOPLE_MAX_H = 420   # px — ตารางรายชื่อสูงสุดเท่านี้ ที่เกินเลื่อนดูภายในตาราง
 
 
 def _rev(mid: int) -> int:
@@ -19,13 +21,18 @@ def _rev(mid: int) -> int:
 def _people_df(people: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(
         [{
-            "speaker_id": p["speaker_id"], "ชื่อ": p["display_name"], "อีเมล": p["email"] or "",
-            "บทบาท": ROLE_LABEL[p["role"]], "การเข้าร่วม": ATT_LABEL[p["attendance"]],
+            "speaker_id": p["speaker_id"], "ชื่อภาษาไทย": p["display_name"], "ชื่อภาษาอังกฤษ": p.get("meet_alias") or "", "อีเมล": p["email"] or "",
+            "บทบาท": ROLE_LABEL[p["role"]], "ตำแหน่ง": p.get("position") or "", "การเข้าร่วม": ATT_LABEL[p["attendance"]],
             "สาเหตุที่ไม่มา": p.get("absence_reason") or "",
             "ที่มา": SOURCE_LABEL.get(p["source"], p["source"]), "ข้อความที่พูด": p["segment_count"],
         } for p in people],
         columns=COLS,
     )
+
+
+def table_people(people: list[dict]) -> list[dict]:
+    """คนที่แสดงในตารางผู้เข้าร่วม = ที่ลงทะเบียนไว้เท่านั้น — ชื่อที่ Meet แสดงแต่ยังจับคู่ไม่ได้ไปจับคู่ที่แท็บ ③"""
+    return [p for p in people if p["source"] != "meet"]
 
 
 def people_rows(df: pd.DataFrame) -> list[dict]:
@@ -35,11 +42,13 @@ def people_rows(df: pd.DataFrame) -> list[dict]:
         sid = rec.get("speaker_id")
         rows.append({
             "speaker_id": None if sid is None or sid != sid else int(sid),
-            "display_name": clean_str(rec.get("ชื่อ")),
+            "display_name": clean_str(rec.get("ชื่อภาษาไทย")),
+            "meet_alias": clean_str(rec.get("ชื่อภาษาอังกฤษ")),
             "email": clean_str(rec.get("อีเมล")),
             "role": ROLE_BY_LABEL.get(clean_str(rec.get("บทบาท")), "attendee"),
             "attendance": ATT_BY_LABEL.get(clean_str(rec.get("การเข้าร่วม")), "invited"),
             "absence_reason": clean_str(rec.get("สาเหตุที่ไม่มา")),
+            "position": clean_str(rec.get("ตำแหน่ง")),
         })
     return rows
 
@@ -61,9 +70,11 @@ def render(user: dict, detail: dict):
         org = c2.text_input("หน่วยงาน", value=meeting["org_name"] or "", disabled=locked)
         no = c1.text_input("ครั้งที่", value=meeting["meeting_no"] or "", disabled=locked)
         venue = c2.text_input("สถานที่", value=meeting["venue"] or "", disabled=locked)
+        previous = common.previous_meeting_select(
+            user, key=f"prev_{mid}", current_id=meeting.get("previous_meeting_id"), exclude_id=mid, disabled=locked)
         saved = st.form_submit_button("บันทึกข้อมูล", disabled=locked)
     if saved:
-        fields = {"title": title, "org_name": org, "meeting_no": no, "venue": venue}
+        fields = {"title": title, "org_name": org, "meeting_no": no, "venue": venue, "previous_meeting_id": previous}
         if status == "scheduled":
             fields["meet_url"] = url
         try:
@@ -75,25 +86,23 @@ def render(user: dict, detail: dict):
             st.rerun()
 
     st.subheader("ผู้เข้าร่วมและบทบาท")
-    st.caption("ใส่ชื่อ **ตรงกับชื่อที่แสดงใน Google Meet** ระบบจะจับคู่คนพูดกับรายชื่อนี้ให้อัตโนมัติ  "
-               "ถ้าชื่อใน Meet ไม่ตรง (เช่น มีเลขหรือชื่อเล่นพ่วง) ให้ “รวมชื่อ” ที่แท็บ ③ Transcript  "
-               "ประธาน/เลขาที่ใส่อีเมลไว้ เข้ามาตรวจและอนุมัติรายงานได้ด้วยบัญชี Google ของตน  "
-               "“การเข้าร่วม”: คนที่มีเสียงพูดในประชุมถูกตั้งเป็น “เข้าร่วม” ให้เอง ส่วนคนที่เข้าฟังเฉยๆ ให้ตั้งเอง "
-               "(ที่ยังเป็น “ยังไม่ยืนยัน” จะถูกนับเป็นผู้ไม่มาประชุมในรายงาน)")
     for w in detail["header_warnings"]:
         if w["code"] in ("no_chair", "no_secretary"):
             st.warning(w["message"])
 
-    df = _people_df(detail["people"])
+    df = _people_df(table_people(detail["people"]))
     edited = st.data_editor(
         df, key=f"people_{mid}_{_rev(mid)}", hide_index=True, width="stretch",
+        height=common.table_height(len(df), max_px=PEOPLE_MAX_H, spare_rows=0 if locked else 2),
         num_rows="fixed" if locked else "dynamic",
         disabled=True if locked else ["ที่มา", "ข้อความที่พูด"],
         column_order=VISIBLE,
         column_config={
-            "ชื่อ": st.column_config.TextColumn("ชื่อ", width="medium"),
+            "ชื่อภาษาไทย": st.column_config.TextColumn("ชื่อภาษาไทย", help="ชื่อที่จะขึ้นในรายงาน PDF (ภาษาไทย)", width="medium"),
+            "ชื่อภาษาอังกฤษ": st.column_config.TextColumn("ชื่อภาษาอังกฤษ", help="ชื่อที่ Google Meet แสดงของคนนี้ (เช่น ชื่อบัญชีมหาวิทยาลัยที่เป็นภาษาอังกฤษ) ไว้จับคู่คนพูดและรายชื่อในห้องให้อัตโนมัติ ไม่ขึ้นในรายงาน — เว้นว่างได้ ถ้าชื่อภาษาไทยตรงกับที่ Meet แสดงอยู่แล้ว", width="medium"),
             "อีเมล": st.column_config.TextColumn("อีเมล", width="medium", help="ใช้เชิญเข้า Calendar และให้ประธาน/เลขาอนุมัติได้"),
             "บทบาท": st.column_config.SelectboxColumn("บทบาท", options=list(ROLE_BY_LABEL), default=ROLE_LABEL["attendee"], required=True),
+            "ตำแหน่ง": st.column_config.TextColumn("ตำแหน่ง", help="ตำแหน่งของผู้เข้าร่วม แสดงในคอลัมน์ ตำแหน่ง ของรายงาน PDF (เว้นว่าง = ใช้บทบาทในที่ประชุมแทน)", width="medium"),
             "การเข้าร่วม": st.column_config.SelectboxColumn("การเข้าร่วม", options=list(ATT_BY_LABEL), default="ยังไม่ยืนยัน", required=True),
             "สาเหตุที่ไม่มา": st.column_config.TextColumn("สาเหตุที่ไม่มา", help="แสดงในวงเล็บท้ายชื่อในรายการผู้ไม่มาประชุม เช่น ติดภารกิจ, ลาป่วย"),
             "ที่มา": st.column_config.TextColumn("ที่มา", help="ลงทะเบียนไว้เอง หรือระบบพบชื่อนี้จากคำบรรยายใน Meet"),
@@ -103,11 +112,9 @@ def render(user: dict, detail: dict):
     if st.button("💾 บันทึกรายชื่อ", key=f"save_people_{mid}", disabled=locked):
         result = service.apply_people_table(user, mid, people_rows(edited))
         st.session_state[f"rev_people_{mid}"] = _rev(mid) + 1
-        parts = [f"{label} {result[k]} คน" for k, label in (("added", "เพิ่ม"), ("updated", "แก้"), ("deleted", "ลบ")) if result[k]]
+        parts = [f"{label} {result[k]} คน" for k, label in (("added", "เพิ่ม"), ("updated", "แก้"), ("deleted", "ลบ"), ("matched", "จับคู่ชื่อใน Meet ได้")) if result[k]]
         if parts:
             common.flash("success", "บันทึกรายชื่อแล้ว: " + ", ".join(parts))
-        elif not result["errors"]:
-            common.flash("info", "ไม่มีการเปลี่ยนแปลง")
         for err in result["errors"]:
             common.flash("error", err)
         st.rerun()

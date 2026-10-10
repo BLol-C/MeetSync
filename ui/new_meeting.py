@@ -8,14 +8,14 @@ from service import ServiceError
 from ui import common
 from ui.common import ATT_BY_LABEL, ROLE_BY_LABEL, ROLE_LABEL, clean_str
 
-PEOPLE_COLS = ["ชื่อ", "อีเมล", "บทบาท", "การเข้าร่วม", "สาเหตุที่ไม่มา"]
+PEOPLE_COLS = ["ชื่อภาษาไทย", "ชื่อภาษาอังกฤษ", "อีเมล", "บทบาท", "ตำแหน่ง", "การเข้าร่วม", "สาเหตุที่ไม่มา"]
 
 
 def _default_people() -> pd.DataFrame:
     return pd.DataFrame(
         [
-            {"ชื่อ": "", "อีเมล": "", "บทบาท": "ประธาน", "การเข้าร่วม": "เข้าร่วม", "สาเหตุที่ไม่มา": ""},
-            {"ชื่อ": "", "อีเมล": "", "บทบาท": "เลขา", "การเข้าร่วม": "เข้าร่วม", "สาเหตุที่ไม่มา": ""},
+            {"ชื่อภาษาไทย": "", "ชื่อภาษาอังกฤษ": "", "อีเมล": "", "บทบาท": "ประธาน", "ตำแหน่ง": "", "การเข้าร่วม": "เข้าร่วม", "สาเหตุที่ไม่มา": ""},
+            {"ชื่อภาษาไทย": "", "ชื่อภาษาอังกฤษ": "", "อีเมล": "", "บทบาท": "เลขา", "ตำแหน่ง": "", "การเข้าร่วม": "เข้าร่วม", "สาเหตุที่ไม่มา": ""},
         ],
         columns=PEOPLE_COLS,
     )
@@ -24,24 +24,28 @@ def _default_people() -> pd.DataFrame:
 def people_from_df(df: pd.DataFrame) -> list[dict]:
     people = []
     for rec in df.to_dict("records"):
-        name = clean_str(rec.get("ชื่อ"))
+        name = clean_str(rec.get("ชื่อภาษาไทย"))
         if not name:
             continue
         people.append({
             "display_name": name,
+            "meet_alias": clean_str(rec.get("ชื่อภาษาอังกฤษ")) or None,
             "email": clean_str(rec.get("อีเมล")) or None,
             "role": ROLE_BY_LABEL.get(clean_str(rec.get("บทบาท")), "attendee"),
             "attendance": ATT_BY_LABEL.get(clean_str(rec.get("การเข้าร่วม")), "invited"),
             "absence_reason": clean_str(rec.get("สาเหตุที่ไม่มา")) or None,
+            "position": clean_str(rec.get("ตำแหน่ง")) or None,
         })
     return people
 
 
 def people_column_config() -> dict:
     return {
-        "ชื่อ": st.column_config.TextColumn("ชื่อ", help="ตรงกับชื่อที่แสดงใน Google Meet", required=False, width="medium"),
+        "ชื่อภาษาไทย": st.column_config.TextColumn("ชื่อภาษาไทย", help="ชื่อที่จะขึ้นในรายงาน PDF (ภาษาไทย)", required=False, width="medium"),
+        "ชื่อภาษาอังกฤษ": st.column_config.TextColumn("ชื่อภาษาอังกฤษ", help="ชื่อที่ Google Meet แสดงของคนนี้ (เช่น ชื่อบัญชีมหาวิทยาลัยที่เป็นภาษาอังกฤษ) ไว้จับคู่คนพูดและรายชื่อในห้องให้อัตโนมัติ ไม่ขึ้นในรายงาน — เว้นว่างได้ ถ้าชื่อภาษาไทยตรงกับที่ Meet แสดงอยู่แล้ว", width="medium"),
         "อีเมล": st.column_config.TextColumn("อีเมล", help="ใช้เชิญเข้า Calendar และให้ประธาน/เลขาเข้าอนุมัติรายงานได้", width="medium"),
         "บทบาท": st.column_config.SelectboxColumn("บทบาท", options=list(ROLE_BY_LABEL), default=ROLE_LABEL["attendee"], required=True),
+        "ตำแหน่ง": st.column_config.TextColumn("ตำแหน่ง", help="ตำแหน่งของผู้เข้าร่วม แสดงในคอลัมน์ ตำแหน่ง ของรายงาน PDF (เว้นว่าง = ใช้บทบาทในที่ประชุมแทน)", width="medium"),
         "การเข้าร่วม": st.column_config.SelectboxColumn("การเข้าร่วม", options=list(ATT_BY_LABEL), default="ยังไม่ยืนยัน", required=True),
         "สาเหตุที่ไม่มา": st.column_config.TextColumn("สาเหตุที่ไม่มา", help="เฉพาะผู้ที่ไม่มา — แสดงในวงเล็บท้ายชื่อในรายงาน"),
     }
@@ -91,7 +95,6 @@ def render(user: dict):
         return
 
     st.title("สร้างการประชุมใหม่")
-    st.caption("กรอกข้อมูลที่จะปรากฏในหัวรายงานการประชุม และรายชื่อผู้เข้าร่วมพร้อมบทบาท — แก้ไขภายหลังได้")
     with st.form("new_meeting"):
         url = st.text_input("ลิงก์ Google Meet *", placeholder="https://meet.google.com/abc-defg-hij")
         c1, c2 = st.columns(2)
@@ -99,10 +102,8 @@ def render(user: dict):
         org = c2.text_input("หน่วยงาน", placeholder="เช่น ภาควิชาวิทยาการคอมพิวเตอร์")
         no = c1.text_input("ครั้งที่", placeholder="เช่น 3/2569")
         venue = c2.text_input("สถานที่", placeholder="เช่น ห้องประชุม 2 / ออนไลน์ (Google Meet)")
+        previous = common.previous_meeting_select(user, key="new_previous_meeting")
         st.markdown("##### ผู้เข้าร่วมและบทบาท")
-        st.caption("ใส่ชื่อ **ตรงกับชื่อที่แสดงใน Google Meet** เพื่อให้ระบบจับคู่คนพูดกับรายชื่อนี้ให้อัตโนมัติ "
-                   "(ประธานและเลขามีได้อย่างละ 1 คน) ใส่อีเมลประธาน/เลขาเพื่อให้เข้ามาตรวจและอนุมัติด้วยบัญชี Google ของตนได้ "
-                   "— กดปุ่ม ＋ ใต้ตารางเพื่อเพิ่มแถว")
         people_df = st.data_editor(
             _default_people(), key="new_people", num_rows="dynamic", hide_index=True,
             column_config=people_column_config(), width="stretch",
@@ -115,5 +116,5 @@ def render(user: dict):
             return
         _create(user, {
             "meet_url": url, "title": title, "org_name": org, "meeting_no": no, "venue": venue,
-            "people": people_from_df(people_df),
+            "people": people_from_df(people_df), "previous_meeting_id": previous,
         })

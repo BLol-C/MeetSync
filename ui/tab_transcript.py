@@ -11,6 +11,9 @@ from ui.common import clean_str
 COLS = ["segment_id", "เวลา", "ผู้พูด", "ข้อความ", "ลบ", "แก้แล้ว"]
 
 
+CONVERSATION_MAX_H = 420   # px — กล่องบทสนทนาสูงสุดเท่านี้ ที่เกินเลื่อนในกล่อง
+
+
 def _rev(mid: int) -> int:
     return st.session_state.get(f"rev_segs_{mid}", 0)
 
@@ -36,33 +39,43 @@ def segment_rows(df: pd.DataFrame) -> list[dict]:
     return rows
 
 
-def _merge_section(user: dict, people: list[dict], editable: bool):
-    unmapped = [p for p in people if p["source"] == "meet" and p["segment_count"] > 0]
-    if not unmapped:
+def _unconfirmed_section(user: dict, people: list[dict], editable: bool):
+    """ผู้ที่ลงทะเบียนไว้แต่ยังไม่ยืนยันการเข้าร่วม — เลือกว่าตรงกับชื่อไหนที่เห็นใน Meet (บอทอ่านจากห้อง/จากคนที่พูด)
+    หรือกำหนดเองว่ามา/ไม่มา; ถ้าไม่ตั้ง ตอนยืนยัน transcript จะถูกบันทึกเป็น "ไม่มา" """
+    pending = [p for p in people if p["source"] == "registered" and p["attendance"] == "invited"]
+    if not pending:
         return
-    registered = [p for p in people if p["source"] == "registered"]
-    st.subheader("ชื่อที่พบใน Meet แต่ไม่ตรงกับรายชื่อ")
-    st.caption("ถ้าเป็นคนเดียวกับผู้เข้าร่วมที่ลงทะเบียนไว้ (เช่น Meet แสดงชื่อพ่วงเลขหรือชื่อเล่น) ให้ “รวม” — ข้อความทั้งหมดจะย้ายไปอยู่กับ"
-               "คนที่ถูกต้อง และครั้งหน้าจับคู่ให้เองอัตโนมัติ ถ้าเป็นคนใหม่ที่ไม่ได้ลงทะเบียน ปล่อยไว้ได้ (จะแสดงเป็นผู้มาประชุม)")
-    if not registered:
-        st.info("ยังไม่มีผู้เข้าร่วมที่ลงทะเบียนไว้ให้รวมด้วย — เพิ่มรายชื่อที่แท็บ ① ข้อมูล")
-        return
-    names = {p["speaker_id"]: p["display_name"] for p in registered}
-    for p in unmapped:
+    seen = [p for p in people if p["source"] == "meet"]
+    labels = {}
+    for m in seen:
+        labels[f"meet:{m['speaker_id']}"] = (f"{m['display_name']} — พูด {m['segment_count']} ช่วง" if m["segment_count"]
+                                             else f"{m['display_name']} — อยู่ในห้อง")
+    labels["present"] = "มาประชุม (ไม่พบชื่อในรายการ Meet)"
+    labels["absent"] = "ไม่ได้เข้าประชุม (ไม่มา)"
+    st.subheader("ผู้เข้าร่วมที่ยังไม่ยืนยันการเข้าร่วม")
+    st.caption("บอทอ่านชื่อคนที่อยู่ในห้อง Meet ไว้ให้เลือก เลือกชื่อที่ตรงกับแต่ละคน (ระบบจำชื่อนี้ไว้ ครั้งหน้าจับคู่ให้เอง) "
+               "หรือกำหนดเองว่ามา/ไม่มา — ถ้าไม่ตั้ง ตอนกดยืนยัน transcript ระบบจะบันทึกเป็น “ไม่มา”")
+    if not seen:
+        st.info("ยังไม่พบชื่อใน Meet ที่ไม่ตรงกับรายชื่อ (บอทอ่านรายชื่อในห้องไม่ได้ หรือทุกคนที่อยู่ในห้องจับคู่ได้แล้ว)")
+    for p in pending:
         with st.container(border=True):
-            a, b, c = st.columns([3, 3, 1.2], vertical_alignment="center")
-            a.markdown(f"**{common.md_escape(p['display_name'])}**  \n{p['segment_count']} ช่วง")
-            target = b.selectbox("รวมกับ", options=list(names), format_func=names.get, index=None,
-                                 placeholder="เลือกผู้เข้าร่วมที่ถูกต้อง…", key=f"merge_to_{p['speaker_id']}",
+            a, b, c = st.columns([3, 4, 1.2], vertical_alignment="center")
+            a.markdown(f"**{common.md_escape(p['display_name'])}**  \n{common.ROLE_LABEL.get(p['role'], p['role'])}")
+            choice = b.selectbox("ตรงกับ", options=list(labels), format_func=labels.get, index=None,
+                                 placeholder="เลือกชื่อใน Meet ที่ตรงกัน หรือกำหนดสถานะ…", key=f"unc_{p['speaker_id']}",
                                  label_visibility="collapsed", disabled=not editable)
-            if c.button("รวม", key=f"merge_{p['speaker_id']}", disabled=not editable or target is None,
-                        width="stretch"):
+            if c.button("ยืนยัน", key=f"unc_go_{p['speaker_id']}", disabled=not editable or choice is None, width="stretch"):
                 try:
-                    moved = service.merge_people(user, p["speaker_id"], target)
+                    if choice in ("present", "absent"):
+                        service.set_person_attendance(user, p["speaker_id"], choice)
+                        done = "ตั้งเป็น " + ("เข้าร่วม" if choice == "present" else "ไม่มา") + f": {p['display_name']}"
+                    else:
+                        moved = service.merge_people(user, int(choice.split(":")[1]), p["speaker_id"])
+                        done = f"จับคู่แล้ว: {p['display_name']} เข้าร่วม" + (f" (ย้าย {moved} ช่วง)" if moved else "")
                 except ServiceError as e:
                     st.error(str(e))
                 else:
-                    common.flash("success", f"รวมแล้ว: ย้าย {moved} ช่วงไปที่ {names[target]}")
+                    common.flash("success", done)
                     st.session_state[f"rev_segs_{p['meeting_id']}"] = _rev(p["meeting_id"]) + 1
                     st.rerun()
 
@@ -87,7 +100,8 @@ def render(user: dict, detail: dict):
     elif status == "approved":
         st.success("🔒 รายงานอนุมัติแล้ว transcript ถูกล็อก")
 
-    _merge_section(user, [{**p, "meeting_id": mid} for p in people], editable and status != "approved")
+    people_in_meeting = [{**p, "meeting_id": mid} for p in people]
+    _unconfirmed_section(user, people_in_meeting, editable and status != "approved")
 
     if not segments:
         st.subheader("ข้อความที่บอทจับได้")
@@ -96,11 +110,12 @@ def render(user: dict, detail: dict):
 
     # มุมมองอ่านง่าย: รวมประโยคต่อเนื่องของคนเดียวกันเป็นช่วงพูด (ในฐานข้อมูลยังเป็น 1 ประโยค = 1 แถว)
     turns = service.group_turns(segments)
-    n_sentences = sum(1 for s in segments if not s["deleted"])
-    st.subheader(f"บทสนทนา ({len(turns)} ช่วงพูด · {n_sentences} ประโยค)")
+    st.subheader("บทสนทนา")
     st.caption(f"ประโยคต่อเนื่องของคนเดียวกัน (ห่างกันไม่เกิน {service.TURN_GAP_S} วินาที) รวมเป็นช่วงพูดเดียวเพื่อให้อ่านง่าย · "
                "✎ = มีประโยคที่ถูกแก้ · แก้ไขได้ที่ตารางรายประโยคด้านล่าง")
-    with st.container(height=420, border=True):
+    # กล่องสูงตามเนื้อหา (ประมาณ) แต่ไม่เกิน CONVERSATION_MAX_H — ยาวกว่านั้นเลื่อนอ่านภายในกล่อง
+    lines = sum(2 + len(t["text"]) // 80 for t in turns)
+    with st.container(height=min(CONVERSATION_MAX_H, max(120, 70 + lines * 26)), border=True):
         st.markdown("\n\n".join(
             f"**{service.format_turn_time(t)} · {common.md_escape(t['display_name'])}**{' ✎' if t['edited'] else ''}  \n"
             f"{common.md_escape(t['text'])}" for t in turns) or "_ไม่มีข้อความ (ลบทั้งหมด)_")
@@ -116,7 +131,7 @@ def render(user: dict, detail: dict):
         elif status == "transcript_review":
             st.caption("ดูอย่างเดียวขณะที่บอทยังบันทึกอยู่")
         edited = st.data_editor(
-            df, key=f"segs_{mid}_{_rev(mid)}", hide_index=True, width="stretch", height=520,
+            df, key=f"segs_{mid}_{_rev(mid)}", hide_index=True, width="stretch", height=common.table_height(len(df), max_px=520),
             num_rows="fixed", disabled=True if not editable else ["เวลา", "แก้แล้ว"], column_order=COLS[1:],
             column_config={
                 "เวลา": st.column_config.TextColumn("เวลา", width="small"),

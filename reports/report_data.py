@@ -97,8 +97,10 @@ def build_header(meeting: dict, participants: list[dict]) -> dict:
         "venue": meeting.get("venue"),
         "chair": chair["display_name"] if chair else None,
         "secretary": secretary["display_name"] if secretary else None,
-        "attendees": [{"name": p["display_name"], "role": p["role"]} for p in present],
-        "guests": [{"name": p["display_name"], "role": p["role"]} for p in guests],
+        "attendees": [{"name": p["display_name"], "role": p["role"], "position": (p.get("position") or "").strip() or None}
+                      for p in present],
+        "guests": [{"name": p["display_name"], "role": p["role"], "position": (p.get("position") or "").strip() or None}
+                   for p in guests],
         "absent": [
             {"name": p["display_name"], "role": p["role"], "unconfirmed": p["attendance"] == "invited",
              "reason": (p.get("absence_reason") or "").strip() or None}

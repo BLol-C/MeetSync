@@ -36,7 +36,7 @@ def render(user: dict):
             left, mid_col, right = st.columns([5, 3, 1.2], vertical_alignment="center")
             left.markdown(f"**{common.md_escape(m['title'] or '(ไม่ได้ตั้งชื่อ)')}**")
             when = common.thai_date(m["started_at"]) + (f" {m['started_at']:%H:%M} น." if m["status"] != "scheduled" else "")
-            left.caption(f"{when} · ข้อความที่บอทจับได้ {m['segment_count']} ช่วง")
+            left.caption(when)
             mid_col.markdown(common.STATUS_LABEL.get(m["status"], m["status"]))
             mid_col.caption(common.NEXT_STEP.get(m["status"], ("", ""))[0])
             if right.button("เปิด", key=f"open_{m['meeting_id']}", width="stretch"):

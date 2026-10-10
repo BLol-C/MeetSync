@@ -4,6 +4,7 @@
 และปุ่มสำคัญเรียก service/บอทถูกที่ (การคลิกในตารางแก้ไขต้องดูด้วยเบราว์เซอร์: tools/ui_smoke.py)
 """
 
+import datetime
 import os
 import unittest
 from unittest import mock
@@ -18,6 +19,7 @@ from streamlit.testing.v1 import AppTest  # noqa: E402
 from bot import botclient  # noqa: E402
 import db  # noqa: E402
 import service  # noqa: E402
+from ui import common  # noqa: E402
 from reports import summarizer  # noqa: E402
 from tests.test_service import fake_ai  # noqa: E402
 
@@ -81,6 +83,21 @@ class UiTests(TempDbCase):
         if status == "approved":
             service.approve_report(self.user, mid, confirm_warnings=True)
         return mid
+
+    def test_draft_report_has_a_section_selector_per_agenda_item_and_setup_offers_previous_meetings(self):
+        prev = self.meeting("approved")
+        mid = self.meeting("draft")
+        at = self.app(m=mid)
+        section_boxes = [x for x in at.selectbox if x.key.startswith(f"ag_s_{mid}_")]
+        self.assertTrue(section_boxes)                                                    # ทุกเรื่องในรายงานเลือกวาระได้
+        self.assertEqual(section_boxes[0].value, "วาระ 4.2 · เรื่องพิจารณาใหม่")           # ที่ AI สรุปเริ่มที่ 4.2
+        previous_box = next(x for x in at.selectbox if x.key == f"prev_{mid}")
+        self.assertIn(f"(#{prev})", " ".join(previous_box.options))                        # เสนอเฉพาะการประชุมที่อนุมัติแล้ว
+        self.assertEqual(previous_box.value, "— ไม่มี / ไม่ใช้ข้อมูลครั้งก่อน —")
+        new = self.app(view="new")
+        new_box = next(x for x in new.selectbox if x.key == "new_previous_meeting")
+        self.assertEqual(new_box.value, "— ไม่มี / ไม่ใช้ข้อมูลครั้งก่อน —")              # หน้าสร้างใหม่เริ่มที่ "ไม่ใช้" แม้มีครั้งที่อนุมัติแล้ว ผู้ใช้เลือกเอง
+        self.assertIn(new_box.value, new_box.options)
 
     # ── หน้ารวมและหน้าสร้าง ──
 
@@ -146,19 +163,17 @@ class UiTests(TempDbCase):
 
     # ── หน้าการประชุมทุกสถานะ ต้องเรนเดอร์ได้และบอกขั้นตอนต่อไปถูก ──
 
-    def test_every_status_renders_with_the_right_next_step(self):
-        expect = {
-            "scheduled": "เริ่มบอทเข้าห้องประชุม", "recording": "บอทกำลังบันทึกการประชุม",
-            "transcript_review": "ตรวจทานข้อความที่บอทจับได้", "transcript_verified": "ให้ AI ร่างรายงานการประชุม",
-            "draft": "ตรวจ แก้ไข และอนุมัติรายงาน", "approved": "เสร็จแล้ว",
-        }
-        for status, step in expect.items():
+    def test_every_status_renders_the_meeting_page_with_status_line_and_four_tabs(self):
+        for status in ("scheduled", "recording", "transcript_review", "transcript_verified", "draft", "approved"):
             with self.subTest(status=status):
                 mid = self.meeting(status)
                 at = self.app(m=mid)
                 self.assertIn("ประชุมทดสอบหน้าเว็บ", at.title[0].value)
-                self.assertIn(step, " ".join(texts(at.info) + texts(at.success)))
-                self.assertEqual(len(at.tabs), 4)
+                self.assertEqual(len(at.tabs), 5)
+                body = " ".join(texts(at.caption))
+                self.assertIn(common.STATUS_LABEL[status], body)                      # บรรทัดสถานะยังอยู่ (ไม่มีลิงก์ Meet)
+                self.assertNotIn("meet.google.com", body)
+                self.assertFalse(any("ขั้นตอนต่อไป" in v for v in texts(at.info) + texts(at.success)))   # ไม่มีกล่องขั้นตอนต่อไปแล้ว
 
     def test_cannot_open_someone_elses_meeting(self):
         other = db.upsert_user("dev:other@x.com", "other@x.com", "คนอื่น", None)
@@ -176,6 +191,15 @@ class UiTests(TempDbCase):
         self.assertTrue(any("บริการบอทไม่ได้เปิดอยู่" in v for v in texts(at.error)))
         self.assertFalse(any("เริ่มบอท" in b.label for b in at.button if b.key and b.key.startswith("start_")))
         self.assertTrue(any("บริการบอทไม่ได้เปิดอยู่" in v for v in texts(at.sidebar.error)))
+
+    def test_live_status_is_either_waiting_to_be_admitted_or_reading_captions(self):
+        from ui import tab_bot
+        line = lambda text: {"t": "10:00:00", "text": text}
+        waiting = {"rows": [], "status": [line("กำลังเปิดเบราว์เซอร์…"), line("ส่งคำขอเข้าร่วมแล้ว — รอหัวหน้าห้องกดยอมรับ…")]}
+        self.assertEqual(tab_bot.phase_text(waiting), "รอให้กดยอมรับเข้าห้อง")
+        joined = {"rows": [], "status": waiting["status"] + [line("✅ เข้าห้องแล้วและเปิดคำบรรยายแล้ว (ตรวจยืนยันจากหน้าจอ)")]}
+        self.assertEqual(tab_bot.phase_text(joined), "เข้าห้องแล้ว — กำลังอ่านคำบรรยาย (CC)")
+        self.assertEqual(tab_bot.phase_text({"rows": [{"name": "A"}], "status": []}), "เข้าห้องแล้ว — กำลังอ่านคำบรรยาย (CC)")
 
     def test_start_button_calls_the_bot_service_for_this_meeting(self):
         mid = self.meeting("scheduled")
@@ -222,21 +246,48 @@ class UiTests(TempDbCase):
 
     # ── transcript ──
 
-    def test_transcript_tab_offers_merging_unregistered_names_and_verify(self):
+    def test_unconfirmed_people_can_be_matched_to_names_seen_in_the_room_or_set_absent(self):
         mid = self.meeting("transcript_review")
-        s = db.get_or_create_speaker(mid, "46 Alice Wonderland")             # Meet แสดงชื่อพ่วงเลข ไม่ตรงรายชื่อ
-        db.insert_segment(mid, s, 3, "ผมคือ Alice เอง")
+        silent = service.add_person(self.user, mid, "ธนาวีร์ ผู้ฟังเงียบ")            # ลงทะเบียนไว้ แต่ไม่ได้พูด
+        away = service.add_person(self.user, mid, "ศศิน ลากิจ")
+        db.record_room_names(mid, ["Thanawee BOONKERD"])                              # บอทเห็นชื่อนี้ในห้อง แต่ไม่ตรงกับใคร
+        room = next(p for p in db.list_speakers(mid) if p["display_name"] == "Thanawee BOONKERD")
         at = self.app(m=mid)
-        self.assertTrue(any("ไม่ตรงกับรายชื่อ" in v for v in texts(at.subheader)))
-        select = next(x for x in at.selectbox if x.key == f"merge_to_{s}")
-        alice = next(p for p in db.list_speakers(mid) if p["display_name"] == "Alice")["speaker_id"]
-        select.select(alice).run()
-        next(b for b in at.button if b.key == f"merge_{s}").click().run()
+        self.assertTrue(any("ยังไม่ยืนยันการเข้าร่วม" in v for v in texts(at.subheader)))
+        select = next(x for x in at.selectbox if x.key == f"unc_{silent}")
+        self.assertTrue(any("Thanawee BOONKERD" in o for o in select.options))        # ชื่อที่เห็นในห้องอยู่ในตัวเลือก
+        select.select(f"meet:{room['speaker_id']}").run()
+        next(b for b in at.button if b.key == f"unc_go_{silent}").click().run()
         people = {p["display_name"]: p for p in db.list_speakers(mid)}
-        self.assertNotIn("46 Alice Wonderland", people)
-        self.assertEqual(people["Alice"]["segment_count"], 2)                  # ข้อความย้ายไปอยู่กับ Alice
-        self.assertEqual(people["Alice"]["meet_alias"], "46 Alice Wonderland")
+        self.assertNotIn("Thanawee BOONKERD", people)                                # รวมเข้ากับคนที่ลงทะเบียนแล้ว
+        self.assertEqual((people["ธนาวีร์ ผู้ฟังเงียบ"]["attendance"], people["ธนาวีร์ ผู้ฟังเงียบ"]["meet_alias"]),
+                         ("present", "Thanawee BOONKERD"))
+        at = self.app(m=mid)                                                          # อีกคนเลือก "ไม่มา"
+        next(x for x in at.selectbox if x.key == f"unc_{away}").select("absent").run()
+        next(b for b in at.button if b.key == f"unc_go_{away}").click().run()
+        self.assertEqual(db.get_speaker(away)["attendance"], "absent")
 
+    def test_unmatched_meet_names_are_hidden_from_the_people_table_and_matched_in_the_single_panel(self):
+        mid = self.meeting("transcript_review")
+        carol = service.add_person(self.user, mid, "แครอล", None, "attendee", "invited")   # ลงทะเบียนไว้ ยังไม่ยืนยัน
+        s = db.get_or_create_speaker(mid, "46 Carol Wonderland")                          # Meet แสดงชื่อพ่วงเลข ไม่ตรงรายชื่อ
+        db.insert_segment(mid, s, 3, "ผมคือ Carol เอง")
+        at = self.app(m=mid)
+        from ui import tab_setup
+        shown = [p["display_name"] for p in tab_setup.table_people(service.get_detail(self.user, mid)["people"])]
+        self.assertNotIn("46 Carol Wonderland", shown)                                      # แท็บ ① ไม่แสดงชื่อที่พบจาก Meet ในตารางรายชื่อ
+        self.assertIn("แครอล", shown)
+        subheaders = texts(at.subheader)
+        self.assertTrue(any("ยังไม่ยืนยันการเข้าร่วม" in v for v in subheaders))
+        self.assertFalse(any("ยังจับคู่ไม่ได้" in v for v in subheaders))                    # ไม่มีหน้าจอจับคู่แยกอีกอัน
+        select = next(x for x in at.selectbox if x.key == f"unc_{carol}")
+        self.assertTrue(any("46 Carol Wonderland" in o for o in select.options))
+        select.select(f"meet:{s}").run()
+        next(b for b in at.button if b.key == f"unc_go_{carol}").click().run()
+        people = {p["display_name"]: p for p in db.list_speakers(mid)}
+        self.assertNotIn("46 Carol Wonderland", people)
+        self.assertEqual((people["แครอล"]["meet_alias"], people["แครอล"]["segment_count"], people["แครอล"]["attendance"]),
+                         ("46 Carol Wonderland", 1, "present"))                             # จำเป็นชื่อภาษาอังกฤษ ข้อความย้ายมา และนับว่าเข้าร่วม
         at = self.app(m=mid)
         next(b for b in at.button if b.key == f"verify_{mid}").click().run()
         self.assertEqual(db.get_meeting(mid)["status"], "transcript_verified")
@@ -244,7 +295,7 @@ class UiTests(TempDbCase):
     def test_transcript_tab_shows_conversation_grouped_into_speaker_turns(self):
         mid = self.meeting("transcript_review")            # สมชาย 1 ประโยค แล้ว Alice 1 ประโยค = 2 ช่วงพูด
         at = self.app(m=mid)
-        self.assertTrue(any("บทสนทนา (2 ช่วงพูด · 2 ประโยค)" in v for v in texts(at.subheader)))
+        self.assertTrue(any(v == "บทสนทนา" for v in texts(at.subheader)))
         body = " ".join(texts(at.markdown))
         self.assertIn("เห็นด้วยค่ะ", body)
         text = service.transcript_text(self.user, mid)
@@ -304,43 +355,105 @@ class UiTests(TempDbCase):
         with self.assertRaises(service.ServiceError):
             service.keep_existing_report(self.user, mid2)
 
-    def test_calendar_card_shows_clear_sent_status(self):
-        """กดส่งเข้า Calendar แล้วต้องเห็นสถานะ "ส่งเรียบร้อยแล้ว" ในการ์ดเอง และเห็นต่อเนื่องเมื่อเปิดหน้าใหม่"""
+    def test_calendar_tab_waits_for_a_report_then_hosts_the_approve_button(self):
+        early = self.meeting("transcript_review")
+        at = self.app(m=early)
+        self.assertTrue(any("ใช้ได้เมื่อมีรายงานฉบับร่างแล้ว" in v for v in texts(at.info)))
+        mid = self.meeting("draft")
+        at = self.app(m=mid)
+        self.assertFalse(any("ใช้ได้เมื่อมีรายงานฉบับร่างแล้ว" in v for v in texts(at.info)))
+        approve = [b for b in at.button if b.key == f"approve_{mid}"]
+        self.assertEqual(len(approve), 1)                                      # ปุ่มอนุมัติอยู่แท็บ ⑤ แท็บเดียว ไม่ซ้ำที่ ④
+        self.assertIn("ส่งเข้า Calendar", approve[0].label)
+
+    def test_unsaved_edits_are_flagged_and_block_approval_until_saved(self):
+        mid = self.meeting("draft")
+        at = self.app(m=mid)
+        self.assertFalse(any("ยังไม่ได้บันทึก" in v for v in texts(at.warning)))            # ยังไม่แก้ = ไม่เตือน
+        next(t for t in at.text_area if t.key == f"sum_{mid}_0").set_value("สรุปที่พิมพ์ค้างไว้ ยังไม่กดบันทึก").run()
+        self.assertTrue(any("แท็บ ④ รายงาน มีการแก้ไขที่ยังไม่ได้บันทึก" in v for v in texts(at.warning)))   # เตือนที่แท็บ ⑤
+        self.assertTrue(any("กด 💾 บันทึกร่าง ก่อนไปขั้นอนุมัติ" in v for v in texts(at.warning)))         # และที่แท็บ ④
+        self.assertTrue(next(b for b in at.button if b.key == f"approve_{mid}").disabled)               # อนุมัติไม่ได้จนกว่าจะบันทึก
+        next(b for b in at.button if b.key == f"savedraft_{mid}").click().run()
+        self.assertFalse(any("ยังไม่ได้บันทึก" in v for v in texts(at.warning)))
+        self.assertFalse(next(b for b in at.button if b.key == f"approve_{mid}").disabled)
+        self.assertEqual(db.get_report(mid)["content"]["summary"], "สรุปที่พิมพ์ค้างไว้ ยังไม่กดบันทึก")
+
+    def test_unsaved_comparison_helpers_ignore_whitespace_and_blank_cards(self):
+        from ui import tab_calendar, tab_report
+        content = {"summary": "สรุป", "other_matters": None,
+                   "agenda": [{"section": "consider_new", "title": "งบ", "discussion": "คุยงบ", "resolution": None}]}
+        same = [{"section": "consider_new", "title": " งบ ", "discussion": "คุยงบ ", "resolution": ""},
+                {"section": "consider_new", "title": " ", "discussion": "", "resolution": ""}]      # การ์ดว่างไม่นับ
+        self.assertFalse(tab_report.has_unsaved(content, "สรุป ", "", same))
+        self.assertTrue(tab_report.has_unsaved(content, "สรุปแก้", "", same))
+        self.assertTrue(tab_report.has_unsaved(content, "สรุป", "เรื่องอื่น", same))
+        changed = [{**same[0], "resolution": "เห็นชอบ"}]
+        self.assertTrue(tab_report.has_unsaved(content, "สรุป", "", changed))
+        saved = [{"description": "ส่งงาน", "assignee": "Alice", "due_date": "2026-10-16", "due_time": None, "due_time_end": None}]
+        self.assertFalse(tab_calendar.tasks_unsaved(saved, [dict(saved[0], description=" ส่งงาน ")]))
+        self.assertTrue(tab_calendar.tasks_unsaved(saved, [dict(saved[0], due_date="2026-10-17")]))
+        self.assertTrue(tab_calendar.tasks_unsaved(saved, saved + [dict(saved[0], description="งานใหม่")]))
+
+    def test_approval_from_the_calendar_tab_sends_events_and_reports_the_result(self):
         from integrations import calendar_sync
-        mid = self.meeting("approved")               # fake_ai: งาน 1 มีวันที่, งาน 2 ไม่มีวันที่
+        mid = self.meeting("draft")                       # fake_ai: งาน 1 มีวันที่ งาน 2 ไม่มีวันที่
         sent = []
 
-        def fake_sync(item_id, user_id, service=None):
-            sent.append(item_id)
-            db.mark_action_item_synced(item_id, "evt-" + str(item_id))
-            return "evt"
+        def fake_create(item_id, user_id, send_invites=False, service=None):
+            sent.append((item_id, send_invites))
+            db.mark_action_item_synced(item_id, "evt-" + str(item_id), "https://calendar.google.com/x")
+            return {"action": "created", "event_id": "evt", "link": None}
 
         with mock.patch.object(service, "calendar_connected", lambda user: True), \
-                mock.patch.object(calendar_sync, "sync_action_item", fake_sync):
+                mock.patch.object(calendar_sync, "create_event", fake_create):
+            results = service.approve_and_send(self.user, mid, confirm_warnings=True)     # เทียบเท่ากดยืนยันใน dialog
+            self.assertEqual(len(sent), 1)                                                  # ส่งเฉพาะงานที่มีวันที่
+            self.assertEqual(sent[0][1], False)                                             # ไม่ติ๊กส่งอีเมลเชิญ = ไม่ส่ง
+            self.assertEqual([r["ok"] for r in results], [True])
             at = self.app(m=mid)
-            self.assertTrue(any("ยังไม่ได้ส่งงานเข้า Calendar" in v for v in texts(at.caption)))
-            self.assertTrue(any("ไม่ได้ส่ง (ไม่มีวันที่กำหนด)" in v for v in texts(at.caption)))
-            button(at, "ส่งงานทั้งหมดเข้า Calendar").click().run()
-            self.assertEqual(len(sent), 1)                                        # ส่งเฉพาะงานที่มีวันที่
-            self.assertTrue(any("ส่งเข้า Google Calendar เรียบร้อยแล้ว 1 รายการ" in v for v in texts(at.success)))
-            self.assertTrue(any("ส่งเข้า Google Calendar แล้วครบ 1/1" in v for v in texts(at.success)))
-            self.assertTrue(button(at, "ส่งงานทั้งหมดเข้า Calendar").disabled)  # ส่งครบแล้ว กดซ้ำไม่ได้
-            at = self.app(m=mid)                                                  # เปิดหน้าใหม่ภายหลัง ยังเห็นสถานะ
-            self.assertTrue(any("แล้วครบ 1/1" in v for v in texts(at.success)))
+            self.assertTrue(any("อนุมัติแล้วโดย" in v for v in texts(at.success)))
+            self.assertFalse(any(b.key == f"approve_{mid}" for b in at.button))             # อนุมัติแล้ว ปุ่มอนุมัติหาย
+            self.assertFalse(any(b.key == f"sync_{mid}" for b in at.button))                # ส่งครบแล้ว ไม่มีปุ่มส่งซ้ำ
+            invite_box = next(c for c in at.checkbox if c.key == f"cal_invites_{mid}")
+            self.assertTrue(invite_box.disabled)                                           # ส่งครบแล้ว ติ๊กส่งอีเมลเชิญไม่ได้อีก
+            self.assertTrue(any(b.key == f"reopen_cal_{mid}" for b in at.button))
+            pdf_buttons = [d.proto.label for d in at.get("download_button") if "PDF" in d.proto.label]
+            self.assertEqual(pdf_buttons, ["⬇ ดาวน์โหลด PDF ฉบับเต็ม"])                      # PDF ฉบับเต็มอยู่แท็บ ⑤ ที่เดียว ไม่ซ้ำที่ ④
+        draft = self.meeting("draft")
+        drafts = [d.proto.label for d in self.app(m=draft).get("download_button") if "PDF" in d.proto.label]
+        self.assertEqual(drafts, ["⬇ ดาวน์โหลด PDF (ฉบับร่าง)"])                            # ฉบับร่างยังดาวน์โหลดที่แท็บ ④ เหมือนเดิม
 
-    def test_calendar_card_reports_failures_clearly(self):
+    def test_calendar_tab_offers_retry_for_unsent_items_and_shows_failures(self):
         from integrations import calendar_sync
-        mid = self.meeting("approved")
+        mid = self.meeting("approved")                    # อนุมัติด้วย service.approve_report: ยังไม่ได้ส่งนัด
 
-        def broken(item_id, user_id, service=None):
+        def broken(item_id, user_id, send_invites=False, service=None):
             raise RuntimeError("Google ปฏิเสธคำขอ")
 
         with mock.patch.object(service, "calendar_connected", lambda user: True), \
-                mock.patch.object(calendar_sync, "sync_action_item", broken):
+                mock.patch.object(calendar_sync, "create_event", broken):
             at = self.app(m=mid)
-            button(at, "ส่งงานทั้งหมดเข้า Calendar").click().run()
+            self.assertFalse(next(c for c in at.checkbox if c.key == f"cal_invites_{mid}").disabled)   # ยังมีงานค้าง ตัวเลือกยังมีผล
+            button(at, "ส่งงานที่ยังไม่ส่ง (1)").click().run()
             self.assertTrue(any("ส่งไม่สำเร็จ" in v and "Google ปฏิเสธคำขอ" in v for v in texts(at.error)))
-            self.assertFalse(any("เรียบร้อยแล้ว" in v for v in texts(at.success)))   # ไม่บอกว่าสำเร็จถ้าไม่สำเร็จ
+            self.assertFalse(any("ส่งเข้า Google Calendar เรียบร้อยแล้ว" in v for v in texts(at.success)))   # ไม่บอกว่าสำเร็จถ้าไม่สำเร็จ
+            self.assertTrue(any(b.key == f"sync_{mid}" for b in at.button))                  # ยังกดส่งซ้ำได้
+
+    def test_calendar_tab_table_labels_and_report_tab_tasks_are_read_only(self):
+        from ui import tab_calendar
+        items = [
+            {"description": "ส่งรายงาน", "assignee": "Alice", "due_date": "2026-10-16", "due_time": "13:00", "due_time_end": None,
+             "evidence": ["จะส่ง"], "google_calendar_event_id": "e1", "google_calendar_link": "https://calendar.google.com/x"},
+            {"description": "จองห้อง", "assignee": None, "due_date": "2026-10-20", "due_time": None, "due_time_end": None, "evidence": []},
+            {"description": "คิดดู", "assignee": None, "due_date": None, "due_time": None, "due_time_end": None, "evidence": []},
+        ]
+        df = tab_calendar.items_df(items, approved=True)
+        self.assertEqual(list(df["สถานะ"]), ["✓ ส่งแล้ว", "ยังไม่ส่ง", "ไม่มีวันที่ — จะไม่ส่ง"])
+        self.assertEqual(list(tab_calendar.items_df(items, approved=False)["สถานะ"])[1], "จะส่งตอนอนุมัติ")
+        from ui import tab_report
+        back = tab_report.actions_from_df(df)                                              # แปลงกลับเป็นงานของรายงานได้ (หลักฐานไม่หาย)
+        self.assertEqual((back[0]["description"], back[0]["due_date"], back[0]["evidence"]), ("ส่งรายงาน", "2026-10-16", ["จะส่ง"]))
 
     def test_after_editing_transcript_of_an_approved_report_ai_can_regenerate(self):
         """อนุมัติแล้ว -> ยกเลิกอนุมัติ -> กลับไปแก้ transcript -> ยืนยันใหม่ ต้องมีปุ่มให้ AI ร่างใหม่ (เคยไม่มีปุ่ม ค้างอยู่)"""
@@ -350,7 +463,7 @@ class UiTests(TempDbCase):
         service.verify_transcript(self.user, mid)
         self.assertEqual(db.get_meeting(mid)["status"], "transcript_verified")
         at = self.app(m=mid)
-        self.assertTrue(any("แก้และยืนยัน transcript ใหม่แล้ว" in v for v in texts(at.info)))
+        self.assertFalse(any("แก้และยืนยัน transcript ใหม่แล้ว" in v for v in texts(at.info)))   # ไม่มีกล่องอธิบายแล้ว
         regen = next(b for b in at.button if b.key == f"regen_{mid}")
         self.assertFalse(any(b.key == f"approve_{mid}" for b in at.button))     # ยังไม่ให้อนุมัติฉบับเก่า
         regen.click().run()                                                       # เปิด dialog ยืนยัน
@@ -371,21 +484,21 @@ class TableConversionTests(unittest.TestCase):
 
         from ui import tab_setup
         df = pd.DataFrame([
-            {"speaker_id": 5, "ชื่อ": "  สมชาย  ", "อีเมล": "a@x.com", "บทบาท": "ประธาน", "การเข้าร่วม": "เข้าร่วม", "สาเหตุที่ไม่มา": None, "ที่มา": "x", "ข้อความที่พูด": 2},
-            {"speaker_id": float("nan"), "ชื่อ": "คนใหม่", "อีเมล": None, "บทบาท": None, "การเข้าร่วม": None, "สาเหตุที่ไม่มา": float("nan"), "ที่มา": None, "ข้อความที่พูด": None},
+            {"speaker_id": 5, "ชื่อภาษาไทย": "  สมชาย  ", "อีเมล": "a@x.com", "บทบาท": "ประธาน", "การเข้าร่วม": "เข้าร่วม", "สาเหตุที่ไม่มา": None, "ที่มา": "x", "ข้อความที่พูด": 2},
+            {"speaker_id": float("nan"), "ชื่อภาษาไทย": "คนใหม่", "อีเมล": None, "บทบาท": None, "การเข้าร่วม": None, "สาเหตุที่ไม่มา": float("nan"), "ที่มา": None, "ข้อความที่พูด": None},
         ])
         rows = tab_setup.people_rows(df)
-        self.assertEqual(rows[0], {"speaker_id": 5, "display_name": "สมชาย", "email": "a@x.com", "role": "chair", "attendance": "present", "absence_reason": ""})
-        self.assertEqual(rows[1], {"speaker_id": None, "display_name": "คนใหม่", "email": "", "role": "attendee", "attendance": "invited", "absence_reason": ""})
+        self.assertEqual(rows[0], {"speaker_id": 5, "display_name": "สมชาย", "meet_alias": "", "email": "a@x.com", "role": "chair", "attendance": "present", "absence_reason": "", "position": ""})
+        self.assertEqual(rows[1], {"speaker_id": None, "display_name": "คนใหม่", "meet_alias": "", "email": "", "role": "attendee", "attendance": "invited", "absence_reason": "", "position": ""})
 
     def test_new_meeting_people_skip_blank_rows(self):
         import pandas as pd
 
         from ui import new_meeting
-        df = pd.DataFrame([{"ชื่อ": "", "อีเมล": "", "บทบาท": "ประธาน", "การเข้าร่วม": "เข้าร่วม"},
-                           {"ชื่อ": "Bob", "อีเมล": "", "บทบาท": "เลขา", "การเข้าร่วม": "ไม่มา", "สาเหตุที่ไม่มา": "ลาป่วย"}])
+        df = pd.DataFrame([{"ชื่อภาษาไทย": "", "อีเมล": "", "บทบาท": "ประธาน", "การเข้าร่วม": "เข้าร่วม"},
+                           {"ชื่อภาษาไทย": "Bob", "อีเมล": "", "บทบาท": "เลขา", "การเข้าร่วม": "ไม่มา", "สาเหตุที่ไม่มา": "ลาป่วย", "ตำแหน่ง": " อาจารย์ "}])
         self.assertEqual(new_meeting.people_from_df(df),
-                         [{"display_name": "Bob", "email": None, "role": "secretary", "attendance": "absent", "absence_reason": "ลาป่วย"}])
+                         [{"display_name": "Bob", "meet_alias": None, "email": None, "role": "secretary", "attendance": "absent", "absence_reason": "ลาป่วย", "position": "อาจารย์"}])
 
     def test_segment_table_rows(self):
         import pandas as pd
@@ -403,15 +516,13 @@ class TableConversionTests(unittest.TestCase):
 
         import pandas as pd
 
-        from ui import tab_report
+        from ui import tab_calendar, tab_report
         items = [{"description": "ส่งรายงาน", "assignee": "Alice", "due_date": "2026-10-09", "due_time": "13:00",
-                  "due_time_end": None, "evidence": ["จะส่ง"], "grounded": True, "calendar_synced": True},
+                  "due_time_end": None, "evidence": ["จะส่ง"], "grounded": True},
                  {"description": "ไม่มีผู้รับผิดชอบ", "assignee": None, "due_date": None, "due_time": None,
                   "due_time_end": None, "evidence": [], "grounded": None}]
-        df = tab_report.actions_df(items)
+        df = tab_calendar.items_df(items, approved=False)
         self.assertEqual(df.loc[0, "วันที่"], datetime.date(2026, 10, 9))
-        self.assertEqual(df.loc[0, "Calendar"], "✓ ส่งแล้ว")
-        self.assertIn("⚠ ไม่มีข้อความอ้างอิง", df.loc[1, "หลักฐานจาก transcript"])
         back = tab_report.actions_from_df(df)
         self.assertEqual([(b["description"], b["assignee"], b["due_date"], b["due_time"], b["due_time_end"], b["evidence"]) for b in back],
                          [("ส่งรายงาน", "Alice", "2026-10-09", "13:00", None, ["จะส่ง"]),
@@ -443,17 +554,16 @@ class TableConversionTests(unittest.TestCase):
         self.assertEqual(common.md_escape("a*b_c$d"), r"a\*b\_c\$d")
         self.assertEqual(common.md_escape(None), "")
 
-    def test_meet_link_is_shown_without_backslashes_and_unsafe_text_is_still_escaped(self):
-        from ui import common
-        self.assertEqual(common.meet_link_text("https://meet.google.com/ccz-cccc-moz?pli=1"),
-                         "https://meet.google.com/ccz-cccc-moz")
-        self.assertEqual(common.meet_link_text("not a *meet* link"), r"not a \*meet\* link")
+    def test_table_height_fits_the_rows_and_scrolls_inside_when_long(self):
+        self.assertEqual(common.table_height(1), 73)                      # หัวตาราง + 1 แถว ไม่เหลือที่ว่างเปล่า
+        self.assertGreater(common.table_height(1, spare_rows=2), common.table_height(1))
+        self.assertEqual(common.table_height(500, max_px=420), 420)       # ยาวกว่านั้นเลื่อนในตาราง
 
-    def test_progress_text_numbers_match_the_four_tabs(self):
+    def test_progress_text_numbers_match_the_five_tabs(self):
         from ui import common
-        self.assertIn("ขั้นที่ 1 จาก 4", common.progress_text("scheduled"))
-        self.assertIn("ขั้นที่ 3 จาก 4", common.progress_text("transcript_review"))
-        self.assertIn("ขั้นที่ 4 จาก 4", common.progress_text("draft"))
+        self.assertIn("ขั้นที่ 1 จาก 5", common.progress_text("scheduled"))
+        self.assertIn("ขั้นที่ 3 จาก 5", common.progress_text("transcript_review"))
+        self.assertIn("ขั้นที่ 4 จาก 5", common.progress_text("draft"))
         self.assertNotIn("ขั้นที่", common.progress_text("approved"))
 
 

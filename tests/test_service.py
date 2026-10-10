@@ -3,6 +3,7 @@
 AI ร่าง (ใช้ AI ปลอม) -> แก้ -> อนุมัติ -> PDF -> Calendar (ใช้ Calendar ปลอม) ไม่เรียก Gemini/Google จริง
 """
 
+import datetime
 import json
 import unittest
 import uuid
@@ -23,7 +24,7 @@ def fake_ai(prompt, schema=None):
     return json.dumps({
         "summary": "ที่ประชุมอนุมัติงบประมาณ",
         "agenda": [{
-            "title": "งบประมาณ", "discussion": "นายสมชายเสนอให้อนุมัติงบ", "resolution": "อนุมัติงบสองหมื่นบาท",
+            "section": "consider_new", "title": "งบประมาณ", "discussion": "นายสมชายเสนอให้อนุมัติงบ", "resolution": "อนุมัติงบสองหมื่นบาท",
             "evidence": ["ผมเสนอให้อนุมัติงบสองหมื่นบาท"],
         }],
         "other_matters": None,
@@ -74,19 +75,41 @@ class GroupTurnsTests(unittest.TestCase):
         self.assertEqual(service.group_turns([]), [])
 
 
+class FakeHttpError(Exception):
+    """แทน googleapiclient.errors.HttpError (ใช้แค่ resp.status)"""
+
+    def __init__(self, status):
+        super().__init__(f"HTTP {status}")
+        self.resp = type("Resp", (), {"status": status})()
+
+
 class FakeCalendar:
     def __init__(self):
-        self.inserted = []
+        self.inserted = []      # (body, sendUpdates)
+        self.deleted = []       # eventId
+        self.delete_error = None  # ตั้งเป็นสถานะ HTTP เพื่อจำลอง Google ตอบ error ตอนลบ
+        self._last = None
 
     def events(self):
         return self
 
     def insert(self, calendarId, body, sendUpdates):  # noqa: N803
         self.inserted.append((body, sendUpdates))
+        self._last = ("insert", f"evt{len(self.inserted)}")
+        return self
+
+    def delete(self, calendarId, eventId, sendUpdates):  # noqa: N803
+        self.deleted.append(eventId)
+        self._last = ("delete", eventId)
         return self
 
     def execute(self):
-        return {"id": f"evt{len(self.inserted)}"}
+        kind, event_id = self._last
+        if kind == "delete":
+            if self.delete_error:
+                raise FakeHttpError(self.delete_error)
+            return {}
+        return {"id": event_id, "htmlLink": f"https://calendar.google.com/event?eid={event_id}"}
 
 
 class ServiceTests(TempDbCase):
@@ -225,6 +248,222 @@ class ServiceTests(TempDbCase):
         self.assertEqual({a["name"]: a["reason"] for a in h["absent"]}, {"Bob": "ลาพักร้อน", "คุณใหม่": "ติดธุระ"})
         self.assertEqual([a["name"] for a in h["guests"]], ["Alice"])
 
+    # ── วาระ 5 หมวด + เติมจากการประชุมครั้งก่อน ──
+
+    def approved_meeting(self):
+        mid = self.draft()
+        service.approve_report(self.owner, mid, confirm_warnings=True)
+        return mid
+
+    def test_agenda_items_keep_their_section_and_only_ai_sections_need_evidence(self):
+        mid = self.draft()
+        content = service.get_report_view(self.owner, mid)["report"]["content"]
+        agenda = list(content["agenda"])
+        agenda += [
+            {"section": "followup", "title": "ติดตามงานเดิม", "discussion": "", "resolution": "อยู่ระหว่างดำเนินการ", "evidence": []},
+            {"section": "inform", "title": "แจ้งงานเปิดบ้าน", "discussion": "วันศุกร์หน้า", "resolution": None, "evidence": []},
+            {"section": "approve_prev", "title": "รับรองรายงานการประชุมครั้งที่ 1/2569", "discussion": "",
+             "resolution": "ที่ประชุมรับรอง", "evidence": []},
+            {"section": "bogus", "title": "ค่าผิดต้องกลับเป็นค่าเริ่มต้น", "discussion": "x", "resolution": None, "evidence": []},
+        ]
+        cleaned = service.save_report_draft(self.owner, mid, {**content, "agenda": agenda})
+        stored = db.get_report(mid)["content"]["agenda"]
+        order = [db.AGENDA_SECTIONS.index(a["section"]) for a in stored]
+        self.assertEqual(order, sorted(order))                                   # เก็บเรียงตามหมวดวาระ
+        by_title = {a["title"]: a["section"] for a in stored}
+        self.assertEqual(by_title["ค่าผิดต้องกลับเป็นค่าเริ่มต้น"], "consider_new")
+        self.assertEqual(by_title["แจ้งงานเปิดบ้าน"], "inform")
+        for i, a in enumerate(cleaned["agenda"]):                                # มติที่คนกรอกเองในหมวดที่ไม่ใช่ของ AI ไม่ถูกเตือนเรื่องหลักฐาน
+            if a["section"] in ("followup", "approve_prev"):
+                self.assertFalse([w for w in cleaned["warnings"] if w["path"].startswith(f"agenda[{i}]")], a["title"])
+
+    def test_previous_meeting_must_be_an_approved_meeting_you_manage(self):
+        prev = self.approved_meeting()
+        unapproved = self.new_meeting()
+        cur = self.new_meeting(previous_meeting_id=prev)
+        self.assertEqual(service.get_detail(self.owner, cur)["meeting"]["previous_meeting_id"], prev)
+        offered = [m["meeting_id"] for m in service.previous_meeting_choices(self.owner)]
+        self.assertIn(prev, offered)
+        self.assertNotIn(unapproved, offered)                                                # เสนอเฉพาะที่อนุมัติรายงานแล้ว
+        self.assertNotIn(cur, [m["meeting_id"] for m in service.previous_meeting_choices(self.owner, cur)])   # ไม่เสนอตัวเอง
+        self.assertEqual(service.previous_meeting_choices(self.other), [])                   # ไม่เห็นการประชุมของคนอื่น
+        for bad in (unapproved, cur, 999999, "abc"):                                          # ยังไม่อนุมัติ / ตัวเอง / ไม่มี / ไม่ใช่เลข
+            with self.assertRaises(ServiceError):
+                service.update_meeting(self.owner, cur, previous_meeting_id=bad)
+        service.update_meeting(self.owner, cur, previous_meeting_id=None)
+        self.assertIsNone(service.get_detail(self.owner, cur)["meeting"]["previous_meeting_id"])
+        with self.assertRaises(ServiceError):
+            self.new_meeting(previous_meeting_id=unapproved)
+
+    def generate_for(self, **over):
+        mid = self.new_meeting(**over)
+        self.record(mid)
+        service.verify_transcript(self.owner, mid)
+        service.generate_report(self.owner, mid, generate=fake_ai)
+        return mid
+
+    def test_generating_a_report_prefills_sections_2_3_and_4_1_from_the_previous_meeting(self):
+        prev = self.approved_meeting()
+        prev_report = db.get_report(prev)["content"]
+        prev_meeting = db.get_meeting(prev)
+        cur = self.generate_for(previous_meeting_id=prev, meeting_no="4/2569")
+        report = db.get_report(cur)
+        by = {}
+        for a in report["content"]["agenda"]:
+            by.setdefault(a["section"], []).append(a)
+        approve = by["approve_prev"][0]["title"]
+        self.assertIn("ครั้งที่ 3/2569", approve)                                          # มาจาก meeting_no ของครั้งก่อน
+        self.assertIn(str(prev_meeting["started_at"].year + 543), approve)
+        self.assertEqual([a["title"] for a in by["followup"]], [x["description"] for x in prev_report["action_items"]])
+        self.assertIn("ผู้รับผิดชอบ: Alice", by["followup"][0]["discussion"])
+        self.assertNotIn("consider_old", by)                                               # ครั้งก่อนทุกวาระมีมติ จึงไม่มีเรื่องค้าง
+        self.assertEqual([a["title"] for a in by["consider_new"]], ["งบประมาณ"])           # ที่ AI สรุปยังอยู่ 4.2
+        self.assertEqual({a.get("section") for a in report["ai_snapshot"]["agenda"]}, {"consider_new"})   # snapshot เก็บเฉพาะที่ AI ร่าง
+        alone = self.generate_for()                                                        # ไม่เลือกครั้งก่อน = ไม่มีหมวดที่เติมให้
+        self.assertEqual({a["section"] for a in db.get_report(alone)["content"]["agenda"]}, {"consider_new"})
+
+    def test_unresolved_agenda_items_of_the_previous_meeting_become_section_4_1(self):
+        prev = self.draft()
+        content = service.get_report_view(self.owner, prev)["report"]["content"]
+        content["agenda"].append({"section": "consider_new", "title": "เรื่องที่ยังไม่ตัดสินใจ", "discussion": "รอข้อมูลเพิ่ม",
+                                  "resolution": None, "evidence": ["ผมเสนอให้อนุมัติงบสองหมื่นบาท"]})
+        content["agenda"].append({"section": "inform", "title": "เรื่องแจ้งทราบ", "discussion": "x", "resolution": None, "evidence": []})
+        service.save_report_draft(self.owner, prev, content)
+        service.approve_report(self.owner, prev, confirm_warnings=True)
+        cur = self.generate_for(previous_meeting_id=prev)
+        old = [a for a in db.get_report(cur)["content"]["agenda"] if a["section"] == "consider_old"]
+        self.assertEqual([(a["title"], a["discussion"], a["resolution"]) for a in old],
+                         [("เรื่องที่ยังไม่ตัดสินใจ", "รอข้อมูลเพิ่ม", None)])         # เรื่องแจ้งทราบ (inform) ไม่ถูกนับเป็นเรื่องค้าง
+
+    def test_pdf_places_each_item_under_its_own_agenda_heading(self):
+        import io
+
+        from pypdf import PdfReader
+
+        from reports import pdf_report
+        mid = self.new_meeting()
+        content = {"summary": "", "other_matters": "เรื่องอื่นทดสอบ", "action_items": [], "agenda": [
+            {"section": "inform", "title": "ก_แจ้งทราบ", "discussion": "รายละเอียดแจ้ง", "resolution": None, "evidence": []},
+            {"section": "approve_prev", "title": "รับรองรายงานการประชุมครั้งที่ 3/2569 เมื่อวันที่ 2 ตุลาคม 2569",
+             "discussion": "", "resolution": "ที่ประชุมรับรองรายงานทดสอบ", "evidence": []},
+            {"section": "followup", "title": "ข_สืบเนื่อง", "discussion": "ผู้รับผิดชอบ: Alice", "resolution": None, "evidence": []},
+            {"section": "consider_old", "title": "ค_ค้างพิจารณา", "discussion": "", "resolution": "เลื่อนไปครั้งหน้า", "evidence": []},
+            {"section": "consider_new", "title": "ง_พิจารณาใหม่", "discussion": "", "resolution": "อนุมัติ", "evidence": []},
+        ]}
+        data = pdf_report.build_minutes_pdf(db.get_meeting(mid), db.list_speakers(mid), content)
+        text = chr(10).join(pg.extract_text() for pg in PdfReader(io.BytesIO(data)).pages)
+        order = ["ระเบียบวาระที่ 1", "ก_แจ้งทราบ", "รายละเอียดแจ้ง", "ระเบียบวาระที่ 2", "รับรองรายงานการประชุมครั้งที่ 3/2569",
+                 "ที่ประชุมรับรองรายงานทดสอบ", "ระเบียบวาระที่ 3", "ข_สืบเนื่อง", "ระเบียบวาระที่ 4", "4.1", "ค_ค้างพิจารณา",
+                 "เลื่อนไปครั้งหน้า", "4.2", "ง_พิจารณาใหม่", "ระเบียบวาระที่ 5", "เรื่องอื่นทดสอบ"]
+        pos = -1
+        for marker in order:
+            nxt = text.find(marker, pos + 1)
+            self.assertGreater(nxt, pos, f"ไม่พบ/ลำดับผิด: {marker!r}")
+            pos = nxt
+        self.assertIn("1.1 ก_แจ้งทราบ", text)
+        self.assertIn("4.1.1", text)
+        self.assertIn("4.2.1", text)
+
+    def test_position_is_saved_trimmed_and_shown_in_the_pdf_when_present(self):
+        import io
+
+        from pypdf import PdfReader
+
+        from reports import pdf_report
+        mid = self.new_meeting(people=[
+            {"display_name": "ต้น", "role": "chair", "attendance": "present", "position": "  หัวหน้าสาขาวิชา  "},
+            {"display_name": "ฟ้า", "role": "secretary", "attendance": "present"},
+            {"display_name": "มด", "attendance": "present", "position": ""},
+            {"display_name": "คุณแขก", "role": "guest", "attendance": "present", "position": "ผู้ประสานงานโครงการ"},
+            {"display_name": "คุณแขกสอง", "role": "guest", "attendance": "present"},
+        ])
+        people = {p["display_name"]: p for p in db.list_speakers(mid)}
+        self.assertEqual(people["ต้น"]["position"], "หัวหน้าสาขาวิชา")      # ตัดช่องว่าง
+        self.assertIsNone(people["ฟ้า"]["position"])
+        self.assertIsNone(people["มด"]["position"])                          # ว่าง = None
+        # แก้ตำแหน่งผ่านตารางผู้เข้าร่วมในหน้าเว็บ
+        rows = [{"speaker_id": p["speaker_id"], "display_name": p["display_name"], "email": p["email"] or "",
+                 "role": p["role"], "attendance": p["attendance"], "absence_reason": "",
+                 "position": p["position"] or ""} for p in people.values()]
+        next(r for r in rows if r["display_name"] == "มด")["position"] = "อาจารย์"
+        self.assertEqual(service.apply_people_table(self.owner, mid, rows)["errors"], [])
+        self.assertEqual({p["display_name"]: p["position"] for p in db.list_speakers(mid)},
+                         {"ต้น": "หัวหน้าสาขาวิชา", "ฟ้า": None, "มด": "อาจารย์",
+                          "คุณแขก": "ผู้ประสานงานโครงการ", "คุณแขกสอง": None})
+        header = service.get_detail(self.owner, mid)["header"]
+        self.assertEqual({a["name"]: a["position"] for a in header["attendees"]},
+                         {"ต้น": "หัวหน้าสาขาวิชา", "ฟ้า": None, "มด": "อาจารย์"})
+        self.assertEqual({a["name"]: a["position"] for a in header["guests"]},
+                         {"คุณแขก": "ผู้ประสานงานโครงการ", "คุณแขกสอง": None})
+        data = pdf_report.build_minutes_pdf(db.get_meeting(mid), db.list_speakers(mid), {"agenda": [], "action_items": []})
+        text = chr(10).join(pg.extract_text() for pg in PdfReader(io.BytesIO(data)).pages)
+        self.assertIn("หัวหน้าสาขาวิชา", text)           # กรอกตำแหน่งไว้ = แสดงตำแหน่งนั้น
+        self.assertIn("อาจารย์", text)
+        self.assertIn("เลขานุการ", text)                  # ไม่ได้กรอก = ใช้บทบาทในที่ประชุมเหมือนเดิม
+        self.assertIn("ผู้ประสานงานโครงการ", text)         # ผู้เข้าร่วมที่ไม่ใช่กรรมการก็แสดงถ้ากรอกไว้
+
+    def test_set_person_attendance_works_while_editable_and_not_after_approval(self):
+        mid = self.new_meeting()
+        bob = next(p for p in db.list_speakers(mid) if p["display_name"] == "Bob")
+        service.set_person_attendance(self.owner, bob["speaker_id"], "present")
+        self.assertEqual(db.get_speaker(bob["speaker_id"])["attendance"], "present")
+        with self.assertRaises(ServiceError):
+            service.set_person_attendance(self.owner, bob["speaker_id"], "maybe")
+        with self.assertRaises(ServiceError):
+            service.set_person_attendance(self.other, bob["speaker_id"], "absent")        # คนนอกสิทธิ์
+        done = self.approved_meeting()
+        someone = db.list_speakers(done)[0]
+        with self.assertRaises(ServiceError):
+            service.set_person_attendance(self.owner, someone["speaker_id"], "absent")    # อนุมัติแล้วแก้ไม่ได้
+
+    # ── ชื่อภาษาอังกฤษ / ชื่อที่ Meet แสดง (meet_alias) ──
+
+    def test_meet_name_given_at_registration_matches_speakers_and_the_report_keeps_the_thai_name(self):
+        mid = self.new_meeting(people=[
+            {"display_name": "ธนาวีร์ บุญเกิด", "meet_alias": "  Thanawee BOONKERD ", "email": "thanawee.b@ku.th",
+             "role": "chair", "attendance": "present"},
+            {"display_name": "ภาม", "role": "secretary", "attendance": "present"},
+            {"display_name": "ศศิน", "meet_alias": "Sasin TIENDEE"},
+        ])
+        people = {p["display_name"]: p for p in db.list_speakers(mid)}
+        self.assertEqual(people["ธนาวีร์ บุญเกิด"]["meet_alias"], "Thanawee BOONKERD")       # ตัดช่องว่าง
+        self.assertIsNone(people["ภาม"]["meet_alias"])
+        speaker = db.get_or_create_speaker(mid, "Sasin TIENDEE (You)")                    # ชื่อที่ Meet แสดง -> คนที่ลงทะเบียนไว้
+        self.assertEqual(speaker, people["ศศิน"]["speaker_id"])
+        self.assertEqual(db.get_speaker(speaker)["attendance"], "present")
+        self.assertEqual(db.record_room_names(mid, ["Thanawee BOONKERD"]), {"marked": [], "new": []})   # ประธานเข้าร่วมอยู่แล้ว ไม่สร้างซ้ำ
+        header = service.get_detail(self.owner, mid)["header"]
+        self.assertEqual(header["chair"], "ธนาวีร์ บุญเกิด")                                  # รายงานใช้ชื่อไทย ไม่ใช่ชื่อใน Meet
+        rows = [{"speaker_id": p["speaker_id"], "display_name": p["display_name"], "email": p["email"] or "", "role": p["role"],
+                 "attendance": p["attendance"], "absence_reason": "", "position": "", "meet_alias": p["meet_alias"] or ""}
+                for p in db.list_speakers(mid)]
+        next(r for r in rows if r["display_name"] == "ภาม")["meet_alias"] = "Pharm S"        # แก้ชื่อใน Meet ผ่านตาราง
+        self.assertEqual(service.apply_people_table(self.owner, mid, rows)["errors"], [])
+        self.assertEqual(next(p for p in db.list_speakers(mid) if p["display_name"] == "ภาม")["meet_alias"], "Pharm S")
+
+    def test_action_table_rows_are_tall_enough_for_wrapped_text_and_dates_are_thai(self):
+        from fpdf import FPDF
+        from reports import pdf_report
+        pdf = pdf_report._ReportPDF(draft=False, watermark="")
+        pdf.add_page()
+        pdf.set_font(pdf_report.FONT, "", 14)
+        width = 290
+        inner = width - 2 * pdf_report.CELL_PAD
+        text = "เตรียมพื้นที่ทำงานให้เรียบร้อยเพื่อรองรับผู้ตรวจจากส่วนกลางในสัปดาห์หน้า"
+        # ข้อความที่พอดีช่องเต็มความกว้าง แต่ยาวเกินความกว้างข้างในช่อง ต้องนับเป็น 2 บรรทัดเพราะตอนวาดใช้ความกว้างข้างใน
+        fit = ""
+        for ch in text:
+            if pdf.get_string_width(fit + ch) > inner:
+                break
+            fit += ch
+        spill = fit + text[len(fit):len(fit) + 3]
+        self.assertEqual(pdf_report._cell_lines(pdf, width, fit, 20.0), 1)
+        self.assertGreaterEqual(pdf_report._cell_lines(pdf, width, spill, 20.0), 2)
+        self.assertEqual(pdf_report._fmt_due({"due_date": "2026-10-16"}), "16 ตุลาคม 2569")
+        self.assertEqual(pdf_report._fmt_due({"due_date": "2026-10-16", "due_time": "13:00", "due_time_end": "14:00"}),
+                         "16 ตุลาคม 2569 13:00-14:00")
+        self.assertEqual(pdf_report._fmt_due({"due_date": None}), "-")
+
     def test_pdf_follows_the_meeting_minutes_form(self):
         import io
         from pypdf import PdfReader
@@ -301,6 +540,22 @@ class ServiceTests(TempDbCase):
         self.assertEqual((d["header"]["chair"], d["header"]["secretary"]), ("Alice", "Carol"))
         self.assertEqual({p["display_name"]: p["email"] for p in d["people"]}["Bob"], "bob@x.com")
         self.assertEqual(sorted(p["display_name"] for p in d["people"]), ["Alice", "Bob", "Carol", "Dave", "สมชาย ใจดี"])
+
+    def test_people_table_leaves_meet_names_alone_and_rematches_after_the_english_name_is_added(self):
+        mid = self.new_meeting()
+        silent = db.get_or_create_speaker(mid, "BOZZISX")                      # Meet เห็นชื่อนี้ก่อนที่จะมีใครกรอกชื่อภาษาอังกฤษ
+        room_only = db.get_or_create_speaker(mid, "Someone Else")
+        rows = [r for r in self.table_rows(mid) if r.get("speaker_id") not in (silent, room_only)]   # ตารางในหน้าเว็บไม่มีแถวพบจาก Meet
+        result = service.apply_people_table(self.owner, mid, rows)             # บันทึกโดยไม่แก้อะไร
+        self.assertEqual((result["deleted"], result["matched"], result["errors"]), (0, 0, []))
+        self.assertEqual({db.get_speaker(silent)["display_name"], db.get_speaker(room_only)["display_name"]},
+                         {"BOZZISX", "Someone Else"})                          # ชื่อจาก Meet ไม่ถูกลบเพราะไม่อยู่ในตาราง
+        bob = next(r for r in rows if r["display_name"] == "Bob")
+        bob["meet_alias"] = "bozzisx"                                          # พิมพ์เล็ก ตรงกับ "BOZZISX" โดยไม่สนตัวพิมพ์
+        result = service.apply_people_table(self.owner, mid, rows)
+        self.assertEqual(result["matched"], 1)
+        self.assertIsNone(db.get_speaker(silent))                              # รวมเข้ากับ Bob แล้ว
+        self.assertIsNotNone(db.get_speaker(room_only))                        # ที่ยังไม่ตรงคงอยู่
 
     def test_people_table_reports_row_errors_without_losing_the_rest(self):
         mid = self.new_meeting()
@@ -437,7 +692,7 @@ class ServiceTests(TempDbCase):
         self.assertIs(view["report"]["content"]["agenda"][0]["grounded"], True)
         item = view["report"]["content"]["action_items"][0]
         self.assertIn("action_item_id", item)                # แถวงานจริงในฐานข้อมูล (ไม่ใช่ JSON)
-        self.assertFalse(item["calendar_synced"])
+        self.assertIsNone(item["google_calendar_event_id"])
 
     def test_regenerating_replaces_the_draft_instead_of_stacking(self):
         mid = self.draft()
@@ -504,9 +759,12 @@ class ServiceTests(TempDbCase):
         def clean_ai(prompt, schema=None):
             body = json.loads(fake_ai(prompt))
             body["action_items"] = body["action_items"][:1]
+            body["action_items"][0]["due_date"] = (datetime.date.today() + datetime.timedelta(days=7)).isoformat()   # วันประชุมคือวันนี้ กำหนดส่งต้องไม่อยู่ก่อนวันประชุม
             return json.dumps(body)
         service.generate_report(self.owner, mid, generate=clean_ai)
-        self.assertEqual(service.approval_warnings(self.owner, mid), [], service.approval_warnings(self.owner, mid))
+        view = service.get_report_view(self.owner, mid)
+        left = view["report"]["content"]["warnings"] + view["header_warnings"]
+        self.assertEqual(left, [], left)
         service.approve_report(self.owner, mid)           # ไม่มีอะไรต้องยืนยัน
 
     def test_pdf_watermark_until_approved(self):
@@ -539,52 +797,111 @@ class ServiceTests(TempDbCase):
 
     # ── Calendar ──
 
-    def test_calendar_sync_only_after_approval_with_attendees(self):
-        mid = self.draft()
-        fake = FakeCalendar()
-        content = service.get_report_view(self.owner, mid)["report"]["content"]
-        content["action_items"][1].update(assignee="Bob", due_date="2026-10-12")
-        service.save_report_draft(self.owner, mid, content)
-        first = service.get_report_view(self.owner, mid)["report"]["content"]["action_items"][0]["action_item_id"]
-        with self.assertRaises(ServiceError) as cm:
-            service.sync_all(self.owner, mid)                                    # ยังไม่อนุมัติ
-        self.assertEqual(cm.exception.kind, "conflict")
-        with self.assertRaises(ServiceError):
-            service.sync_action_item(self.owner, first)
-        service.approve_report(self.owner, mid, confirm_warnings=True)
+    def calendar_env(self, fake):
+        return mock.patch.object(calendar_sync, "build", lambda *a, **k: fake), \
+            mock.patch.object(calendar_sync.calendar_auth, "get_credentials", lambda uid: object())
 
-        with mock.patch.object(calendar_sync, "build", lambda *a, **k: fake), \
-             mock.patch.object(calendar_sync.calendar_auth, "get_credentials", lambda uid: object()):
-            results = service.sync_all(self.owner, mid)
-            self.assertTrue(all(r["ok"] for r in results), results)
-            self.assertEqual(len(fake.inserted), 2)
-            alice_ev = next(b for b, _ in fake.inserted if b["summary"] == "ส่งรายงานความก้าวหน้า")
-            self.assertEqual(alice_ev["attendees"], [{"email": "alice@x.com"}])
-            self.assertEqual(alice_ev["start"]["dateTime"], "2026-10-09T13:00:00")
-            self.assertEqual({s for _, s in fake.inserted}, {"none"})            # ค่าเริ่มต้นไม่ส่งอีเมลเชิญจริง
-            again = service.sync_all(self.owner, mid)                           # ส่งซ้ำไม่สร้าง event ซ้ำ
-            self.assertTrue(all(r.get("already") for r in again))
-            self.assertEqual(len(fake.inserted), 2)
-            with self.assertRaises(ServiceError) as cm:                          # คนอื่นแตะงานนี้ไม่ได้
-                service.sync_action_item(self.other, first)
+    def test_approve_and_send_creates_events_for_dated_items_with_attendees_and_stores_links(self):
+        mid = self.draft()                       # งาน 1: ส่งรายงานความก้าวหน้า (Alice, มีวันที่) งาน 2: ไม่มีวันที่
+        fake = FakeCalendar()
+        with self.assertRaises(ServiceError) as cm:
+            service.sync_calendar(self.owner, mid)                                   # ยังไม่อนุมัติ
+        self.assertEqual(cm.exception.kind, "conflict")
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:
+            results = service.approve_and_send(self.owner, mid, confirm_warnings=True)
+            self.assertEqual([(r["ok"], r["action"]) for r in results], [(True, "created")])   # งานไม่มีวันที่ถูกข้าม ไม่เดาวัน
+            body, send = fake.inserted[0]
+            self.assertEqual((body["attendees"], send), ([{"email": "alice@x.com"}], "none"))  # ค่าเริ่มต้นไม่ส่งอีเมลเชิญจริง
+            self.assertEqual(body["start"]["dateTime"], "2026-10-09T13:00:00")
+            self.assertEqual(db.get_meeting(mid)["status"], "approved")
+            items = db.get_report(mid)["content"]["action_items"]
+            self.assertEqual((items[0]["google_calendar_event_id"], items[0]["google_calendar_link"]),
+                             ("evt1", "https://calendar.google.com/event?eid=evt1"))
+            self.assertIsNone(items[1]["google_calendar_event_id"])
+            self.assertEqual(service.sync_calendar(self.owner, mid), [])                       # ส่งครบแล้ว ไม่ส่งซ้ำ
+            self.assertEqual(len(fake.inserted), 1)
+            with self.assertRaises(ServiceError) as cm:                                         # คนอื่นแตะไม่ได้
+                service.sync_calendar(self.other, mid)
             self.assertEqual(cm.exception.kind, "not_found")
 
-    def test_calendar_item_without_a_date_is_skipped_not_guessed(self):
-        mid = self.draft()                                                       # งานที่สองไม่มีวันที่
-        service.approve_report(self.owner, mid, confirm_warnings=True)
-        fake = FakeCalendar()
-        with mock.patch.object(calendar_sync, "build", lambda *a, **k: fake), \
-             mock.patch.object(calendar_sync.calendar_auth, "get_credentials", lambda uid: object()):
-            results = service.sync_all(self.owner, mid)
-        self.assertEqual([r["ok"] for r in results], [True])                     # ข้ามเฉย ๆ ไม่นับเป็นความล้มเหลว
-        self.assertEqual(len(fake.inserted), 1)                                  # ไม่เดาวันให้งานที่ไม่มีวัน
-        self.assertEqual(fake.inserted[0][0]["summary"].count("ติดต่อห้องประชุม"), 0)
-
-    def test_calendar_not_connected_is_a_readable_error(self):
+    def test_invite_emails_only_when_asked(self):
         mid = self.draft()
-        service.approve_report(self.owner, mid, confirm_warnings=True)
-        results = service.sync_all(self.owner, mid)
-        self.assertTrue(all(not r["ok"] and "ยังไม่เชื่อมต่อ" in r["error"] for r in results))
+        fake = FakeCalendar()
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:
+            service.approve_and_send(self.owner, mid, confirm_warnings=True, send_invites=True)
+        self.assertEqual(fake.inserted[0][1], "all")
+
+    def test_approval_survives_calendar_failure_and_sending_can_be_retried(self):
+        mid = self.draft()
+        results = service.approve_and_send(self.owner, mid, confirm_warnings=True)          # ยังไม่เชื่อมต่อ Calendar
+        self.assertEqual(db.get_meeting(mid)["status"], "approved")                         # ไม่ย้อนการอนุมัติ
+        self.assertTrue(results and all(not r["ok"] and "ยังไม่เชื่อมต่อ" in r["error"] for r in results))
+        fake = FakeCalendar()
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:                                                                         # เชื่อมต่อแล้วกดส่งซ้ำ
+            self.assertEqual([r["ok"] for r in service.sync_calendar(self.owner, mid)], [True])
+        self.assertEqual(len(fake.inserted), 1)
+
+    def test_reopen_deletes_sent_events_and_clears_marks_then_approval_sends_again(self):
+        mid = self.draft()
+        fake = FakeCalendar()
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:
+            service.approve_and_send(self.owner, mid, confirm_warnings=True)
+            out = service.reopen_report(self.owner, mid)
+            self.assertEqual((out["deleted"], out["failed"], fake.deleted), (1, [], ["evt1"]))   # นัดถูกลบออกจาก Calendar
+            self.assertEqual(db.get_meeting(mid)["status"], "draft")
+            self.assertFalse(any(i["google_calendar_event_id"] or i["google_calendar_link"]
+                                 for i in db.get_report(mid)["content"]["action_items"]))
+            service.approve_and_send(self.owner, mid, confirm_warnings=True)                     # อนุมัติใหม่ = ส่งใหม่
+            self.assertEqual(len(fake.inserted), 2)
+
+    def test_reopen_is_blocked_when_events_cannot_be_deleted_unless_forced(self):
+        mid = self.draft()
+        fake = FakeCalendar()
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:
+            service.approve_and_send(self.owner, mid, confirm_warnings=True)
+        with mock.patch.object(calendar_sync.calendar_auth, "get_credentials", lambda uid: None):    # เชื่อมต่อหลุด
+            with self.assertRaises(ServiceError) as cm:
+                service.reopen_report(self.owner, mid)
+            self.assertEqual(cm.exception.kind, "calendar_failed")
+            self.assertIn("ยังไม่เชื่อมต่อ", cm.exception.extra["failed"][0]["error"])
+            self.assertEqual(db.get_meeting(mid)["status"], "approved")                              # ไม่ยกเลิกอนุมัติ
+            out = service.reopen_report(self.owner, mid, force=True)                                 # ยืนยันให้ยกเลิกต่อ
+            self.assertEqual((len(out["failed"]), db.get_meeting(mid)["status"]), (1, "draft"))
+        self.assertFalse(any(i["google_calendar_event_id"] for i in db.get_report(mid)["content"]["action_items"]))
+
+    def test_event_already_deleted_in_google_is_not_an_error_on_reopen(self):
+        mid = self.draft()
+        fake = FakeCalendar()
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:
+            service.approve_and_send(self.owner, mid, confirm_warnings=True)
+            fake.delete_error = 404                                                  # ผู้ใช้ลบนัดใน Google ไปเองแล้ว
+            out = service.reopen_report(self.owner, mid)
+        self.assertEqual((out["deleted"], out["failed"]), (0, []))
+        self.assertEqual(db.get_meeting(mid)["status"], "draft")
+        with p1, p2:
+            fake.delete_error = 500                                                  # error อื่นต้องรายงาน ไม่กลบเป็นสำเร็จ
+            service.approve_and_send(self.owner, mid, confirm_warnings=True)
+            with self.assertRaises(ServiceError):
+                service.reopen_report(self.owner, mid)
+
+    def test_only_the_approver_can_delete_their_calendar_events(self):
+        mid = self.draft()
+        fake = FakeCalendar()
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:
+            service.approve_and_send(self.owner, mid, confirm_warnings=True)
+            report = db.get_report(mid)
+            with mock.patch.object(db, "get_report", lambda m: {**report, "approved_by": self.other["user_id"]}):
+                with self.assertRaises(ServiceError) as cm:                           # ผู้กดอนุมัติเป็นคนอื่น: นัดอยู่ในปฏิทินเขา
+                    service.reopen_report(self.owner, mid)
+        self.assertEqual(cm.exception.kind, "calendar_failed")
+        self.assertEqual(fake.deleted, [])                                            # ไม่ลองลบด้วยปฏิทินของคนอื่น (กัน 404 หลอกว่าลบแล้ว)
 
     def test_calendar_token_is_per_user(self):
         db.save_calendar_token(self.owner["user_id"], '{"a": 1}')
