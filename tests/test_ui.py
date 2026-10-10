@@ -95,7 +95,7 @@ class UiTests(TempDbCase):
         self.assertEqual(previous_box.value, "— ไม่มี / ไม่ใช้ข้อมูลครั้งก่อน —")
         new = self.app(view="new")
         new_box = next(x for x in new.selectbox if x.key == "new_previous_meeting")
-        self.assertNotEqual(new_box.value, "— ไม่มี / ไม่ใช้ข้อมูลครั้งก่อน —")           # หน้าสร้างใหม่ตั้งค่าเริ่มต้นเป็นครั้งล่าสุดที่อนุมัติ
+        self.assertEqual(new_box.value, "— ไม่มี / ไม่ใช้ข้อมูลครั้งก่อน —")              # หน้าสร้างใหม่เริ่มที่ "ไม่ใช้" แม้มีครั้งที่อนุมัติแล้ว ผู้ใช้เลือกเอง
         self.assertIn(new_box.value, new_box.options)
 
     # ── หน้ารวมและหน้าสร้าง ──

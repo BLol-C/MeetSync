@@ -81,7 +81,7 @@ def md_escape(text: str) -> str:
 
 
 def previous_meeting_select(user: dict, *, key: str, current_id: int | None = None, exclude_id: int | None = None,
-                            default_latest: bool = False, disabled: bool = False) -> int | None:
+                            disabled: bool = False) -> int | None:
     """ช่องเลือก "การประชุมครั้งก่อน" (เฉพาะที่อนุมัติรายงานแล้ว) — ระบบเติมวาระ 2, 3, 4.1 ของรายงานจากครั้งนั้น คืน meeting_id หรือ None"""
     none_label = "— ไม่มี / ไม่ใช้ข้อมูลครั้งก่อน —"
     labels: dict[str, int | None] = {none_label: None}
@@ -89,7 +89,7 @@ def previous_meeting_select(user: dict, *, key: str, current_id: int | None = No
         no = f" · ครั้งที่ {m['meeting_no']}" if m.get("meeting_no") else ""
         labels[f"{m['title'] or '(ไม่ได้ตั้งชื่อ)'}{no} · {thai_date(m['started_at'])} (#{m['meeting_id']})"] = m["meeting_id"]
     ids = list(labels.values())
-    wanted = current_id if current_id is not None and current_id in ids else (ids[1] if default_latest and len(ids) > 1 else None)
+    wanted = current_id if current_id is not None and current_id in ids else None
     return labels[st.selectbox(
         "การประชุมครั้งก่อน", options=list(labels), index=ids.index(wanted), key=key, disabled=disabled,
         help="ระบบเติมรายงานวาระที่ 2 (รับรองรายงานครั้งก่อน) วาระที่ 3 (งานที่มอบหมายไว้) และวาระที่ 4.1 (เรื่องที่ไม่มีมติ) "

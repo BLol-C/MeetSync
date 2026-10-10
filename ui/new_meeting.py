@@ -102,7 +102,7 @@ def render(user: dict):
         org = c2.text_input("หน่วยงาน", placeholder="เช่น ภาควิชาวิทยาการคอมพิวเตอร์")
         no = c1.text_input("ครั้งที่", placeholder="เช่น 3/2569")
         venue = c2.text_input("สถานที่", placeholder="เช่น ห้องประชุม 2 / ออนไลน์ (Google Meet)")
-        previous = common.previous_meeting_select(user, key="new_previous_meeting", default_latest=True)
+        previous = common.previous_meeting_select(user, key="new_previous_meeting")
         st.markdown("##### ผู้เข้าร่วมและบทบาท")
         people_df = st.data_editor(
             _default_people(), key="new_people", num_rows="dynamic", hide_index=True,
