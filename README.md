@@ -77,7 +77,7 @@ venv\Scripts\python -m playwright install chromium
 | `GEMINI_API_KEY` | คีย์ Gemini |
 | `GEMINI_MODEL` | (ไม่บังคับ) ค่าเริ่มต้น `gemini-3.6-flash` — รุ่น 2.5 ถูกยกเลิกสำหรับผู้ใช้ใหม่แล้ว |
 | `CALENDAR_SEND_INVITES` | `1` = ให้ Google ส่งอีเมลเชิญผู้รับผิดชอบจริง (ค่าเริ่มต้น: ไม่ส่ง กันหลุดไปหาคนจริงตอนเดโม) |
-| `MINUTES_PROMPT` | (ไม่บังคับ) ชื่อไฟล์ prompt ใน `prompts/` ค่าเริ่มต้น `minutes_v3` |
+| `MINUTES_PROMPT` | (ไม่บังคับ) ชื่อไฟล์ prompt ใน `prompts/` ค่าเริ่มต้น `minutes_v4` |
 
 Redirect URI ที่ต้องเพิ่มใน Google Cloud Console (Authorized redirect URIs):
 - `http://localhost:8501/oauth2callback` — login (Streamlit)
@@ -103,7 +103,7 @@ un          (พิมพ์ใน PowerShell ที่โฟลเดอร์�
 
 ## ปรับ prompt และแบบฟอร์มโดยไม่แตะโค้ด
 
-- **Prompt ของ AI**: `prompts/minutes_v3.md` (และ `minutes_map_v2.md` สำหรับประชุมยาวที่ต้องแบ่งสกัดก่อน) แก้เป็นไฟล์ข้อความธรรมดา
+- **Prompt ของ AI**: `prompts/minutes_v4.md` (และ `minutes_map_v2.md` สำหรับประชุมยาวที่ต้องแบ่งสกัดก่อน) แก้เป็นไฟล์ข้อความธรรมดา
   ถ้าจะปรับจริงจัง ให้สร้างไฟล์เวอร์ชันใหม่แล้วตั้ง `MINUTES_PROMPT` — รายงานแต่ละฉบับบันทึกชื่อ prompt ที่ใช้สร้างไว้ใน DB
 - **แบบฟอร์มรายงาน**: `reports/report_template.py` (หัวข้อ ลำดับส่วน ช่องลงชื่อ ลายน้ำ) และ `reports/pdf_report.py` (ตำแหน่ง/ขนาดตัวอักษร) จัดหน้า A4
   ตามไฟล์แบบฟอร์ม "รูปแบบรายงานการประชุม" ที่ได้รับ ด้วยฟอนต์ TH Sarabun New (`fonts/`) ตารางงานที่ได้รับมอบหมายเป็นส่วนที่ระบบเพิ่มเอง

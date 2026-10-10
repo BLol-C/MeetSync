@@ -195,12 +195,14 @@ class GenerateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             summarizer.generate_minutes_content(ROWS, PARTS, None, MEETING, self.make([json.dumps(body)]))
 
-    def test_prompt_v3_tells_the_ai_not_to_invent_resolutions_and_to_write_by_speaker(self):
-        text = summarizer.load_prompt("minutes_v3")
+    def test_prompt_v4_tells_the_ai_not_to_invent_resolutions_and_to_write_by_speaker(self):
+        text = summarizer.load_prompt("minutes_v4")
         for phrase in ("รายงานต่อที่ประชุมว่า", "ประธานฯ กล่าวว่า", "ห้ามเติม \"รับทราบ\" หรือ \"เห็นชอบ\" เอง",
                        '"consider_new"', '"inform"'):
             self.assertIn(phrase, text)
-        self.assertEqual(summarizer.PROMPT_NAME, "minutes_v3")
+        for phrase in ("เรื่องนั้นโดยตรง", "ผู้สรุปมติ ไม่ใช่ผู้เสนอ", "ห้ามเพิ่มรายละเอียด", "ตรงกันทุกจุดของรายงาน"):   # บทเรียนจากการทดสอบกับ Meet จริง
+            self.assertIn(phrase, text)
+        self.assertEqual(summarizer.PROMPT_NAME, "minutes_v4")
 
     def test_long_meeting_uses_map_reduce(self):
         old = summarizer.SINGLE_PASS_CHARS, summarizer.CHUNK_CHARS

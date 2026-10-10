@@ -25,10 +25,12 @@ import db
 
 HERE = pathlib.Path(__file__).resolve().parent.parent
 PROMPT_DIR = HERE / "prompts"
-PROMPT_NAME = os.environ.get("MINUTES_PROMPT", "minutes_v3")          # ชื่อไฟล์ใน prompts/ (ไม่รวม .md)
+PROMPT_NAME = os.environ.get("MINUTES_PROMPT", "minutes_v4")          # ชื่อไฟล์ใน prompts/ (ไม่รวม .md)
                                                                       # v2: ห้ามข้ามหัวข้อที่ไม่มีข้อสรุป + เขียนปี พ.ศ. ในเนื้อความ
                                                                       # v3: บันทึกการอภิปรายละเอียดแบบรายงานจริง (ใครรายงาน/ใครกล่าวอะไร) + AI เลือกหมวดวาระ
                                                                       #     + มติว่างเมื่อไม่มีใครสรุปชัดเจน (ห้ามเติม "รับทราบ" เอง)
+                                                                      # v4: จากการทดสอบกับ Meet จริง — ห้ามเติม "รับทราบ" ให้เรื่องที่ไม่มีใครรับทราบ, บันทึกการกระทำของผู้พูดตรงตามจริง,
+                                                                      #     ห้ามเสริมรายละเอียด, คำที่ถอดเสียงผิดต้องแก้ให้ตรงกันทุกจุด
                                                                       # (v1/v2 ยังเก็บไว้ให้ไล่ย้อนรายงานที่เคยสร้างด้วยเวอร์ชันเก่าได้)
 MAP_PROMPT_NAME = os.environ.get("MINUTES_MAP_PROMPT", "minutes_map_v2")
 
