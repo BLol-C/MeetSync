@@ -210,40 +210,33 @@ def _regenerate_dialog(user: dict, mid: int):
         _generate(user, mid)
 
 
-@st.dialog("ยืนยันการอนุมัติรายงาน")
-def _approve_dialog(user: dict, mid: int, warnings: list[dict]):
-    if warnings:
-        st.warning("ยังมีรายการที่ควรตรวจก่อนอนุมัติ:")
-        for w in warnings:
-            st.markdown(f"- {w['message']}")
-        ok = st.checkbox("ฉันตรวจแล้ว และต้องการอนุมัติต่อไป")
-    else:
-        st.success("ไม่พบรายการที่ต้องตรวจ")
-        ok = True
-    st.caption("อนุมัติแล้วรายงานจะถูกล็อก (ถ้าต้องแก้ ยกเลิกการอนุมัติได้ แล้วอนุมัติใหม่หลังแก้)")
-    if st.button("✅ อนุมัติรายงาน", type="primary", disabled=not ok):
-        try:
-            service.approve_report(user, mid, confirm_warnings=bool(warnings))
-        except ServiceError as e:
-            st.error(str(e))
-            return
-        _bump(mid)
-        common.flash("success", "อนุมัติรายงานแล้ว — ดาวน์โหลด PDF ได้ และส่งงานเข้า Calendar ที่แท็บ ⑤")
-        st.rerun()
-
-
 @st.dialog("ยกเลิกการอนุมัติเพื่อแก้รายงาน")
-def _reopen_dialog(user: dict, mid: int):
+def reopen_dialog(user: dict, mid: int):
     st.warning("รายงานจะกลับเป็นฉบับร่าง (PDF จะมีลายน้ำ “ฉบับร่าง”) และต้องอนุมัติใหม่หลังแก้ — "
-               "งานในแท็บ Calendar ไม่ถูกลบหรือเปลี่ยนตาม")
+               "นัดที่ส่งเข้า Google Calendar ไปแล้วจะถูกลบออกด้วย และส่งใหม่ตอนอนุมัติครั้งถัดไป")
+    failed = st.session_state.get(f"reopen_failed_{mid}")
+    if failed:
+        st.error("ลบนัดออกจาก Google Calendar ไม่สำเร็จ จึงยังไม่ยกเลิกการอนุมัติ:")
+        for f in failed:
+            st.markdown(f"- {common.md_escape(f['description'])} — {f['error']}")
+    force = st.checkbox("ยกเลิกการอนุมัติต่อไป แม้นัดข้างต้นจะค้างใน Calendar (ฉันจะลบเอง)", key=f"reopen_force_{mid}") if failed else False
     if st.button("ยกเลิกการอนุมัติ", type="primary"):
         try:
-            service.reopen_report(user, mid)
+            out = service.reopen_report(user, mid, force=force)
         except ServiceError as e:
+            if e.kind == "calendar_failed":
+                st.session_state[f"reopen_failed_{mid}"] = e.extra["failed"]
+                st.rerun(scope="fragment")
             st.error(str(e))
             return
+        st.session_state.pop(f"reopen_failed_{mid}", None)
         _bump(mid)
-        common.flash("info", "รายงานกลับเป็นฉบับร่างแล้ว — แก้ไขได้")
+        msg = "รายงานกลับเป็นฉบับร่างแล้ว — แก้ไขได้"
+        if out["deleted"]:
+            msg += f" (ลบนัดออกจาก Google Calendar {out['deleted']} รายการ)"
+        common.flash("info", msg)
+        if out["failed"]:
+            common.flash("warning", "นัดที่ยังค้างอยู่ใน Google Calendar (ต้องลบเอง): " + ", ".join(f["description"] for f in out["failed"]))
         st.rerun()
 
 
@@ -303,15 +296,14 @@ def render(user: dict, detail: dict):
                          disabled=not editable, height=80, label_visibility="collapsed")
 
     st.subheader("งานที่ได้รับมอบหมาย")
-    st.caption("เลือกวันที่/เวลาจากช่อง; กดเครื่องหมาย ＋ ใต้ตารางเพื่อเพิ่มงาน; เลือกแถวแล้วกดถังขยะเพื่อลบ" if editable else "")
+    st.caption("แก้ไข/เพิ่ม/ลบงานได้ที่แท็บ ⑤ Calendar" if editable else "")
     for w in warnings:
         if w["path"].startswith("action_items"):
             st.warning(w["message"])
     names = [NO_ASSIGNEE] + [p["display_name"] for p in view["people"]]
     actions_edit = st.data_editor(
         actions_df(content["action_items"]), key=f"act_{mid}_{rev}", hide_index=True, width="stretch",
-        num_rows="dynamic" if editable else "fixed",
-        disabled=True if not editable else ["หลักฐานจาก transcript"],
+        num_rows="fixed", disabled=True,
         column_order=ACTION_COLS[1:],
         column_config={
             "งาน / นัดหมาย": st.column_config.TextColumn("งาน / นัดหมาย", width="large"),
@@ -345,13 +337,7 @@ def render(user: dict, detail: dict):
                 st.rerun()
         if b2.button("✨ ให้ AI ร่างใหม่", key=f"regen_{mid}"):
             _regenerate_dialog(user, mid)
-        if b3.button("✅ อนุมัติรายงาน…", key=f"approve_{mid}", type="primary"):
-            try:   # บันทึกที่แก้ค้างไว้ก่อนเสมอ แล้วเอาคำเตือนล่าสุดของสิ่งที่เห็นอยู่มาให้ยืนยัน
-                cleaned = service.save_report_draft(user, mid, _collect(mid, summary, other, agenda, actions_edit))
-            except ServiceError as e:
-                st.error(str(e))
-            else:
-                _approve_dialog(user, mid, cleaned["warnings"] + view["header_warnings"])
+        b3.caption("ตรวจเสร็จแล้ว → แท็บ ⑤ เพื่ออนุมัติ")
     elif status == "transcript_verified":
         if b1.button("✨ ให้ AI ร่างใหม่", key=f"regen_{mid}"):
             _regenerate_dialog(user, mid)
@@ -365,7 +351,7 @@ def render(user: dict, detail: dict):
                 st.rerun()
     elif approved:
         if b1.button("✎ ยกเลิกการอนุมัติเพื่อแก้", key=f"reopen_rep_{mid}"):
-            _reopen_dialog(user, mid)
+            reopen_dialog(user, mid)
     try:
         pdf, name = service.build_pdf(user, mid)
         b4.download_button("⬇ ดาวน์โหลด PDF" + ("" if approved else " (ฉบับร่าง)"), data=pdf, file_name=name,

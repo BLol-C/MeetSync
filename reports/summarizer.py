@@ -246,7 +246,7 @@ def validate_minutes(
             "due_time_end": _norm_time(a.get("due_time_end")),
             "evidence": _clean_evidence(a.get("evidence")),
         }
-        for key in ("action_item_id", "calendar_synced", "google_calendar_event_id"):   # ข้อมูลของแถวที่มีอยู่แล้ว ส่งต่อไว้
+        for key in ("action_item_id", "calendar_synced", "google_calendar_event_id", "google_calendar_link"):   # ข้อมูลของแถวที่มีอยู่แล้ว ส่งต่อไว้
             if key in a:
                 item[key] = a[key]
         label = f"งานที่ {i + 1}"

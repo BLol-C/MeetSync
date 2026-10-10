@@ -89,61 +89,33 @@ def _http_status(exc: Exception) -> int | None:
     return getattr(getattr(exc, "resp", None), "status", None)
 
 
-def _patch_body(body: dict, email: str | None) -> dict:
-    """เนื้อหาสำหรับอัปเดตนัดเดิม (PATCH แบบ merge): ใส่ null ให้ฟิลด์ของอีกแบบ (วันเต็มวัน/วัน+เวลา) กันค้างค่าเก่า
-    และส่งรายชื่อผู้ร่วมงานทุกครั้ง (ว่าง = ล้างคนเดิม) เพื่อให้ตรงกับผู้รับผิดชอบปัจจุบัน"""
-    out = dict(body)
-    for key in ("start", "end"):
-        part = dict(body[key])
-        if "date" in part:
-            part.update({"dateTime": None, "timeZone": None})
-        else:
-            part["date"] = None
-        out[key] = part
-    out["attendees"] = [{"email": email}] if email else []
-    return out
-
-
-def push_task(task_id: int, user_id: int, send_invites: bool = False, service=None) -> dict:
-    """ส่งงาน (calendar_tasks) เข้า Google Calendar ของ user_id: ยังไม่เคยส่ง = สร้างนัดใหม่, ส่งแล้วแต่แก้ภายหลัง = อัปเดตนัดเดิม,
-    ส่งแล้วและไม่ได้แก้ = ไม่ทำอะไร คืน {"action": created|updated|unchanged, "event_id", "link"}
+def create_event(action_item_id: int, user_id: int, send_invites: bool = False, service=None) -> dict:
+    """สร้างนัดใน Google Calendar ของ user_id จากงานของรายงาน (action_items) แล้วบันทึก event id + ลิงก์กลับ DB
+    งานที่ส่งแล้วไม่ส่งซ้ำ คืน {"action": created|unchanged, "event_id", "link"}
 
     service ฉีดเข้ามาได้ (ไว้ทดสอบ) ผู้รับผิดชอบที่มีอีเมลในรายชื่อจะถูกเพิ่มเป็น attendee; ส่งอีเมลเชิญจริงต่อเมื่อ send_invites
-    (ค่าเริ่มต้นไม่ส่ง กันอีเมลเชิญหลุดไปหาคนจริงตอนทดลอง/เดโม) ถ้านัดเดิมถูกลบใน Google ไปแล้ว จะสร้างใหม่ให้
+    (ค่าเริ่มต้นไม่ส่ง กันอีเมลเชิญหลุดไปหาคนจริงตอนทดลอง/เดโม)
     """
-    task = db.get_calendar_task(task_id)
-    if task is None:
+    item = db.get_action_item(action_item_id)
+    if item is None:
         raise ValueError("ไม่พบงานนี้")
-    if task["sync_status"] == "synced":
-        return {"action": "unchanged", "event_id": task["google_calendar_event_id"], "link": task["google_calendar_link"]}
-    email = attendee_email(db.list_speakers(task["meeting_id"]), task["assignee"])
-    body = build_event_body(task, email)          # ไม่มีวัน -> ValueError ก่อนจะแตะ Google
+    if item["google_calendar_event_id"]:
+        return {"action": "unchanged", "event_id": item["google_calendar_event_id"], "link": item.get("google_calendar_link")}
+    meeting_id = db.get_action_item_meeting(action_item_id)
+    email = attendee_email(db.list_speakers(meeting_id), item["assignee"]) if meeting_id else None
+    body = build_event_body(item, email)          # ไม่มีวัน -> ValueError ก่อนจะแตะ Google
     service = service or _calendar_service(user_id)
-    send = "all" if send_invites else "none"
-    event, action = None, "created"
-    if task["google_calendar_event_id"]:
-        try:
-            event = service.events().patch(calendarId="primary", eventId=task["google_calendar_event_id"],
-                                           body=_patch_body(body, email), sendUpdates=send).execute()
-            action = "updated"
-        except Exception as e:  # noqa: BLE001
-            if _http_status(e) not in (404, 410):    # นัดเดิมหายจาก Google แล้ว -> สร้างใหม่; ข้อผิดพลาดอื่นให้ผู้เรียกเห็น
-                raise
-    if event is None:
-        event = service.events().insert(calendarId="primary", body=body, sendUpdates=send).execute()
+    event = service.events().insert(calendarId="primary", body=body, sendUpdates="all" if send_invites else "none").execute()
     link = event.get("htmlLink")
-    db.mark_calendar_task_synced(task_id, event["id"], link, task["content_version"])
-    return {"action": action, "event_id": event["id"], "link": link}
+    db.mark_action_item_synced(action_item_id, event["id"], link)
+    return {"action": "created", "event_id": event["id"], "link": link}
 
 
-def delete_task_event(task_id: int, user_id: int, service=None) -> bool:
-    """ลบนัดของงานนี้ออกจาก Google Calendar (ไม่ลบแถวงานใน DB) คืน True ถ้าลบจริง — ไม่เคยส่ง หรือนัดหายไปแล้ว = ไม่มีอะไรให้ลบ"""
-    task = db.get_calendar_task(task_id)
-    if task is None or not task["google_calendar_event_id"]:
-        return False
+def delete_event(event_id: str, user_id: int, service=None) -> bool:
+    """ลบนัดออกจาก Google Calendar ของ user_id คืน True ถ้าลบจริง — นัดไม่อยู่แล้ว (ผู้ใช้ลบเอง) ไม่ถือว่าผิดพลาด คืน False"""
     service = service or _calendar_service(user_id)
     try:
-        service.events().delete(calendarId="primary", eventId=task["google_calendar_event_id"], sendUpdates="none").execute()
+        service.events().delete(calendarId="primary", eventId=event_id, sendUpdates="none").execute()
     except Exception as e:  # noqa: BLE001
         if _http_status(e) in (404, 410):
             return False

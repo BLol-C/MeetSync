@@ -1,5 +1,5 @@
 """
-ชั้นข้อมูลของ MeetSync (MySQL) — โครงสร้างตาม SA เดิม 6 ตาราง + agenda_items + calendar_tasks
+ชั้นข้อมูลของ MeetSync (MySQL) — โครงสร้างตาม SA เดิม 6 ตาราง + agenda_items 1 ตาราง
 
   users                ผู้ใช้ระบบ (Google login) + token Google Calendar ของผู้ใช้
   meetings             การประชุม (หัวรายงาน: ชื่อเรื่อง สถานที่ ครั้งที่ หน่วยงาน) + สถานะ workflow เพียงที่เดียว
@@ -8,8 +8,7 @@
   transcript_segments  คำพูดทีละช่วง (เก็บข้อความต้นฉบับไว้เมื่อมีการแก้)
   summaries            "รายงานการประชุม" หนึ่งฉบับต่อหนึ่งการประชุม (1:1 ตาม SA) approved_at ว่าง = ฉบับร่าง
   agenda_items         วาระ/มติของรายงาน
-  action_items         งานที่ได้รับมอบหมายของรายงาน (อยู่ในรายงาน/PDF)
-  calendar_tasks       งานที่ส่งเข้า Google Calendar (แท็บ ⑤) — คัดลอกจาก action_items ตอนอนุมัติ แล้วแก้/เพิ่ม/ลบแยกจากรายงานได้
+  action_items         งานที่ได้รับมอบหมายของรายงาน (อยู่ในรายงาน/PDF และเป็นรายการที่ส่งเข้า Google Calendar ตอนอนุมัติ)
 
 ตั้งค่าการเชื่อมต่อผ่าน .env: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
 ต้องสร้างฐานข้อมูลเปล่าไว้ก่อน (เช่น `CREATE DATABASE meetsync CHARACTER SET utf8mb4;`) — ตารางสร้างให้อัตโนมัติ
@@ -132,23 +131,8 @@ CREATE TABLE action_items (
     evidence                 TEXT NULL,
     calendar_synced          BOOLEAN NOT NULL DEFAULT FALSE,
     google_calendar_event_id VARCHAR(255) NULL,
-    FOREIGN KEY (summary_id) REFERENCES summaries(summary_id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE calendar_tasks (
-    calendar_task_id         INT AUTO_INCREMENT PRIMARY KEY,
-    meeting_id               INT NOT NULL,
-    description              TEXT NOT NULL,
-    assignee                 VARCHAR(100) NULL,
-    due_date                 DATE NULL,
-    due_time                 TIME NULL,
-    due_time_end             TIME NULL,
-    content_version          INT NOT NULL DEFAULT 1,
-    synced_version           INT NULL,
-    google_calendar_event_id VARCHAR(255) NULL,
     google_calendar_link     VARCHAR(500) NULL,
-    INDEX idx_calendar_tasks_meeting (meeting_id),
-    FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id) ON DELETE CASCADE
+    FOREIGN KEY (summary_id) REFERENCES summaries(summary_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
@@ -1046,7 +1030,7 @@ def _report_row_to_dict(cur, row: dict) -> dict:
             "due_date": a["due_date"].isoformat() if a["due_date"] else None,
             "due_time": _fmt_time(a["due_time"]), "due_time_end": _fmt_time(a["due_time_end"]),
             "evidence": _json_list(a["evidence"]), "calendar_synced": bool(a["calendar_synced"]),
-            "google_calendar_event_id": a["google_calendar_event_id"],
+            "google_calendar_event_id": a["google_calendar_event_id"], "google_calendar_link": a.get("google_calendar_link"),
         })
     cur.execute("SELECT COALESCE(name, email) AS n FROM users WHERE user_id = %s", (row["approved_by"],))
     approver = cur.fetchone()
@@ -1198,161 +1182,29 @@ def get_action_item_meeting(action_item_id: int) -> int | None:
         conn.close()
 
 
-def mark_action_item_synced(action_item_id: int, event_id: str):
+def mark_action_item_synced(action_item_id: int, event_id: str, link: str | None = None):
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """UPDATE action_items SET calendar_synced = TRUE, google_calendar_event_id = %s
+                """UPDATE action_items SET calendar_synced = TRUE, google_calendar_event_id = %s, google_calendar_link = %s
                    WHERE action_item_id = %s""",
-                (event_id, action_item_id),
+                (event_id, link, action_item_id),
             )
     finally:
         conn.close()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# งานที่ส่งเข้า Google Calendar (แท็บ ⑤) — แยกจากงานในรายงาน แก้/เพิ่ม/ลบได้หลังอนุมัติ
-#   content_version เพิ่มทุกครั้งที่แก้เนื้อหา; synced_version = เวอร์ชันที่ส่งเข้า Calendar ล่าสุด
-#   -> ไม่มี event id = ยังไม่ส่ง, synced_version = content_version = ส่งแล้ว, ไม่เท่ากัน = แก้หลังส่ง (ต้องอัปเดตนัดเดิม)
-# ─────────────────────────────────────────────────────────────────────────────
-CALENDAR_TASK_FIELDS = ("description", "assignee", "due_date", "due_time", "due_time_end")
-
-
-def _norm_task_fields(fields: dict) -> dict:
-    """ค่าของงาน -> รูปแบบที่เก็บ/เทียบกัน (ข้อความตัดช่องว่าง ว่าง = None, วันที่ YYYY-MM-DD, เวลา HH:MM)"""
-    out = {}
-    for key, value in fields.items():
-        if key == "description":
-            out[key] = (value or "").strip()
-        elif key == "assignee":
-            out[key] = (value or "").strip()[:100] or None
-        elif key == "due_date":
-            out[key] = (str(value)[:10] if value else None)
-        else:
-            out[key] = (value.strftime("%H:%M") if hasattr(value, "strftime") else _fmt_time(value)) if value else None
-    return out
-
-
-def _calendar_task(row: dict) -> dict:
-    task = dict(row)
-    task["due_date"] = row["due_date"].isoformat() if row["due_date"] else None
-    task["due_time"] = _fmt_time(row["due_time"])
-    task["due_time_end"] = _fmt_time(row["due_time_end"])
-    if not row["google_calendar_event_id"]:
-        task["sync_status"] = "none"
-    elif row["synced_version"] == row["content_version"]:
-        task["sync_status"] = "synced"
-    else:
-        task["sync_status"] = "changed"
-    return task
-
-
-def list_calendar_tasks(meeting_id: int) -> list[dict]:
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM calendar_tasks WHERE meeting_id = %s ORDER BY calendar_task_id", (meeting_id,))
-            return [_calendar_task(r) for r in cur.fetchall()]
-    finally:
-        conn.close()
-
-
-def get_calendar_task(task_id: int) -> dict | None:
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM calendar_tasks WHERE calendar_task_id = %s", (task_id,))
-            row = cur.fetchone()
-            return _calendar_task(row) if row else None
-    finally:
-        conn.close()
-
-
-def add_calendar_task(meeting_id: int, description: str, assignee=None, due_date=None, due_time=None, due_time_end=None,
-                      *, event_id: str | None = None, link: str | None = None) -> int:
-    f = _norm_task_fields({"description": description, "assignee": assignee, "due_date": due_date,
-                           "due_time": due_time, "due_time_end": due_time_end})
-    if not f["description"]:
-        raise ValueError("ต้องระบุชื่องาน/นัดหมาย")
+def clear_calendar_marks(summary_id: int) -> None:
+    """ล้างสถานะ "ส่งเข้า Calendar แล้ว" ของทุกงานในรายงาน (ใช้หลังลบนัดออกจาก Calendar ตอนยกเลิกการอนุมัติ)"""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """INSERT INTO calendar_tasks (meeting_id, description, assignee, due_date, due_time, due_time_end,
-                                               synced_version, google_calendar_event_id, google_calendar_link)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                (meeting_id, f["description"], f["assignee"], f["due_date"], f["due_time"], f["due_time_end"],
-                 1 if event_id else None, event_id, link),
-            )
-            return cur.lastrowid
-    finally:
-        conn.close()
-
-
-def update_calendar_task(task_id: int, **fields) -> bool:
-    """แก้เนื้อหางาน — เพิ่ม content_version เฉพาะเมื่อค่าเปลี่ยนจริง คืน True ถ้ามีการเปลี่ยน"""
-    unknown = set(fields) - set(CALENDAR_TASK_FIELDS)
-    if unknown:
-        raise ValueError(f"แก้ฟิลด์นี้ไม่ได้: {', '.join(sorted(unknown))}")
-    task = get_calendar_task(task_id)
-    if task is None:
-        raise ValueError("ไม่พบงานนี้")
-    new = _norm_task_fields(fields)
-    if "description" in new and not new["description"]:
-        raise ValueError("ต้องระบุชื่องาน/นัดหมาย")
-    changed = {k: v for k, v in new.items() if v != task[k]}
-    if not changed:
-        return False
-    sets = ", ".join(f"{k} = %s" for k in changed)
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(f"UPDATE calendar_tasks SET {sets}, content_version = content_version + 1 WHERE calendar_task_id = %s",
-                        (*changed.values(), task_id))
-        return True
-    finally:
-        conn.close()
-
-
-def delete_calendar_task(task_id: int) -> None:
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM calendar_tasks WHERE calendar_task_id = %s", (task_id,))
-    finally:
-        conn.close()
-
-
-def mark_calendar_task_synced(task_id: int, event_id: str, link: str | None, version: int) -> None:
-    """บันทึกว่าส่งเนื้อหาเวอร์ชัน `version` เข้า Calendar แล้ว (ถ้าระหว่างส่งมีคนแก้ จะยังขึ้น "แก้หลังส่ง")"""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """UPDATE calendar_tasks SET google_calendar_event_id = %s, google_calendar_link = %s, synced_version = %s
-                   WHERE calendar_task_id = %s""",
-                (event_id, link, version, task_id),
+                """UPDATE action_items SET calendar_synced = FALSE, google_calendar_event_id = NULL, google_calendar_link = NULL
+                   WHERE summary_id = %s""",
+                (summary_id,),
             )
     finally:
         conn.close()
 
-
-def seed_calendar_tasks(meeting_id: int, items: list[dict]) -> int:
-    """คัดลอกงานของรายงานเข้าตารางงาน Calendar เฉพาะที่ยังไม่มีงานเนื้อหาเดียวกัน (ตัวคีย์: ชื่องาน ผู้รับผิดชอบ วัน เวลา)
-    งานที่เคยส่งเข้า Calendar แล้ว (จากรายงาน) จะพกสถานะ+event id มาด้วย ไม่ส่งซ้ำ คืนจำนวนที่เพิ่ม"""
-    def key(f: dict):
-        return tuple(f[k] for k in CALENDAR_TASK_FIELDS)
-
-    have = {key(t) for t in list_calendar_tasks(meeting_id)}
-    added = 0
-    for it in items:
-        f = _norm_task_fields({k: it.get(k) for k in CALENDAR_TASK_FIELDS})
-        if not f["description"] or key(f) in have:
-            continue
-        synced = bool(it.get("calendar_synced") and it.get("google_calendar_event_id"))
-        add_calendar_task(meeting_id, f["description"], f["assignee"], f["due_date"], f["due_time"], f["due_time_end"],
-                          event_id=it.get("google_calendar_event_id") if synced else None)
-        have.add(key(f))
-        added += 1
-    return added

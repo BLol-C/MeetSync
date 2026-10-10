@@ -1,4 +1,7 @@
-"""แท็บ ⑤ Calendar: งานที่จะส่งเข้า Google Calendar — แก้/เพิ่ม/ลบได้หลังอนุมัติรายงาน (แยกจากงานในรายงานที่ล็อกแล้ว)"""
+"""แท็บ ⑤ Calendar: ตรวจ/แก้งานก่อนอนุมัติ → กดอนุมัติแล้วส่งเข้า Google Calendar ทันที → ยกเลิกอนุมัติ = ลบนัดออกด้วย
+
+งานในตารางนี้คือ "งานที่ได้รับมอบหมาย" ชุดเดียวกับในรายงานและ PDF (ตาราง action_items) จึงแก้ที่นี่แล้ว PDF เปลี่ยนตามทันที
+"""
 
 import os
 
@@ -8,99 +11,116 @@ import streamlit as st
 from bot import botclient
 import service
 from service import ServiceError
-from ui import common
-from ui.common import clean_str
-from ui.tab_report import NO_ASSIGNEE, _date_str, _time_str, _to_date, _to_time
+from ui import common, tab_report
+from ui.tab_report import NO_ASSIGNEE, _to_date, _to_time
 
-COLS = ["calendar_task_id", "งาน / นัดหมาย", "ผู้รับผิดชอบ", "วันที่", "เวลาเริ่ม", "เวลาสิ้นสุด", "สถานะ", "นัดใน Calendar"]
+COLS = ["_ev", "งาน / นัดหมาย", "ผู้รับผิดชอบ", "วันที่", "เวลาเริ่ม", "เวลาสิ้นสุด", "สถานะ", "นัดใน Calendar"]
 VISIBLE = COLS[1:]
-STATUS_LABEL = {"none": "ยังไม่ส่ง", "synced": "✓ ส่งแล้ว", "changed": "⚠ แก้หลังส่ง"}
 TABLE_MAX_H = 420   # px — ตารางสูงสุดเท่านี้ ที่เกินเลื่อนดูภายในตาราง
 
 
-def _rev(mid: int) -> int:
-    return st.session_state.get(f"rev_calendar_{mid}", 0)
+def status_text(item: dict, approved: bool) -> str:
+    """สถานะส่งเข้า Calendar รายแถว"""
+    if item.get("google_calendar_event_id"):
+        return "✓ ส่งแล้ว"
+    if not item.get("due_date"):
+        return "ไม่มีวันที่ — จะไม่ส่ง"
+    return "ยังไม่ส่ง" if approved else "จะส่งตอนอนุมัติ"
 
 
-def status_text(task: dict) -> str:
-    """สถานะรายแถว — งานที่ไม่มีวันที่ส่งไม่ได้ จึงบอกตรง ๆ แทนที่จะขึ้น "ยังไม่ส่ง" เฉย ๆ"""
-    if task["sync_status"] == "none" and not task["due_date"]:
-        return "ไม่มีวันที่ — ส่งไม่ได้"
-    return STATUS_LABEL[task["sync_status"]]
-
-
-def tasks_df(tasks: list[dict]) -> pd.DataFrame:
+def items_df(items: list[dict], approved: bool) -> pd.DataFrame:
     return pd.DataFrame(
         [{
-            "calendar_task_id": t["calendar_task_id"], "งาน / นัดหมาย": t["description"],
-            "ผู้รับผิดชอบ": t["assignee"] or NO_ASSIGNEE, "วันที่": _to_date(t["due_date"]),
-            "เวลาเริ่ม": _to_time(t["due_time"]), "เวลาสิ้นสุด": _to_time(t["due_time_end"]),
-            "สถานะ": status_text(t), "นัดใน Calendar": t.get("google_calendar_link") or None,
-        } for t in tasks],
+            "_ev": tab_report.json.dumps(it.get("evidence") or [], ensure_ascii=False),
+            "งาน / นัดหมาย": it["description"], "ผู้รับผิดชอบ": it.get("assignee") or NO_ASSIGNEE,
+            "วันที่": _to_date(it.get("due_date")), "เวลาเริ่ม": _to_time(it.get("due_time")),
+            "เวลาสิ้นสุด": _to_time(it.get("due_time_end")),
+            "สถานะ": status_text(it, approved), "นัดใน Calendar": it.get("google_calendar_link") or None,
+        } for it in items],
         columns=COLS,
     )
 
 
-def rows_from_df(df: pd.DataFrame) -> list[dict]:
-    """ตารางที่แก้ในหน้าเว็บ -> แถวสำหรับ service.apply_calendar_table (แถวที่ไม่มีชื่องานและไม่มี id ถูกข้ามที่ชั้น service)"""
-    rows = []
-    for rec in df.to_dict("records"):
-        tid = rec.get("calendar_task_id")
-        assignee = clean_str(rec.get("ผู้รับผิดชอบ"))
-        rows.append({
-            "calendar_task_id": None if tid is None or tid != tid else int(tid),
-            "description": clean_str(rec.get("งาน / นัดหมาย")),
-            "assignee": None if assignee in ("", NO_ASSIGNEE) else assignee,
-            "due_date": _date_str(rec.get("วันที่")), "due_time": _time_str(rec.get("เวลาเริ่ม")),
-            "due_time_end": _time_str(rec.get("เวลาสิ้นสุด")),
-        })
-    return rows
+def _invites_default() -> bool:
+    return os.environ.get("CALENDAR_SEND_INVITES") == "1"
 
 
-def _save(user: dict, mid: int, df: pd.DataFrame) -> dict:
-    result = service.apply_calendar_table(user, mid, rows_from_df(df))
-    st.session_state[f"rev_calendar_{mid}"] = _rev(mid) + 1
-    parts = [f"{label} {result[k]} งาน" for k, label in (("added", "เพิ่ม"), ("updated", "แก้"), ("deleted", "ลบ")) if result[k]]
-    if parts:
-        common.flash("success", "บันทึกงานแล้ว: " + ", ".join(parts))
-    for err in result["errors"]:
-        common.flash("error", err)
-    return result
+def _show_sync_result(mid: int):
+    last = st.session_state.pop(f"sync_result_{mid}", None)
+    if not last:
+        return
+    if last["sent"]:
+        st.success(f"✅ ส่งเข้า Google Calendar เรียบร้อยแล้ว {last['sent']} รายการ")
+    for r in last["failed"]:
+        st.error(f"ส่งไม่สำเร็จ: {common.md_escape(r['description'])} — {r['error']}")
+    if not last["sent"] and not last["failed"]:
+        st.info("ไม่มีงานให้ส่ง (ไม่มีงานที่ระบุวันที่ หรือส่งครบแล้ว)")
+
+
+def _store_results(mid: int, results: list[dict]):
+    st.session_state[f"sync_result_{mid}"] = {
+        "sent": sum(1 for r in results if r["ok"]), "failed": [r for r in results if not r["ok"]]}
+
+
+@st.dialog("ยืนยันการอนุมัติรายงานและส่งเข้า Calendar")
+def _approve_dialog(user: dict, mid: int, warnings: list[dict], dated: int, connected: bool, invites: bool):
+    if warnings:
+        st.warning("ยังมีรายการที่ควรตรวจก่อนอนุมัติ:")
+        for w in warnings:
+            st.markdown(f"- {w['message']}")
+        ok = st.checkbox("ฉันตรวจแล้ว และต้องการอนุมัติต่อไป")
+    else:
+        st.success("ไม่พบรายการที่ต้องตรวจ")
+        ok = True
+    if not dated:
+        st.caption("ไม่มีงานที่ระบุวันที่ จึงไม่มีอะไรส่งเข้า Calendar")
+    elif connected:
+        st.caption(f"เมื่ออนุมัติ ระบบจะส่ง {dated} งานที่มีวันที่เข้า Google Calendar ของคุณทันที"
+                   + (" และส่งอีเมลเชิญผู้รับผิดชอบที่มีอีเมล" if invites else " (ไม่ส่งอีเมลเชิญ)"))
+    else:
+        st.warning("ยังไม่ได้เชื่อมต่อ Google Calendar — จะอนุมัติรายงานแต่ยังไม่ส่งนัด (เชื่อมต่อแล้วกดส่งภายหลังได้)")
+    st.caption("อนุมัติแล้วรายงานและงานจะถูกล็อก ถ้าต้องแก้ ยกเลิกการอนุมัติได้ (นัดที่ส่งไปแล้วจะถูกลบออกจาก Calendar)")
+    if st.button("✅ อนุมัติและส่ง", type="primary", disabled=not ok):
+        try:
+            results = service.approve_and_send(user, mid, confirm_warnings=bool(warnings), send_invites=invites)
+        except ServiceError as e:
+            st.error(str(e))
+            return
+        _store_results(mid, results)
+        tab_report._bump(mid)
+        common.flash("success", "อนุมัติรายงานแล้ว — ดาวน์โหลด PDF ได้")
+        st.rerun()
 
 
 def render(user: dict, detail: dict):
     meeting = detail["meeting"]
     mid = meeting["meeting_id"]
-    st.subheader("ส่งงานเข้า Google Calendar")
-    if meeting["status"] != "approved":
-        st.info("ใช้ได้หลังอนุมัติรายงานแล้ว — อนุมัติที่แท็บ ④ รายงานก่อน")
+    status = meeting["status"]
+    st.subheader("ตรวจงานและส่งเข้า Google Calendar")
+    view = service.get_report_view(user, mid)
+    report = view["report"]
+    if not report or status not in ("draft", "approved"):
+        st.info("ใช้ได้เมื่อมีรายงานฉบับร่างแล้ว — ให้ AI ร่างรายงานที่แท็บ ④ ก่อน")
         return
-    try:
-        view = service.calendar_view(user, mid)
-    except ServiceError as e:
-        st.error(str(e))
-        return
-    tasks = view["tasks"]
+    approved = report["approved"]
+    content = report["content"]
     connected = service.calendar_connected(user)
-    if not connected:
-        st.caption("ยังไม่ได้เชื่อมต่อ Google Calendar ของบัญชีนี้ (ขอสิทธิ์สร้างนัดหมายอย่างเดียว แยกจากการล็อกอิน) — แก้งานได้ แต่ส่งเข้า Calendar ไม่ได้")
-        st.link_button("เชื่อมต่อ Google Calendar", botclient.calendar_connect_url(user, f"{botclient.UI_URL}/?m={mid}"))
+    items = content["action_items"]
 
-    last = st.session_state.pop(f"sync_result_{mid}", None)
-    if last:
-        if last["created"] or last["updated"]:
-            parts = [f"{label} {last[k]} รายการ" for k, label in (("created", "สร้างนัดใหม่"), ("updated", "อัปเดตนัดเดิม")) if last[k]]
-            st.success("✅ ส่งเข้า Google Calendar แล้ว: " + ", ".join(parts))
-        for r in last["failed"]:
-            st.error(f"ส่งไม่สำเร็จ: {common.md_escape(r['description'])} — {r['error']}")
-        if not (last["created"] or last["updated"] or last["failed"]):
-            st.info("ไม่มีงานให้ส่ง (ส่งครบแล้ว หรือยังไม่มีงานที่ระบุวันที่)")
+    if not connected:
+        st.caption("ยังไม่ได้เชื่อมต่อ Google Calendar ของบัญชีนี้ (ขอสิทธิ์สร้างนัดหมายอย่างเดียว แยกจากการล็อกอิน) — อนุมัติรายงานได้ แต่จะยังไม่ส่งนัด")
+        st.link_button("เชื่อมต่อ Google Calendar", botclient.calendar_connect_url(user, f"{botclient.UI_URL}/?m={mid}"))
+    _show_sync_result(mid)
+    if not approved:
+        for w in content["warnings"]:
+            if w["path"].startswith("action_items"):
+                st.warning(w["message"])
 
     names = [NO_ASSIGNEE] + [p["display_name"] for p in view["people"]]
     edited = st.data_editor(
-        tasks_df(tasks), key=f"caltasks_{mid}_{_rev(mid)}", hide_index=True, width="stretch", num_rows="dynamic",
-        height=common.table_height(len(tasks), max_px=TABLE_MAX_H, spare_rows=2), disabled=["สถานะ", "นัดใน Calendar"],
-        column_order=VISIBLE,
+        items_df(items, approved), key=f"cal_{mid}_{tab_report._rev(mid)}", hide_index=True, width="stretch",
+        num_rows="fixed" if approved else "dynamic", height=common.table_height(len(items), max_px=TABLE_MAX_H, spare_rows=0 if approved else 2),
+        disabled=True if approved else ["สถานะ", "นัดใน Calendar"], column_order=VISIBLE,
         column_config={
             "งาน / นัดหมาย": st.column_config.TextColumn("งาน / นัดหมาย", width="large"),
             "ผู้รับผิดชอบ": st.column_config.SelectboxColumn("ผู้รับผิดชอบ", options=names, default=NO_ASSIGNEE, width="medium"),
@@ -111,35 +131,37 @@ def render(user: dict, detail: dict):
             "นัดใน Calendar": st.column_config.LinkColumn("นัดใน Calendar", display_text="เปิดนัด", width="small"),
         },
     )
+    invites = st.checkbox("ส่งอีเมลเชิญผู้รับผิดชอบที่มีอีเมลในรายชื่อด้วย", value=_invites_default(), key=f"cal_invites_{mid}")
 
-    missing = view["report_items_missing"]
-    b1, b2, _ = st.columns([1.3, 2.2, 3])
-    if b1.button("💾 บันทึกงาน", key=f"save_cal_{mid}"):
-        _save(user, mid, edited)
-        st.rerun()
-    if missing and b2.button(f"⬇ นำเข้างานจากรายงานที่ยังไม่อยู่ในรายการ ({len(missing)})", key=f"import_cal_{mid}"):
-        added = service.import_report_tasks(user, mid)
-        st.session_state[f"rev_calendar_{mid}"] = _rev(mid) + 1
-        common.flash("success", f"นำเข้างานจากรายงาน {added} งาน")
-        st.rerun()
+    def collect() -> dict:
+        return {**content, "action_items": tab_report.actions_from_df(edited)}
 
-    st.divider()
-    invites = st.checkbox("ส่งอีเมลเชิญผู้รับผิดชอบที่มีอีเมลในรายชื่อด้วย", value=os.environ.get("CALENDAR_SEND_INVITES") == "1",
-                          key=f"cal_invites_{mid}")
-    pending = [t for t in tasks if t["due_date"] and t["sync_status"] != "synced"]
-    label = f"📅 ส่งเข้า Calendar ({len(pending)} งาน)" if pending else "📅 ส่งเข้า Calendar"
-    if st.button(label, key=f"sync_{mid}", type="primary", disabled=not connected or not (pending or len(edited) != len(tasks))):
-        try:   # บันทึกที่แก้ค้างไว้ก่อนเสมอ แล้วส่งจากข้อมูลที่บันทึกแล้ว
-            _save(user, mid, edited)
-            with st.spinner("กำลังส่งเข้า Google Calendar…"):
-                results = service.sync_calendar_tasks(user, mid, invites)
-        except ServiceError as e:
-            st.error(str(e))
-        else:
-            ok = [r for r in results if r["ok"]]
-            st.session_state[f"sync_result_{mid}"] = {
-                "created": sum(1 for r in ok if r["action"] == "created"), "updated": sum(1 for r in ok if r["action"] == "updated"),
-                "failed": [r for r in results if not r["ok"]],
-            }
-            st.session_state[f"rev_calendar_{mid}"] = _rev(mid) + 1
-            st.rerun()
+    b1, b2, _ = st.columns([1.3, 3, 2])
+    if not approved:
+        if b1.button("💾 บันทึกงาน", key=f"save_cal_{mid}"):
+            try:
+                service.save_report_draft(user, mid, collect())
+            except ServiceError as e:
+                st.error(str(e))
+            else:
+                tab_report._bump(mid)
+                common.flash("success", "บันทึกงานแล้ว (แก้ในรายงาน/PDF ตามด้วย)")
+                st.rerun()
+        if b2.button("✅ อนุมัติรายงานและส่งเข้า Calendar…", key=f"approve_{mid}", type="primary"):
+            try:   # บันทึกงานที่แก้ค้างไว้ก่อนเสมอ แล้วเอาคำเตือนล่าสุดมาให้ยืนยัน
+                cleaned = service.save_report_draft(user, mid, collect())
+            except ServiceError as e:
+                st.error(str(e))
+            else:
+                dated = sum(1 for it in cleaned["action_items"] if it.get("due_date"))
+                _approve_dialog(user, mid, cleaned["warnings"] + view["header_warnings"], dated, connected, invites)
+        return
+
+    pending = [it for it in items if it.get("due_date") and not it.get("google_calendar_event_id")]
+    if pending and b1.button(f"📅 ส่งงานที่ยังไม่ส่ง ({len(pending)})", key=f"sync_{mid}", disabled=not connected):
+        with st.spinner("กำลังส่งเข้า Google Calendar…"):
+            _store_results(mid, service.sync_calendar(user, mid, invites))
+        tab_report._bump(mid)
+        st.rerun()
+    if b2.button("✎ ยกเลิกการอนุมัติเพื่อแก้", key=f"reopen_cal_{mid}"):
+        tab_report.reopen_dialog(user, mid)

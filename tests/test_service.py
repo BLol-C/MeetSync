@@ -86,9 +86,8 @@ class FakeHttpError(Exception):
 class FakeCalendar:
     def __init__(self):
         self.inserted = []      # (body, sendUpdates)
-        self.patched = []       # (eventId, body, sendUpdates)
         self.deleted = []       # eventId
-        self.patch_error = None  # ตั้งเป็นสถานะ HTTP เพื่อจำลอง Google ตอบ error ตอนอัปเดต
+        self.delete_error = None  # ตั้งเป็นสถานะ HTTP เพื่อจำลอง Google ตอบ error ตอนลบ
         self._last = None
 
     def events(self):
@@ -99,11 +98,6 @@ class FakeCalendar:
         self._last = ("insert", f"evt{len(self.inserted)}")
         return self
 
-    def patch(self, calendarId, eventId, body, sendUpdates):  # noqa: N803
-        self.patched.append((eventId, body, sendUpdates))
-        self._last = ("patch", eventId)
-        return self
-
     def delete(self, calendarId, eventId, sendUpdates):  # noqa: N803
         self.deleted.append(eventId)
         self._last = ("delete", eventId)
@@ -111,9 +105,9 @@ class FakeCalendar:
 
     def execute(self):
         kind, event_id = self._last
-        if kind == "patch" and self.patch_error:
-            raise FakeHttpError(self.patch_error)
         if kind == "delete":
+            if self.delete_error:
+                raise FakeHttpError(self.delete_error)
             return {}
         return {"id": event_id, "htmlLink": f"https://calendar.google.com/event?eid={event_id}"}
 
@@ -805,123 +799,107 @@ class ServiceTests(TempDbCase):
         return mock.patch.object(calendar_sync, "build", lambda *a, **k: fake), \
             mock.patch.object(calendar_sync.calendar_auth, "get_credentials", lambda uid: object())
 
-    def approved_with_calendar(self):
-        mid = self.draft()                        # งาน 1: ส่งรายงานความก้าวหน้า (Alice, มีวันที่) งาน 2: ไม่มีวันที่
-        service.approve_report(self.owner, mid, confirm_warnings=True)
-        return mid
-
-    def test_calendar_tab_needs_approval_is_seeded_from_the_report_and_is_owner_only(self):
-        mid = self.draft()
-        with self.assertRaises(ServiceError) as cm:
-            service.calendar_view(self.owner, mid)                               # ยังไม่อนุมัติ
-        self.assertEqual(cm.exception.kind, "conflict")
-        service.approve_report(self.owner, mid, confirm_warnings=True)
-        view = service.calendar_view(self.owner, mid)
-        self.assertEqual([t["description"] for t in view["tasks"]], ["ส่งรายงานความก้าวหน้า", "ติดต่อห้องประชุม"])
-        self.assertEqual(view["report_items_missing"], [])
-        with self.assertRaises(ServiceError) as cm:                              # คนอื่นแตะไม่ได้
-            service.calendar_view(self.other, mid)
-        self.assertEqual(cm.exception.kind, "not_found")
-
-    def test_calendar_sync_creates_then_updates_the_existing_event_and_never_duplicates(self):
-        mid = self.approved_with_calendar()
+    def test_approve_and_send_creates_events_for_dated_items_with_attendees_and_stores_links(self):
+        mid = self.draft()                       # งาน 1: ส่งรายงานความก้าวหน้า (Alice, มีวันที่) งาน 2: ไม่มีวันที่
         fake = FakeCalendar()
+        with self.assertRaises(ServiceError) as cm:
+            service.sync_calendar(self.owner, mid)                                   # ยังไม่อนุมัติ
+        self.assertEqual(cm.exception.kind, "conflict")
         p1, p2 = self.calendar_env(fake)
         with p1, p2:
-            results = service.sync_calendar_tasks(self.owner, mid)
+            results = service.approve_and_send(self.owner, mid, confirm_warnings=True)
             self.assertEqual([(r["ok"], r["action"]) for r in results], [(True, "created")])   # งานไม่มีวันที่ถูกข้าม ไม่เดาวัน
             body, send = fake.inserted[0]
             self.assertEqual((body["attendees"], send), ([{"email": "alice@x.com"}], "none"))  # ค่าเริ่มต้นไม่ส่งอีเมลเชิญจริง
-            self.assertEqual(service.sync_calendar_tasks(self.owner, mid), [])                 # ส่งครบแล้ว ไม่ส่งซ้ำ
+            self.assertEqual(body["start"]["dateTime"], "2026-10-09T13:00:00")
+            self.assertEqual(db.get_meeting(mid)["status"], "approved")
+            items = db.get_report(mid)["content"]["action_items"]
+            self.assertEqual((items[0]["calendar_synced"], items[0]["google_calendar_link"]),
+                             (True, "https://calendar.google.com/event?eid=evt1"))
+            self.assertFalse(items[1]["calendar_synced"])
+            self.assertEqual(service.sync_calendar(self.owner, mid), [])                       # ส่งครบแล้ว ไม่ส่งซ้ำ
             self.assertEqual(len(fake.inserted), 1)
+            with self.assertRaises(ServiceError) as cm:                                         # คนอื่นแตะไม่ได้
+                service.sync_calendar(self.other, mid)
+            self.assertEqual(cm.exception.kind, "not_found")
 
-            task = db.list_calendar_tasks(mid)[0]
-            self.assertEqual((task["sync_status"], task["google_calendar_link"]),
-                             ("synced", "https://calendar.google.com/event?eid=evt1"))
-            rows = [{"calendar_task_id": t["calendar_task_id"], **{k: t[k] for k in db.CALENDAR_TASK_FIELDS}}
-                    for t in db.list_calendar_tasks(mid)]
-            rows[0]["due_date"], rows[0]["due_time"] = "2026-10-12", None          # เปลี่ยนวัน และเปลี่ยนเป็นนัดทั้งวัน
-            self.assertEqual(service.apply_calendar_table(self.owner, mid, rows)["updated"], 1)
-            self.assertEqual(db.list_calendar_tasks(mid)[0]["sync_status"], "changed")
-            results = service.sync_calendar_tasks(self.owner, mid, send_invites=True)
-            self.assertEqual([(r["ok"], r["action"]) for r in results], [(True, "updated")])
-            self.assertEqual(len(fake.inserted), 1)                                            # อัปเดตนัดเดิม ไม่สร้างนัดใหม่
-            event_id, patch_body, send = fake.patched[0]
-            self.assertEqual((event_id, send), ("evt1", "all"))
-            self.assertEqual(patch_body["start"], {"date": "2026-10-12", "dateTime": None, "timeZone": None})   # ล้างค่าแบบมีเวลาออก
-            self.assertEqual(db.list_calendar_tasks(mid)[0]["sync_status"], "synced")
-
-    def test_calendar_tasks_can_be_added_and_deleted_and_deleting_removes_the_event(self):
-        mid = self.approved_with_calendar()
+    def test_invite_emails_only_when_asked(self):
+        mid = self.draft()
         fake = FakeCalendar()
         p1, p2 = self.calendar_env(fake)
         with p1, p2:
-            service.sync_calendar_tasks(self.owner, mid)
-            tasks = db.list_calendar_tasks(mid)
-            rows = [{"calendar_task_id": None, "description": "จองรถตู้", "assignee": "Bob", "due_date": "2026-10-20",
-                     "due_time": "09:00", "due_time_end": "10:30"}]                           # เพิ่มงานใหม่ + ไม่ส่งแถวเดิมมา = ลบทั้งสองงานเดิม
-            result = service.apply_calendar_table(self.owner, mid, rows)
-            self.assertEqual((result["added"], result["deleted"], result["errors"]), (1, 2, []))
-            self.assertEqual(fake.deleted, ["evt1"])                                         # ลบนัดที่เคยส่งออกจาก Calendar ด้วย
-            self.assertEqual([t["description"] for t in db.list_calendar_tasks(mid)], ["จองรถตู้"])
-            self.assertEqual(len(tasks), 2)
-            results = service.sync_calendar_tasks(self.owner, mid)
-            self.assertEqual([r["action"] for r in results], ["created"])
-            self.assertEqual(fake.inserted[-1][0]["start"]["dateTime"], "2026-10-20T09:00:00")
+            service.approve_and_send(self.owner, mid, confirm_warnings=True, send_invites=True)
+        self.assertEqual(fake.inserted[0][1], "all")
 
-    def test_deleting_a_sent_task_without_calendar_access_keeps_the_task(self):
-        mid = self.approved_with_calendar()
-        fake = FakeCalendar()
-        p1, p2 = self.calendar_env(fake)
-        with p1, p2:
-            service.sync_calendar_tasks(self.owner, mid)
-        with mock.patch.object(calendar_sync.calendar_auth, "get_credentials", lambda uid: None):   # เชื่อมต่อหลุด
-            result = service.apply_calendar_table(self.owner, mid, [])
-        self.assertEqual(result["deleted"], 1)                                   # งานที่ไม่เคยส่ง ลบได้
-        self.assertTrue(any("ยังไม่เชื่อมต่อ" in e for e in result["errors"]), result)
-        left = db.list_calendar_tasks(mid)
-        self.assertEqual([t["description"] for t in left], ["ส่งรายงานความก้าวหน้า"])      # งานที่ส่งแล้ว ลบไม่ได้ จึงเก็บไว้ ไม่ทิ้งนัดลอย
-
-    def test_event_deleted_in_google_is_recreated_on_update(self):
-        mid = self.approved_with_calendar()
-        fake = FakeCalendar()
-        p1, p2 = self.calendar_env(fake)
-        with p1, p2:
-            service.sync_calendar_tasks(self.owner, mid)
-            task = db.list_calendar_tasks(mid)[0]
-            db.update_calendar_task(task["calendar_task_id"], description="ส่งรายงานฉบับแก้")
-            fake.patch_error = 404                                              # ผู้ใช้ลบนัดใน Google ไปแล้ว
-            results = service.sync_calendar_tasks(self.owner, mid)
-            self.assertEqual([(r["ok"], r["action"]) for r in results], [(True, "created")])
-            self.assertEqual(len(fake.inserted), 2)
-            fake.patch_error = 500                                              # error อื่นต้องรายงาน ไม่กลบเป็นสำเร็จ
-            db.update_calendar_task(task["calendar_task_id"], description="แก้อีกครั้ง")
-            results = service.sync_calendar_tasks(self.owner, mid)
-            self.assertFalse(results[0]["ok"])
-            self.assertEqual(db.list_calendar_tasks(mid)[0]["sync_status"], "changed")   # ยังไม่ส่ง = ยังบอกว่าแก้หลังส่ง
-
-    def test_calendar_not_connected_is_a_readable_error(self):
-        mid = self.approved_with_calendar()
-        results = service.sync_calendar_tasks(self.owner, mid)
+    def test_approval_survives_calendar_failure_and_sending_can_be_retried(self):
+        mid = self.draft()
+        results = service.approve_and_send(self.owner, mid, confirm_warnings=True)          # ยังไม่เชื่อมต่อ Calendar
+        self.assertEqual(db.get_meeting(mid)["status"], "approved")                         # ไม่ย้อนการอนุมัติ
         self.assertTrue(results and all(not r["ok"] and "ยังไม่เชื่อมต่อ" in r["error"] for r in results))
+        fake = FakeCalendar()
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:                                                                         # เชื่อมต่อแล้วกดส่งซ้ำ
+            self.assertEqual([r["ok"] for r in service.sync_calendar(self.owner, mid)], [True])
+        self.assertEqual(len(fake.inserted), 1)
 
-    def test_report_items_added_after_reapproval_can_be_imported_without_losing_calendar_edits(self):
-        mid = self.approved_with_calendar()
-        tid = db.list_calendar_tasks(mid)[1]["calendar_task_id"]
-        db.update_calendar_task(tid, due_date="2026-10-30")                       # แก้งานในแท็บ Calendar
-        service.reopen_report(self.owner, mid)
-        content = service.get_report_view(self.owner, mid)["report"]["content"]
-        content["action_items"].append({"description": "งานใหม่ในรายงาน", "assignee": None, "due_date": None,
-                                        "due_time": None, "due_time_end": None, "evidence": []})
-        service.save_report_draft(self.owner, mid, content)
-        service.approve_report(self.owner, mid, confirm_warnings=True)
-        view = service.calendar_view(self.owner, mid)
-        self.assertEqual(len(view["tasks"]), 2)                                  # อนุมัติซ้ำไม่เติมทับ: งานที่แก้ในแท็บ Calendar คงเดิม ไม่ซ้ำ
-        self.assertEqual(next(t for t in view["tasks"] if t["calendar_task_id"] == tid)["due_date"], "2026-10-30")
-        missing = {i["description"] for i in view["report_items_missing"]}
-        self.assertIn("งานใหม่ในรายงาน", missing)                                  # งานใหม่ในรายงานนำเข้าเพิ่มได้ด้วยปุ่ม
-        self.assertEqual(service.import_report_tasks(self.owner, mid), len(missing))
-        self.assertEqual(service.import_report_tasks(self.owner, mid), 0)           # นำเข้าซ้ำไม่เพิ่ม
+    def test_reopen_deletes_sent_events_and_clears_marks_then_approval_sends_again(self):
+        mid = self.draft()
+        fake = FakeCalendar()
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:
+            service.approve_and_send(self.owner, mid, confirm_warnings=True)
+            out = service.reopen_report(self.owner, mid)
+            self.assertEqual((out["deleted"], out["failed"], fake.deleted), (1, [], ["evt1"]))   # นัดถูกลบออกจาก Calendar
+            self.assertEqual(db.get_meeting(mid)["status"], "draft")
+            self.assertFalse(any(i["calendar_synced"] or i["google_calendar_event_id"]
+                                 for i in db.get_report(mid)["content"]["action_items"]))
+            service.approve_and_send(self.owner, mid, confirm_warnings=True)                     # อนุมัติใหม่ = ส่งใหม่
+            self.assertEqual(len(fake.inserted), 2)
+
+    def test_reopen_is_blocked_when_events_cannot_be_deleted_unless_forced(self):
+        mid = self.draft()
+        fake = FakeCalendar()
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:
+            service.approve_and_send(self.owner, mid, confirm_warnings=True)
+        with mock.patch.object(calendar_sync.calendar_auth, "get_credentials", lambda uid: None):    # เชื่อมต่อหลุด
+            with self.assertRaises(ServiceError) as cm:
+                service.reopen_report(self.owner, mid)
+            self.assertEqual(cm.exception.kind, "calendar_failed")
+            self.assertIn("ยังไม่เชื่อมต่อ", cm.exception.extra["failed"][0]["error"])
+            self.assertEqual(db.get_meeting(mid)["status"], "approved")                              # ไม่ยกเลิกอนุมัติ
+            out = service.reopen_report(self.owner, mid, force=True)                                 # ยืนยันให้ยกเลิกต่อ
+            self.assertEqual((len(out["failed"]), db.get_meeting(mid)["status"]), (1, "draft"))
+        self.assertFalse(any(i["google_calendar_event_id"] for i in db.get_report(mid)["content"]["action_items"]))
+
+    def test_event_already_deleted_in_google_is_not_an_error_on_reopen(self):
+        mid = self.draft()
+        fake = FakeCalendar()
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:
+            service.approve_and_send(self.owner, mid, confirm_warnings=True)
+            fake.delete_error = 404                                                  # ผู้ใช้ลบนัดใน Google ไปเองแล้ว
+            out = service.reopen_report(self.owner, mid)
+        self.assertEqual((out["deleted"], out["failed"]), (0, []))
+        self.assertEqual(db.get_meeting(mid)["status"], "draft")
+        with p1, p2:
+            fake.delete_error = 500                                                  # error อื่นต้องรายงาน ไม่กลบเป็นสำเร็จ
+            service.approve_and_send(self.owner, mid, confirm_warnings=True)
+            with self.assertRaises(ServiceError):
+                service.reopen_report(self.owner, mid)
+
+    def test_only_the_approver_can_delete_their_calendar_events(self):
+        mid = self.draft()
+        fake = FakeCalendar()
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:
+            service.approve_and_send(self.owner, mid, confirm_warnings=True)
+            report = db.get_report(mid)
+            with mock.patch.object(db, "get_report", lambda m: {**report, "approved_by": self.other["user_id"]}):
+                with self.assertRaises(ServiceError) as cm:                           # ผู้กดอนุมัติเป็นคนอื่น: นัดอยู่ในปฏิทินเขา
+                    service.reopen_report(self.owner, mid)
+        self.assertEqual(cm.exception.kind, "calendar_failed")
+        self.assertEqual(fake.deleted, [])                                            # ไม่ลองลบด้วยปฏิทินของคนอื่น (กัน 404 หลอกว่าลบแล้ว)
 
     def test_calendar_token_is_per_user(self):
         db.save_calendar_token(self.owner["user_id"], '{"a": 1}')

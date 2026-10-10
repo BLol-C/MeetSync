@@ -469,16 +469,33 @@ def approve_report(user: dict, meeting_id: int, confirm_warnings: bool = False) 
     db.mark_unconfirmed_absent(meeting_id)   # คนที่เพิ่มหลังยืนยัน transcript ก็ไม่ให้ค้างเป็น "ยังไม่ยืนยัน" ในรายงานที่ล็อกแล้ว
     if not db.approve_report(meeting_id, user["user_id"]):
         raise ServiceError("อนุมัติไม่ได้ (สถานะเปลี่ยนไปแล้ว)", "conflict")
-    if not db.list_calendar_tasks(meeting_id):     # อนุมัติครั้งแรก: คัดลอกงานเป็นรายการตั้งต้นของแท็บ ⑤ (อนุมัติซ้ำหลังแก้รายงาน ไม่เติมทับสิ่งที่แก้ใน Calendar — ใช้ปุ่มนำเข้าเอง)
-        db.seed_calendar_tasks(meeting_id, db.get_report(meeting_id)["content"]["action_items"])
 
 
-def reopen_report(user: dict, meeting_id: int) -> None:
-    """รายงานที่อนุมัติแล้วต้องแก้: ยกเลิกการอนุมัติ กลับเป็นฉบับร่างเพื่อแก้ แล้วอนุมัติใหม่
-    (เนื้อหาและสถานะส่ง Calendar ของงานที่ไม่ถูกแก้คงเดิม จึงไม่ส่งซ้ำ)"""
+def reopen_report(user: dict, meeting_id: int, force: bool = False) -> dict:
+    """รายงานที่อนุมัติแล้วต้องแก้: ยกเลิกการอนุมัติ กลับเป็นฉบับร่างเพื่อแก้ แล้วอนุมัติใหม่ (ส่งเข้า Calendar ใหม่ตอนอนุมัติ)
+    นัดที่เคยส่งเข้า Google Calendar จะถูกลบออกด้วย ลบไม่สำเร็จ (เช่นเชื่อมต่อหลุด) = ไม่ยกเลิกการอนุมัติ เว้นแต่ force=True
+    (ยอมให้นัดค้างใน Calendar แล้วลบเอง) — นัดอยู่ในปฏิทินของผู้ที่กดอนุมัติ คนอื่นลบแทนไม่ได้
+    คืน {"deleted": จำนวนนัดที่ลบ, "failed": [{description, error}]}"""
     meeting_for(user, meeting_id)
+    report = db.get_report(meeting_id)
+    if not report or not report["approved"]:
+        raise ServiceError("ยกเลิกการอนุมัติได้เฉพาะรายงานที่อนุมัติแล้ว", "conflict")
+    sent = [it for it in report["content"]["action_items"] if it["google_calendar_event_id"]]
+    deleted, failed = 0, []
+    for it in sent:
+        try:
+            if report["approved_by"] != user["user_id"]:
+                raise RuntimeError(f"นัดอยู่ในปฏิทินของ {report['approved_by_name'] or 'ผู้อนุมัติ'} — ต้องให้เจ้าของปฏิทินยกเลิกการอนุมัติ หรือลบนัดเอง")
+            if calendar_sync.delete_event(it["google_calendar_event_id"], user["user_id"]):
+                deleted += 1
+        except Exception as e:  # noqa: BLE001
+            failed.append({"description": it["description"], "error": str(e)})
+    if failed and not force:
+        raise ServiceError("ลบนัดที่ส่งไปแล้วออกจาก Google Calendar ไม่สำเร็จ จึงยังไม่ยกเลิกการอนุมัติ", "calendar_failed", {"failed": failed})
     if not db.reopen_report(meeting_id):
         raise ServiceError("ยกเลิกการอนุมัติได้เฉพาะรายงานที่อนุมัติแล้ว", "conflict")
+    db.clear_calendar_marks(report["summary_id"])
+    return {"deleted": deleted, "failed": failed}
 
 
 def build_pdf(user: dict, meeting_id: int) -> tuple[bytes, str]:
@@ -502,85 +519,28 @@ def calendar_connected(user: dict) -> bool:
     return calendar_auth.is_connected(user["user_id"])
 
 
-def _require_calendar_tab(user: dict, meeting_id: int) -> dict:
+def sync_calendar(user: dict, meeting_id: int, send_invites: bool = False) -> list[dict]:
+    """ส่งงานของรายงานที่อนุมัติแล้วเข้า Google Calendar ของผู้ใช้ — เฉพาะงานที่มีวันและยังไม่เคยส่ง (เรียกซ้ำได้ ไม่สร้างนัดซ้ำ)
+    งานไม่มีวันถูกข้ามเฉย ๆ ส่งไม่สำเร็จรายการไหน ไม่ทำให้รายการอื่นล้ม คืนผลรายงาน [{description, ok, error?, action?}]"""
     meeting = meeting_for(user, meeting_id)
-    _require_status(meeting, "approved", hint="แท็บ Calendar ใช้ได้หลังอนุมัติรายงานแล้วเท่านั้น")
-    return meeting
-
-
-def calendar_view(user: dict, meeting_id: int) -> dict:
-    """งานที่จะส่งเข้า Calendar + ผู้เข้าร่วม (ไว้เลือกผู้รับผิดชอบ) + งานในรายงานที่ยังไม่อยู่ในรายการ"""
-    _require_calendar_tab(user, meeting_id)
-    tasks = db.list_calendar_tasks(meeting_id)
+    _require_status(meeting, "approved", hint="ส่งเข้า Calendar ได้หลังอนุมัติรายงานแล้วเท่านั้น")
     report = db.get_report(meeting_id)
-    have = {tuple(t[k] for k in db.CALENDAR_TASK_FIELDS) for t in tasks}
-    missing = [it for it in (report["content"]["action_items"] if report else [])
-               if tuple(db._norm_task_fields({k: it.get(k) for k in db.CALENDAR_TASK_FIELDS})[k]
-                        for k in db.CALENDAR_TASK_FIELDS) not in have]
-    return {"tasks": tasks, "people": db.list_speakers(meeting_id), "report_items_missing": missing}
-
-
-def import_report_tasks(user: dict, meeting_id: int) -> int:
-    """คัดลอกงานจากรายงานที่ยังไม่อยู่ในรายการ Calendar เข้ามา (ใช้เมื่อรายงานถูกแก้แล้วอนุมัติใหม่) คืนจำนวนที่เพิ่ม"""
-    _require_calendar_tab(user, meeting_id)
-    report = db.get_report(meeting_id)
-    return db.seed_calendar_tasks(meeting_id, report["content"]["action_items"] if report else [])
-
-
-def apply_calendar_table(user: dict, meeting_id: int, rows: list[dict]) -> dict:
-    """บันทึกตารางงาน Calendar ทั้งก้อน: แถวที่มี calendar_task_id = แก้, ไม่มี = เพิ่ม, แถวเดิมที่หายไป = ลบ
-    (ลบงานที่ส่งเข้า Calendar ไปแล้วจะลบนัดใน Google ด้วย — ต้องเชื่อมต่อ Calendar อยู่) คืน {"updated", "added", "deleted", "errors"}
-    แต่ละแถวที่พลาดไม่ทำให้แถวอื่นล้มเหลว"""
-    _require_calendar_tab(user, meeting_id)
-    current = {t["calendar_task_id"]: t for t in db.list_calendar_tasks(meeting_id)}
-    result = {"updated": 0, "added": 0, "deleted": 0, "errors": []}
-    seen = set()
-    for row in rows:
-        tid = row.get("calendar_task_id")
-        label = (row.get("description") or "").strip() or "(ไม่มีชื่อ)"
-        fields = {k: row.get(k) for k in db.CALENDAR_TASK_FIELDS}
-        if tid is not None and tid == tid and int(tid) in current:        # tid == tid กัน NaN จาก pandas
-            tid = int(tid)
-            seen.add(tid)
-            try:
-                if db.update_calendar_task(tid, **fields):
-                    result["updated"] += 1
-            except ValueError as e:
-                result["errors"].append(f"{label}: {e}")
-        elif (row.get("description") or "").strip():
-            try:
-                db.add_calendar_task(meeting_id, **fields)
-                result["added"] += 1
-            except ValueError as e:
-                result["errors"].append(f"{label}: {e}")
-    for tid, task in current.items():
-        if tid in seen:
-            continue
-        try:
-            if task["google_calendar_event_id"]:
-                calendar_sync.delete_task_event(tid, user["user_id"])
-            db.delete_calendar_task(tid)
-            result["deleted"] += 1
-        except Exception as e:  # noqa: BLE001  — ลบนัดใน Google ไม่สำเร็จ = เก็บงานไว้ ไม่ให้เหลือนัดที่ไม่มีใครดูแล
-            result["errors"].append(f"ลบ “{task['description']}” ไม่สำเร็จ (นัดใน Calendar ยังอยู่): {e}")
-    return result
-
-
-def sync_calendar_tasks(user: dict, meeting_id: int, send_invites: bool = False) -> list[dict]:
-    """ส่งงานที่ยังไม่ส่ง และงานที่แก้หลังส่ง เข้า Calendar (สร้างนัดใหม่/อัปเดตนัดเดิม) — งานที่ไม่มีวัน หรือส่งไม่ได้ ไม่ล้มทั้งชุด"""
-    _require_calendar_tab(user, meeting_id)
     results = []
-    for task in db.list_calendar_tasks(meeting_id):
-        entry = {"calendar_task_id": task["calendar_task_id"], "description": task["description"]}
-        if task["sync_status"] == "synced":
+    for it in (report["content"]["action_items"] if report else []):
+        if it["google_calendar_event_id"] or not it.get("due_date"):
             continue
-        if not task["due_date"]:        # ไม่มีวันที่ = ไม่มีอะไรให้ลงปฏิทิน ข้ามเฉย ๆ ไม่นับเป็นความล้มเหลว
-            continue
+        entry = {"action_item_id": it["action_item_id"], "description": it["description"]}
         try:
-            pushed = calendar_sync.push_task(task["calendar_task_id"], user["user_id"], send_invites)
-            results.append({**entry, "ok": True, "action": pushed["action"]})
+            out = calendar_sync.create_event(it["action_item_id"], user["user_id"], send_invites)
+            results.append({**entry, "ok": True, "action": out["action"]})
         except (RuntimeError, ValueError) as e:
             results.append({**entry, "ok": False, "error": str(e)})
         except Exception as e:  # noqa: BLE001
             results.append({**entry, "ok": False, "error": f"เขียนลง Calendar ไม่สำเร็จ: {e}"})
     return results
+
+
+def approve_and_send(user: dict, meeting_id: int, confirm_warnings: bool = False, send_invites: bool = False) -> list[dict]:
+    """อนุมัติรายงานแล้วส่งงานเข้า Google Calendar ทันที — ส่งไม่ได้ (เช่นยังไม่เชื่อมต่อ) ไม่ย้อนการอนุมัติ ผู้ใช้กดส่งซ้ำได้ภายหลัง"""
+    approve_report(user, meeting_id, confirm_warnings)
+    return sync_calendar(user, meeting_id, send_invites)
