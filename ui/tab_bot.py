@@ -2,6 +2,7 @@
 
 import streamlit as st
 
+import service
 from bot import botclient
 from ui import common
 
@@ -51,6 +52,10 @@ def _live_panel(user: dict, mid: int):
                 st.rerun()
             return
         st.caption(phase_text(state))
+        outsiders = service.outsider_names(user, mid)
+        if outsiders:
+            st.warning("มีชื่อในห้องที่ไม่อยู่ในรายชื่อ: " + ", ".join(outsiders)
+                       + " — ถ้าไม่ได้เชิญ เชิญออกจากห้อง Meet ได้ (หรือเป็นชื่อที่สะกดต่างจากรายชื่อ) แล้วยืนยันที่แท็บ ③ หลังหยุดบอท")
         last = state["status"][-1]["text"] if state["status"] else ""
         if last.startswith("⚠️"):       # ปัญหาที่บอทแจ้งล่าสุดยังต้องเห็น (เช่น เปิด CC ไม่ได้ อ่านรายชื่อในห้องไม่ได้)
             st.warning(last)

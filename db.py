@@ -73,6 +73,7 @@ CREATE TABLE speakers (
     absence_reason VARCHAR(255) NULL,
     position      VARCHAR(100) NULL,
     source        VARCHAR(10) NOT NULL DEFAULT 'registered',
+    seen_in_room  BOOLEAN NOT NULL DEFAULT FALSE,
     UNIQUE KEY uq_speaker (meeting_id, display_name),
     FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -571,6 +572,7 @@ def mark_present_by_names(meeting_id: int, meet_names: list[str]) -> list[str]:
             speaker_id = _find_speaker_for_name(cur, meeting_id, (name or "").strip()[:100])
             if speaker_id is None:
                 continue
+            cur.execute("UPDATE speakers SET seen_in_room = TRUE WHERE speaker_id = %s", (speaker_id,))   # หลักฐาน: บอทเห็นชื่อนี้ในห้อง
             cur.execute(
                 "UPDATE speakers SET attendance = 'present' WHERE speaker_id = %s AND attendance = 'invited'", (speaker_id,)
             )
@@ -597,8 +599,8 @@ def record_room_names(meeting_id: int, meet_names: list[str]) -> dict:
                 continue
             try:
                 cur.execute(
-                    """INSERT INTO speakers (meeting_id, display_name, role, attendance, source)
-                       VALUES (%s, %s, 'guest', 'present', 'meet')""",
+                    """INSERT INTO speakers (meeting_id, display_name, role, attendance, source, seen_in_room)
+                       VALUES (%s, %s, 'guest', 'present', 'meet', TRUE)""",
                     (meeting_id, name),
                 )
                 created.append(name)
@@ -838,7 +840,8 @@ def merge_speakers(source_id: int, target_id: int) -> int:
         alias = src["display_name"] if src["source"] == "meet" else (dst["meet_alias"] or src["display_name"])   # ผู้ใช้ยืนยันว่าชื่อที่ Meet แสดงคือคนนี้ — ใช้ชื่อนั้นแทนที่ชื่อที่กรอกผิด
         email = dst["email"] or src["email"]
         cur.execute("DELETE FROM speakers WHERE speaker_id = %s", (source_id,))
-        cur.execute("UPDATE speakers SET meet_alias = %s, email = %s WHERE speaker_id = %s", (alias, email, target_id))
+        cur.execute("UPDATE speakers SET meet_alias = %s, email = %s, seen_in_room = %s WHERE speaker_id = %s",
+                    (alias, email, bool(dst["seen_in_room"] or src["seen_in_room"]), target_id))
         if moved or src["attendance"] == "present":
             _mark_present(cur, target_id)
         return moved

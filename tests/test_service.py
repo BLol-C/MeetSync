@@ -758,6 +758,27 @@ class ServiceTests(TempDbCase):
         names = [g["name"] for g in service.get_detail(self.owner, mid)["header"]["guests"]]
         self.assertEqual(names, ["BOZZISX"])                                             # คนที่ไม่นับไม่ขึ้นในรายงาน
 
+    def test_room_scan_records_evidence_and_outsider_names_for_the_alert(self):
+        mid = service.create_meeting(self.owner, meet_url=URL, title="หลักฐาน", people=[
+            {"display_name": "ธนาวีร์", "meet_alias": "Thanawee BOONKERD", "role": "chair", "attendance": "invited"},
+            {"display_name": "ณัฐกมล", "meet_alias": "nutkamon yakhumpai", "role": "attendee", "attendance": "invited"},
+            {"display_name": "ศศิน", "meet_alias": "Sasin T", "role": "attendee", "attendance": "invited"}])
+        db.begin_recording(mid)
+        db.record_room_names(mid, ["Thanawee BOONKERD", "Natkamon YAKHUMPHAI", "BOZZISX"])
+        people = {p["display_name"]: p for p in db.list_speakers(mid)}
+        self.assertEqual((people["ธนาวีร์"]["seen_in_room"], people["ธนาวีร์"]["attendance"]), (1, "present"))   # ชื่อตรง = เห็นในห้อง + มา
+        self.assertEqual((people["ศศิน"]["seen_in_room"], people["ศศิน"]["attendance"]), (0, "invited"))         # ไม่เห็นเลย = ไม่มีหลักฐาน
+        self.assertEqual(people["BOZZISX"]["seen_in_room"], 1)                                                  # คนนอกที่บอทเห็นก็มีหลักฐานว่าอยู่ในห้อง
+        self.assertEqual(sorted(service.outsider_names(self.owner, mid)), ["BOZZISX", "Natkamon YAKHUMPHAI"])  # แจ้งเตือนระหว่างบันทึก (รวมที่สะกดต่าง)
+        with self.assertRaises(ServiceError):
+            service.outsider_names(self.other, mid)
+        nat = next(p for p in db.list_speakers(mid) if p["display_name"] == "Natkamon YAKHUMPHAI")
+        target = people["ณัฐกมล"]["speaker_id"]
+        service.merge_people(self.owner, nat["speaker_id"], target)                                             # ผู้ใช้ยืนยันว่าเป็นคนเดียวกัน
+        merged = db.get_speaker(target)
+        self.assertEqual((merged["seen_in_room"], merged["attendance"], merged["meet_alias"]), (1, "present", "Natkamon YAKHUMPHAI"))   # หลักฐานติดตามไปด้วย
+        self.assertEqual(service.outsider_names(self.owner, mid), ["BOZZISX"])
+
     def test_matching_uses_the_english_name_only_when_one_is_filled(self):
         mid = service.create_meeting(self.owner, meet_url=URL, title="จับคู่ภาษาอังกฤษ", people=[
             {"display_name": "Thanachai", "meet_alias": "Thanachai SRITHONG", "role": "chair", "attendance": "invited"},

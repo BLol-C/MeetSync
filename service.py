@@ -132,6 +132,12 @@ def meetings_with_url(user: dict, meet_url: str) -> list[dict]:
     return [m for m in list_meetings(user) if (m["meet_url"] or "").split("?")[0].lower() == base]
 
 
+def outsider_names(user: dict, meeting_id: int) -> list[str]:
+    """ชื่อใน Meet ที่บอทเห็นแล้วไม่ตรงกับรายชื่อ (คนนอกที่ไม่ได้รับเชิญ หรือสะกดชื่อภาษาอังกฤษต่างจาก Meet) — ยังไม่ได้ยืนยันที่แท็บ ③"""
+    meeting_for(user, meeting_id)
+    return [p["display_name"] for p in db.list_speakers(meeting_id) if p["source"] == "meet"]
+
+
 def roster_locked(meeting: dict) -> bool:
     """ตารางผู้เข้าร่วมแท็บ ① ถูกล็อกระหว่างบอทบันทึก (ตั้งแต่กดเริ่มบอทจนกดหยุดบอท) กันชื่อเปลี่ยนกลางประชุม
     พอหยุดบอทแล้วแก้ได้อีก (แก้ชื่อภาษาอังกฤษแล้วระบบจับคู่ชื่อใน Meet ที่ค้างอยู่ให้ทันที) รายงานที่อนุมัติแล้วล็อกเสมอ"""

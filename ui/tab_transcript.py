@@ -39,6 +39,33 @@ def segment_rows(df: pd.DataFrame) -> list[dict]:
     return rows
 
 
+def evidence_text(p: dict) -> str:
+    """หลักฐานว่าคนนี้เข้าร่วมประชุมหรือไม่ — จากสิ่งที่บอทเห็นจริง (เห็นชื่อในห้อง / เคยพูด) ไม่ใช่การเดา"""
+    parts = []
+    if p.get("seen_in_room"):
+        parts.append("เห็นในห้อง")
+    if p.get("segment_count"):
+        parts.append(f"พูด {p['segment_count']} ช่วง")
+    if parts:
+        return " · ".join(parts)
+    return "ผู้กรอกตั้งไว้ (ไม่พบหลักฐานจากบอท)" if p["attendance"] != "invited" else "ไม่พบหลักฐาน (ไม่เห็นในห้อง ไม่เคยพูด)"
+
+
+def evidence_df(people: list[dict]) -> pd.DataFrame:
+    rows = []
+    for p in people:
+        if p["source"] == "excluded":
+            continue
+        outsider = p["source"] == "meet"
+        rows.append({
+            "ชื่อ": p["display_name"] + (" (นอกรายชื่อ)" if outsider else ""),
+            "บทบาท": "—" if outsider else common.ROLE_LABEL.get(p["role"], p["role"]),
+            "สถานะ": "รอยืนยัน" if outsider else common.ATT_LABEL.get(p["attendance"], p["attendance"]),
+            "หลักฐานจากบอท": evidence_text(p),
+        })
+    return pd.DataFrame(rows, columns=["ชื่อ", "บทบาท", "สถานะ", "หลักฐานจากบอท"])
+
+
 def _confirm_section(user: dict, people: list[dict], editable: bool) -> int:
     """หัวข้อเดียว "ยืนยันผู้เข้าร่วม" — ต้องตอบให้ครบก่อนยืนยัน transcript คืนจำนวนที่ยังไม่ได้ตอบ
 
@@ -55,6 +82,7 @@ def _confirm_section(user: dict, people: list[dict], editable: bool) -> int:
         return (f"{m['display_name']} — พูด {m['segment_count']} ช่วง" if m["segment_count"] else f"{m['display_name']} — อยู่ในห้อง")
 
     st.subheader("ยืนยันผู้เข้าร่วม")
+    st.dataframe(evidence_df(people), hide_index=True, width="stretch", height=common.table_height(len(people), max_px=300))
     done = lambda msg, mid: (common.flash("success", msg), st.session_state.__setitem__(f"rev_segs_{mid}", _rev(mid) + 1), st.rerun())  # noqa: E731
 
     for p in pending:

@@ -322,6 +322,28 @@ class UiTests(TempDbCase):
         header = service.get_detail(self.user, mid)["header"]
         self.assertEqual([g["name"] for g in header["guests"]], ["BOZZISX"])                    # "ไม่นับ" ไม่ขึ้นในรายงาน
 
+    def test_evidence_alert_and_in_room_name_picker(self):
+        from ui import tab_transcript
+        mid = self.meeting("recording", extra=[{"display_name": "ณัฐกมล", "meet_alias": "nutkamon yakhumpai"}])
+        db.record_room_names(mid, ["Natkamon YAKHUMPHAI"])                                 # บอทเห็นชื่อที่สะกดต่างจากที่กรอก
+        # แท็บ ②: แจ้งเตือนคนนอก/ชื่อไม่ตรงทันทีระหว่างบันทึก (กล่องคำบรรยายสดรีเฟรชเอง จึงทดสอบข้อความที่ใช้)
+        self.assertEqual(service.outsider_names(self.user, mid), ["Natkamon YAKHUMPHAI"])
+        db.end_meeting(mid)                                                                 # หยุดบอทแล้ว ตารางแท็บ ① แก้ได้
+        at = self.app(m=mid)
+        nat = next(p["speaker_id"] for p in db.list_speakers(mid) if p["display_name"] == "ณัฐกมล")
+        next(x for x in at.selectbox if x.key == f"pick_{nat}").select(
+            next(p["speaker_id"] for p in db.list_speakers(mid) if p["source"] == "meet")).run()    # เลือกชื่อที่บอทเห็น แทนการพิมพ์
+        next(b for b in at.button if b.key == f"pick_go_{nat}").click().run()
+        person = db.get_speaker(nat)
+        self.assertEqual((person["meet_alias"], person["attendance"], person["seen_in_room"]), ("Natkamon YAKHUMPHAI", "present", 1))
+        evidence = tab_transcript.evidence_df([{**p, "segment_count": p["segment_count"]} for p in db.list_speakers(mid)])
+        row = evidence[evidence["ชื่อ"] == "ณัฐกมล"].iloc[0]
+        self.assertEqual((row["สถานะ"], row["หลักฐานจากบอท"]), ("เข้าร่วม", "เห็นในห้อง"))
+        self.assertEqual(tab_transcript.evidence_text({"seen_in_room": 0, "segment_count": 3, "attendance": "present"}), "พูด 3 ช่วง")
+        self.assertEqual(tab_transcript.evidence_text({"seen_in_room": 1, "segment_count": 2, "attendance": "present"}), "เห็นในห้อง · พูด 2 ช่วง")
+        self.assertIn("ไม่พบหลักฐาน", tab_transcript.evidence_text({"seen_in_room": 0, "segment_count": 0, "attendance": "invited"}))
+        self.assertIn("ผู้กรอกตั้งไว้", tab_transcript.evidence_text({"seen_in_room": 0, "segment_count": 0, "attendance": "present"}))
+
     def test_transcript_tab_shows_conversation_grouped_into_speaker_turns(self):
         mid = self.meeting("transcript_review")            # สมชาย 1 ประโยค แล้ว Alice 1 ประโยค = 2 ช่วงพูด
         at = self.app(m=mid)
