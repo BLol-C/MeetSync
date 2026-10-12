@@ -79,7 +79,8 @@ def is_dev() -> bool:
 
 
 def render_login():
-    st.markdown("# 🎙️ MeetSync")
+    st.markdown("<div style='height: 22vh'></div>", unsafe_allow_html=True)       # ดันลงมากลางหน้าจอ
+    st.markdown("<h1 style='text-align: center'>🎙️ MeetSync</h1>", unsafe_allow_html=True)
     try:
         configured = "auth" in st.secrets
     except Exception:  # noqa: BLE001 — ไม่มีไฟล์ secrets.toml
@@ -87,7 +88,8 @@ def render_login():
     if not configured:
         st.warning(SETUP_HELP)
         return
-    st.button("เข้าสู่ระบบด้วย Google", type="primary", on_click=st.login)
+    _, middle, _ = st.columns([1, 1, 1])                                           # ปุ่มอยู่กึ่งกลางแนวนอน
+    middle.button("เข้าสู่ระบบด้วย Google", type="primary", on_click=st.login, width="stretch")
 
 
 def require_login() -> dict:
