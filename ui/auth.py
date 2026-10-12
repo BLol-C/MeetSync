@@ -80,8 +80,6 @@ def is_dev() -> bool:
 
 def render_login():
     st.markdown("# 🎙️ MeetSync")
-    st.markdown("ระบบสารสนเทศสรุปการประชุมและมอบหมายงาน — บอทจับคำบรรยายจาก Google Meet, AI ร่างรายงานการประชุม, "
-                "คนตรวจและอนุมัติ, ส่งงานเข้า Google Calendar")
     try:
         configured = "auth" in st.secrets
     except Exception:  # noqa: BLE001 — ไม่มีไฟล์ secrets.toml
