@@ -92,7 +92,7 @@ def render(user: dict, detail: dict):
 
     roster_locked = locked or detail["roster_locked"]
     if roster_locked and not locked:
-        st.caption("🔒 รายชื่อถูกล็อกตั้งแต่เริ่มบอท — ยืนยันการเข้าร่วมและจับคู่ชื่อที่แท็บ ③")
+        st.caption("🔒 รายชื่อถูกล็อกระหว่างบอทบันทึก — แก้ได้อีกหลังกดหยุดบอท")
     df = _people_df(table_people(detail["people"]))
     edited = st.data_editor(
         df, key=f"people_{mid}_{_rev(mid)}", hide_index=True, width="stretch",

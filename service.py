@@ -133,16 +133,9 @@ def meetings_with_url(user: dict, meet_url: str) -> list[dict]:
 
 
 def roster_locked(meeting: dict) -> bool:
-    """ตารางผู้เข้าร่วมแท็บ ① ถูกล็อกตั้งแต่กดเริ่มบอท (ผู้กรอกต้องรอบคอบก่อนเริ่ม) — หลังจากนั้นยืนยันมา/ไม่มาที่แท็บ ③
-    ยกเว้นหยุดบอทก่อนจับข้อความได้สักคำ จะปลดล็อกให้แก้ได้อีก รายงานที่อนุมัติแล้วล็อกเสมอ"""
-    status = meeting["status"]
-    if status == "approved":
-        return True
-    if status == "scheduled":
-        return False
-    if status == "recording":
-        return True
-    return db.max_sequence_no(meeting["meeting_id"]) > 0
+    """ตารางผู้เข้าร่วมแท็บ ① ถูกล็อกระหว่างบอทบันทึก (ตั้งแต่กดเริ่มบอทจนกดหยุดบอท) กันชื่อเปลี่ยนกลางประชุม
+    พอหยุดบอทแล้วแก้ได้อีก (แก้ชื่อภาษาอังกฤษแล้วระบบจับคู่ชื่อใน Meet ที่ค้างอยู่ให้ทันที) รายงานที่อนุมัติแล้วล็อกเสมอ"""
+    return meeting["status"] in ("recording", "approved")
 
 
 def _require_roster_unlocked(meeting: dict):

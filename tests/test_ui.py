@@ -295,12 +295,16 @@ class UiTests(TempDbCase):
     def test_roster_table_is_locked_after_start_and_outsiders_are_confirmed_one_by_one(self):
         before = self.meeting("scheduled")
         at = self.app(m=before)
-        self.assertFalse(any("ล็อกตั้งแต่เริ่มบอท" in v for v in texts(at.caption)))        # ก่อนเริ่มบอท แก้ได้
+        self.assertFalse(any("ล็อกระหว่างบอทบันทึก" in v for v in texts(at.caption)))        # ก่อนเริ่มบอท แก้ได้
         self.assertFalse(next(b for b in at.button if b.key == f"save_people_{before}").disabled)
+        recording = self.meeting("recording")
+        at = self.app(m=recording)
+        self.assertTrue(any("ล็อกระหว่างบอทบันทึก" in v for v in texts(at.caption)))
+        self.assertTrue(next(b for b in at.button if b.key == f"save_people_{recording}").disabled)   # ระหว่างบันทึก แก้รายชื่อไม่ได้
         mid = self.meeting("transcript_review")
         at = self.app(m=mid)
-        self.assertTrue(any("ล็อกตั้งแต่เริ่มบอท" in v for v in texts(at.caption)))
-        self.assertTrue(next(b for b in at.button if b.key == f"save_people_{mid}").disabled)   # บันทึกรายชื่อไม่ได้
+        self.assertFalse(any("ล็อกระหว่างบอทบันทึก" in v for v in texts(at.caption)))              # หยุดบอทแล้ว แก้ได้อีก
+        self.assertFalse(next(b for b in at.button if b.key == f"save_people_{mid}").disabled)
         stranger = db.get_or_create_speaker(mid, "BOZZISX")
         test_acc = db.get_or_create_speaker(mid, "Test Account")
         db.insert_segment(mid, stranger, 9, "มาฟังครับ")

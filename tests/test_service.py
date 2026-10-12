@@ -580,7 +580,7 @@ class ServiceTests(TempDbCase):
         self.assertTrue(any("มีผู้เข้าร่วมชื่อ" in e for e in result["errors"]))
         self.assertEqual(next(p for p in service.get_detail(self.owner, mid)["people"] if p["display_name"] == "Alice")["attendance"], "present")
 
-    def test_roster_is_locked_from_the_moment_the_bot_starts_and_unlocked_if_nothing_was_captured(self):
+    def test_roster_is_locked_while_the_bot_records_and_editable_again_after_stop(self):
         mid = self.new_meeting()
         self.assertFalse(service.get_detail(self.owner, mid)["roster_locked"])           # ก่อนเริ่มบอท แก้ได้
         rows = self.table_rows(mid)
@@ -592,14 +592,27 @@ class ServiceTests(TempDbCase):
         self.assertEqual(cm.exception.kind, "conflict")
         with self.assertRaises(ServiceError):
             service.add_person(self.owner, mid, "คนเพิ่มทีหลัง")
-        db.end_meeting(mid)                                                             # หยุดบอทก่อนจับข้อความได้สักคำ -> ปลดล็อก
+        db.end_meeting(mid)                                                             # กดหยุดบอทแล้ว -> แก้ได้อีก
         self.assertFalse(service.get_detail(self.owner, mid)["roster_locked"])
         self.assertEqual(service.apply_people_table(self.owner, mid, rows)["errors"], [])
-        mid2 = self.new_meeting()
-        self.record(mid2)                                                               # มีข้อความแล้ว = ล็อกต่อไปแม้หยุดบอทแล้ว
-        self.assertTrue(service.get_detail(self.owner, mid2)["roster_locked"])
-        self.assertTrue(service.get_detail(self.owner, self.approved_meeting())["roster_locked"])
-        self.assertTrue(any("มีข้อความ" in str(e) for e in [self.try_delete(mid2)]))     # คนที่มีข้อความลบทิ้งไม่ได้อยู่ดี
+        self.assertTrue(service.get_detail(self.owner, self.approved_meeting())["roster_locked"])   # อนุมัติแล้วล็อกเสมอ
+
+    def test_fixing_an_english_name_after_stop_updates_everything_together(self):
+        mid = service.create_meeting(self.owner, meet_url=URL, title="แก้ชื่อหลังหยุดบอท", people=[
+            {"display_name": "กฤตินล", "meet_alias": "kittinon sangkraw", "role": "secretary", "attendance": "invited"},
+            {"display_name": "ธนาวีร์", "meet_alias": "Thanawee Boonkerd", "role": "chair", "attendance": "present"}])
+        db.begin_recording(mid)
+        k = db.get_or_create_speaker(mid, "Kittinon SAENGKHAO")                           # สะกดต่างจากที่กรอก -> แถว "พบจาก Meet"
+        db.insert_segment(mid, k, 1, "สวัสดีครับ")
+        db.insert_segment(mid, k, 2, "ขอเสนอเรื่องงบ")
+        db.end_meeting(mid)
+        rows = self.table_rows(mid)
+        next(r for r in rows if r["display_name"] == "กฤตินล")["meet_alias"] = "Kittinon SAENGKHAO"   # แก้ให้ตรงหลังหยุดบอท
+        result = service.apply_people_table(self.owner, mid, rows)
+        self.assertEqual((result["errors"], result["matched"]), ([], 1))
+        people = {p["display_name"]: p for p in db.list_speakers(mid)}
+        self.assertNotIn("Kittinon SAENGKHAO", people)                                    # แถวพบจาก Meet ถูกรวมแล้ว
+        self.assertEqual((people["กฤตินล"]["segment_count"], people["กฤตินล"]["attendance"]), (2, "present"))   # ข้อความและสถานะอัปเดตพร้อมกัน
 
     def try_delete(self, mid):
         alice = next(p for p in db.list_speakers(mid) if p["display_name"] == "Alice")
@@ -708,11 +721,17 @@ class ServiceTests(TempDbCase):
         bob = next(p for p in db.list_speakers(mid) if p["display_name"] == "Bob")
         self.assertEqual((bob["attendance"], bob["absence_reason"]), ("absent", "ลาป่วย"))
 
-    def test_people_cannot_be_added_after_the_bot_started(self):
-        mid = self.draft()
+    def test_people_cannot_be_added_while_recording_but_can_after_stop_until_approval(self):
+        mid = self.new_meeting()
+        db.begin_recording(mid)
         with self.assertRaises(ServiceError) as cm:
-            service.add_person(self.owner, mid, "Carol")                                 # รายชื่อล็อกตั้งแต่เริ่มบอท
+            service.add_person(self.owner, mid, "Carol")                                 # ระหว่างบันทึก รายชื่อล็อก
         self.assertEqual(cm.exception.kind, "conflict")
+        db.end_meeting(mid)
+        service.add_person(self.owner, mid, "Carol")                                     # หยุดบอทแล้วเพิ่มได้
+        approved = self.approved_meeting()
+        with self.assertRaises(ServiceError):
+            service.add_person(self.owner, approved, "Dave")                             # อนุมัติแล้วล็อก
 
     def test_each_outsider_can_be_matched_confirmed_as_guest_or_excluded(self):
         mid = self.new_meeting()
