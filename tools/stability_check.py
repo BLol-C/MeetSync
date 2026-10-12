@@ -115,7 +115,22 @@ def duplicate_segments(transcript_texts: list[str]) -> int:
     return dups
 
 
-def report(script: list[str], rows: list[dict]) -> tuple[str, bool]:
+def segments_per_bucket(rows: list[dict], minutes: int = 10) -> list[int]:
+    """จำนวนช่วงที่บันทึกได้ในแต่ละช่วงเวลา (ทุก `minutes` นาทีนับจากช่วงแรก) — ใช้ดูว่ามีช่วงที่เงียบหายผิดปกติหรือไม่
+    (ใช้กับการคุยอิสระที่ไม่มีบทพูดได้ แต่แยก "ไม่มีใครพูด" ออกจาก "บอทไม่จับ" ไม่ได้)"""
+    if not rows:
+        return []
+    start = rows[0]["spoken_at"]
+    buckets = [0] * (int((rows[-1]["spoken_at"] - start).total_seconds() // (minutes * 60)) + 1)
+    for r in rows:
+        buckets[int((r["spoken_at"] - start).total_seconds() // (minutes * 60))] += 1
+    return buckets
+
+
+def report(script: list[str], rows: list[dict], only: list[int] | None = None) -> tuple[str, bool]:
+    """only = เช็กเฉพาะบรรทัดที่ระบุ (เลขบรรทัดเริ่มที่ 1) เช่น ประโยคจุดตรวจที่พูดแทรกระหว่างคุยอิสระ"""
+    if only:
+        script = [script[i - 1] for i in only if 1 <= i <= len(script)]
     texts = [r["text"] for r in rows]
     scores = match_lines(script, texts)
     caught = [s >= MATCH_THRESHOLD for s in scores]
@@ -126,17 +141,21 @@ def report(script: list[str], rows: list[dict]) -> tuple[str, bool]:
         first, last = rows[0]["spoken_at"], rows[-1]["spoken_at"]
         out.append(f"ช่วงเวลาที่บันทึกได้: {first:%H:%M:%S} ถึง {last:%H:%M:%S}  (~{(last - first).total_seconds() / 60:.0f} นาที)")
     out.append(f"ช่วงที่ซ้ำกันเป๊ะ (สงสัยบันทึกซ้ำ): {duplicate_segments(texts)}")
+    out.append("จำนวนช่วงที่บันทึกได้ทุก 10 นาที: " + ", ".join(str(b) for b in segments_per_bucket(rows)))
     missing = [i for i, c in enumerate(caught) if not c]
     if missing:
-        out.append("ประโยคที่หายไป (เลขบรรทัด · นาทีที่ควรพูด): " +
-                   ", ".join(f"{i + 1} ({i * SECONDS_PER_LINE // 60:02d}:{i * SECONDS_PER_LINE % 60:02d})" for i in missing[:40])
-                   + (" …" if len(missing) > 40 else ""))
-        # ช่วงที่หายต่อเนื่องยาว = บอทหลุด/ตัวจับหยุดทำงาน ไม่ใช่ CC ถอดผิดทีละประโยค
-        longest, run = 0, 0
-        for c in caught:
-            run = 0 if c else run + 1
-            longest = max(longest, run)
-        out.append(f"ช่วงที่หายติดต่อกันยาวสุด: {longest} ประโยค (~{longest * SECONDS_PER_LINE // 60} นาที)")
+        def label(i: int) -> str:
+            if only:
+                return str(only[i])
+            return f"{i + 1} ({i * SECONDS_PER_LINE // 60:02d}:{i * SECONDS_PER_LINE % 60:02d})"
+        out.append("ประโยคที่หายไป (เลขบรรทัด" + ("" if only else " · นาทีที่ควรพูด") + "): " +
+                   ", ".join(label(i) for i in missing[:40]) + (" …" if len(missing) > 40 else ""))
+        if not only:    # ช่วงที่หายต่อเนื่องยาว = บอทหลุด/ตัวจับหยุดทำงาน ไม่ใช่ CC ถอดผิดทีละประโยค
+            longest, run = 0, 0
+            for c in caught:
+                run = 0 if c else run + 1
+                longest = max(longest, run)
+            out.append(f"ช่วงที่หายติดต่อกันยาวสุด: {longest} ประโยค (~{longest * SECONDS_PER_LINE // 60} นาที)")
     return "\n".join(out), ok / n >= 0.95 if n else False
 
 
@@ -148,6 +167,7 @@ def main():
     ck = sub.add_parser("check", help="เทียบบทพูดกับ transcript ของการประชุม")
     ck.add_argument("meeting_id", type=int)
     ck.add_argument("--script", default=str(DEFAULT_SCRIPT))
+    ck.add_argument("--only", default="", help="เช็กเฉพาะบรรทัดที่ระบุ คั่นด้วยจุลภาค เช่น 1,16,31,46,61,76 (ใช้กับการคุยอิสระที่แทรกประโยคจุดตรวจ)")
     args = ap.parse_args()
 
     if args.cmd == "make":
@@ -164,7 +184,8 @@ def main():
     if not script or not rows:
         print("ไม่พบบทพูดหรือ transcript ของการประชุมนี้")
         return 2
-    text, passed = report(script, rows)
+    only = [int(x) for x in args.only.split(",") if x.strip().isdigit()] or None
+    text, passed = report(script, rows, only)
     print(text)
     print("\nเกณฑ์ที่เสนอ: จับได้ ≥ 95% และไม่มีช่วงที่หายติดต่อกันยาว  →  " + ("ผ่าน" if passed else "ยังไม่ผ่าน (ดูประโยคที่หายไป)"))
     return 0 if passed else 1

@@ -47,6 +47,18 @@ class StabilityCheckTests(unittest.TestCase):
         self.assertIn("41 (26:40)", text)
         self.assertTrue(passed)                                                       # ยังผ่านเกณฑ์ 95% (หายประโยคเดียว)
 
+    def test_checkpoint_only_mode_and_bucket_counts_for_free_conversation(self):
+        lines = sc.make_lines()
+        checkpoints = [1, 16, 31, 46, 61, 76]                                         # ประโยคจุดตรวจที่พูดแทรกระหว่างคุยอิสระทุก ~10 นาที
+        chat = ["คุยเล่นทั่วไปเรื่องอะไรก็ได้ไม่มีบท"] * 3
+        rows = rows_for(chat + [lines[i - 1] for i in checkpoints[:5]] + chat)         # จุดตรวจสุดท้าย (76) ไม่ถูกจับ
+        text, passed = sc.report(lines, rows, only=checkpoints)
+        self.assertIn("จับได้ 5/6", text)
+        self.assertIn("ประโยคที่หายไป (เลขบรรทัด): 76", text)
+        self.assertNotIn("ช่วงที่หายติดต่อกันยาวสุด", text)                              # ใช้เฉพาะเมื่อเช็กทั้งบท
+        self.assertFalse(passed)                                                       # 5/6 = 83% ต่ำกว่า 95%
+        self.assertEqual(sc.segments_per_bucket(rows_for(["ก"] * 40)), [15, 15, 10])    # ช่วงละ 10 นาที: ทุก 40 วินาที = 15 ช่วงต่อ 10 นาที
+
     def test_duplicate_segments_are_counted_ignoring_spaces(self):
         self.assertEqual(sc.duplicate_segments(["สวัสดี ครับ", "สวัสดีครับ", "ขอบคุณครับ"]), 1)
 
