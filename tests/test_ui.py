@@ -64,11 +64,11 @@ class UiTests(TempDbCase):
         self.assertEqual([e.value for e in at.exception], [], "หน้าเว็บต้องไม่มี exception")
         return at
 
-    def meeting(self, status="scheduled", people=True):
+    def meeting(self, status="scheduled", people=True, extra=()):
         mid = service.create_meeting(self.user, meet_url=URL, title="ประชุมทดสอบหน้าเว็บ", people=[
             {"display_name": "สมชาย ใจดี", "email": "chair@x.com", "role": "chair", "attendance": "present"},
             {"display_name": "สมหญิง", "role": "secretary", "attendance": "present"},
-            {"display_name": "Alice", "email": "alice@x.com"}] if people else [])
+            {"display_name": "Alice", "email": "alice@x.com"}, *extra] if people else [])
         if status != "scheduled":
             db.begin_recording(mid)
             s1, s2 = db.get_or_create_speaker(mid, "สมชาย ใจดี (You)"), db.get_or_create_speaker(mid, "Alice")
@@ -247,13 +247,13 @@ class UiTests(TempDbCase):
     # ── transcript ──
 
     def test_unconfirmed_people_can_be_matched_to_names_seen_in_the_room_or_set_absent(self):
-        mid = self.meeting("transcript_review")
-        silent = service.add_person(self.user, mid, "ธนาวีร์ ผู้ฟังเงียบ")            # ลงทะเบียนไว้ แต่ไม่ได้พูด
-        away = service.add_person(self.user, mid, "ศศิน ลากิจ")
+        mid = self.meeting("transcript_review", extra=[{"display_name": "ธนาวีร์ ผู้ฟังเงียบ"}, {"display_name": "ศศิน ลากิจ"}])   # ลงทะเบียนไว้ แต่ไม่ได้พูด
+        ids = {p["display_name"]: p["speaker_id"] for p in db.list_speakers(mid)}
+        silent, away = ids["ธนาวีร์ ผู้ฟังเงียบ"], ids["ศศิน ลากิจ"]
         db.record_room_names(mid, ["Thanawee BOONKERD"])                              # บอทเห็นชื่อนี้ในห้อง แต่ไม่ตรงกับใคร
         room = next(p for p in db.list_speakers(mid) if p["display_name"] == "Thanawee BOONKERD")
         at = self.app(m=mid)
-        self.assertTrue(any("ยังไม่ยืนยันการเข้าร่วม" in v for v in texts(at.subheader)))
+        self.assertTrue(any("ยืนยันผู้เข้าร่วม" in v for v in texts(at.subheader)))
         select = next(x for x in at.selectbox if x.key == f"unc_{silent}")
         self.assertTrue(any("Thanawee BOONKERD" in o for o in select.options))        # ชื่อที่เห็นในห้องอยู่ในตัวเลือก
         select.select(f"meet:{room['speaker_id']}").run()
@@ -268,8 +268,8 @@ class UiTests(TempDbCase):
         self.assertEqual(db.get_speaker(away)["attendance"], "absent")
 
     def test_unmatched_meet_names_are_hidden_from_the_people_table_and_matched_in_the_single_panel(self):
-        mid = self.meeting("transcript_review")
-        carol = service.add_person(self.user, mid, "แครอล", None, "attendee", "invited")   # ลงทะเบียนไว้ ยังไม่ยืนยัน
+        mid = self.meeting("transcript_review", extra=[{"display_name": "แครอล"}])         # ลงทะเบียนไว้ ยังไม่ยืนยัน
+        carol = next(p["speaker_id"] for p in db.list_speakers(mid) if p["display_name"] == "แครอล")
         s = db.get_or_create_speaker(mid, "46 Carol Wonderland")                          # Meet แสดงชื่อพ่วงเลข ไม่ตรงรายชื่อ
         db.insert_segment(mid, s, 3, "ผมคือ Carol เอง")
         at = self.app(m=mid)
@@ -278,8 +278,8 @@ class UiTests(TempDbCase):
         self.assertNotIn("46 Carol Wonderland", shown)                                      # แท็บ ① ไม่แสดงชื่อที่พบจาก Meet ในตารางรายชื่อ
         self.assertIn("แครอล", shown)
         subheaders = texts(at.subheader)
-        self.assertTrue(any("ยังไม่ยืนยันการเข้าร่วม" in v for v in subheaders))
-        self.assertFalse(any("ยังจับคู่ไม่ได้" in v for v in subheaders))                    # ไม่มีหน้าจอจับคู่แยกอีกอัน
+        self.assertEqual([v for v in subheaders if "ยืนยัน" in v], ["ยืนยันผู้เข้าร่วม"])     # หัวข้อเดียว ไม่มีหน้าจอจับคู่แยกอีกอัน
+        self.assertTrue(next(b for b in at.button if b.key == f"verify_{mid}").disabled)    # ยังตอบไม่ครบ ยืนยัน transcript ไม่ได้
         select = next(x for x in at.selectbox if x.key == f"unc_{carol}")
         self.assertTrue(any("46 Carol Wonderland" in o for o in select.options))
         select.select(f"meet:{s}").run()
@@ -291,6 +291,32 @@ class UiTests(TempDbCase):
         at = self.app(m=mid)
         next(b for b in at.button if b.key == f"verify_{mid}").click().run()
         self.assertEqual(db.get_meeting(mid)["status"], "transcript_verified")
+
+    def test_roster_table_is_locked_after_start_and_outsiders_are_confirmed_one_by_one(self):
+        before = self.meeting("scheduled")
+        at = self.app(m=before)
+        self.assertFalse(any("ล็อกตั้งแต่เริ่มบอท" in v for v in texts(at.caption)))        # ก่อนเริ่มบอท แก้ได้
+        self.assertFalse(next(b for b in at.button if b.key == f"save_people_{before}").disabled)
+        mid = self.meeting("transcript_review")
+        at = self.app(m=mid)
+        self.assertTrue(any("ล็อกตั้งแต่เริ่มบอท" in v for v in texts(at.caption)))
+        self.assertTrue(next(b for b in at.button if b.key == f"save_people_{mid}").disabled)   # บันทึกรายชื่อไม่ได้
+        stranger = db.get_or_create_speaker(mid, "BOZZISX")
+        test_acc = db.get_or_create_speaker(mid, "Test Account")
+        db.insert_segment(mid, stranger, 9, "มาฟังครับ")
+        at = self.app(m=mid)
+        self.assertTrue(next(b for b in at.button if b.key == f"verify_{mid}").disabled)        # ยังมีชื่อนอกรายชื่อรอยืนยัน
+        next(x for x in at.selectbox if x.key == f"out_{stranger}").select("guest").run()
+        next(b for b in at.button if b.key == f"out_go_{stranger}").click().run()
+        at = self.app(m=mid)
+        next(x for x in at.selectbox if x.key == f"out_{test_acc}").select("exclude").run()
+        next(b for b in at.button if b.key == f"out_go_{test_acc}").click().run()
+        at = self.app(m=mid)
+        self.assertFalse(next(b for b in at.button if b.key == f"verify_{mid}").disabled)       # ตอบครบแล้วกดได้
+        next(b for b in at.button if b.key == f"verify_{mid}").click().run()
+        self.assertEqual(db.get_meeting(mid)["status"], "transcript_verified")
+        header = service.get_detail(self.user, mid)["header"]
+        self.assertEqual([g["name"] for g in header["guests"]], ["BOZZISX"])                    # "ไม่นับ" ไม่ขึ้นในรายงาน
 
     def test_transcript_tab_shows_conversation_grouped_into_speaker_turns(self):
         mid = self.meeting("transcript_review")            # สมชาย 1 ประโยค แล้ว Alice 1 ประโยค = 2 ช่วงพูด

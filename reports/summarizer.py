@@ -475,7 +475,7 @@ def generate_for_meeting(meeting_id: int, generate: Callable | None = None) -> d
         raise ValueError("ต้องตรวจทานและกด \"ยืนยัน transcript\" ก่อน จึงจะให้ AI สร้างรายงานได้")
 
     rows = db.get_transcript(meeting_id)
-    participants = db.list_speakers(meeting_id)
+    participants = [p for p in db.list_speakers(meeting_id) if p["source"] != "excluded"]
     content = generate_minutes_content(
         rows, participants, meeting.get("title"),
         meeting.get("started_at") or datetime.datetime.now(), generate,

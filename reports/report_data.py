@@ -80,6 +80,7 @@ def build_header(meeting: dict, participants: list[dict]) -> dict:
     absent    = ผู้ที่ไม่มา (absent) รวมผู้ที่ยังเป็น invited คือไม่มีหลักฐานว่าเข้าร่วม ทุกบทบาท พร้อมสาเหตุ (reason)
                 (unconfirmed แยกบอกจำนวนไว้ให้หน้าเว็บเตือนให้เลขายืนยันก่อนอนุมัติ)
     """
+    participants = [p for p in participants if p.get("source") != "excluded"]     # ชื่อที่ผู้ใช้เลือก "ไม่นับในรายงาน"
     when = meeting.get("started_at") or meeting.get("scheduled_at")
     chair = next((p for p in participants if p["role"] == "chair"), None)
     secretary = next((p for p in participants if p["role"] == "secretary"), None)

@@ -132,12 +132,31 @@ def meetings_with_url(user: dict, meet_url: str) -> list[dict]:
     return [m for m in list_meetings(user) if (m["meet_url"] or "").split("?")[0].lower() == base]
 
 
+def roster_locked(meeting: dict) -> bool:
+    """ตารางผู้เข้าร่วมแท็บ ① ถูกล็อกตั้งแต่กดเริ่มบอท (ผู้กรอกต้องรอบคอบก่อนเริ่ม) — หลังจากนั้นยืนยันมา/ไม่มาที่แท็บ ③
+    ยกเว้นหยุดบอทก่อนจับข้อความได้สักคำ จะปลดล็อกให้แก้ได้อีก รายงานที่อนุมัติแล้วล็อกเสมอ"""
+    status = meeting["status"]
+    if status == "approved":
+        return True
+    if status == "scheduled":
+        return False
+    if status == "recording":
+        return True
+    return db.max_sequence_no(meeting["meeting_id"]) > 0
+
+
+def _require_roster_unlocked(meeting: dict):
+    if roster_locked(meeting):
+        raise ServiceError("รายชื่อถูกล็อกตั้งแต่เริ่มบอท — ยืนยันการเข้าร่วมและจับคู่ชื่อที่แท็บ ③", "conflict")
+
+
 def get_detail(user: dict, meeting_id: int) -> dict:
     meeting = meeting_for(user, meeting_id)
     people = db.list_speakers(meeting_id)
     header = report_data.build_header(meeting, people)
     return {
         "meeting": meeting,
+        "roster_locked": roster_locked(meeting),
         "people": people,
         "header": header,
         "header_warnings": report_data.header_warnings(header),
@@ -182,19 +201,38 @@ def add_person(user: dict, meeting_id: int, display_name: str, email: str | None
                position: str | None = None, meet_alias: str | None = None) -> int:
     meeting = meeting_for(user, meeting_id)
     _require_status(meeting, *EDITABLE_STATUSES, hint="รายงานที่อนุมัติแล้วแก้รายชื่อไม่ได้")
+    _require_roster_unlocked(meeting)
     try:
         return db.add_speaker(meeting_id, display_name, email, role, attendance, absence_reason, position, meet_alias)
     except ValueError as e:
         raise _value_error(e)
 
 
-def set_person_attendance(user: dict, speaker_id: int, attendance: str) -> None:
-    """ตั้งสถานะการเข้าร่วมของผู้เข้าร่วมคนเดียว (เข้าร่วม / ไม่มา) — ใช้จากหน้าจับคู่ผู้ที่ยังไม่ยืนยัน"""
+def set_person_attendance(user: dict, speaker_id: int, attendance: str, absence_reason: str | None = None) -> None:
+    """ตั้งสถานะการเข้าร่วมของผู้เข้าร่วมคนเดียว (เข้าร่วม / ไม่มา + สาเหตุที่ไม่มา) — ใช้จากหัวข้อยืนยันผู้เข้าร่วมที่แท็บ ③"""
     _person_meeting(user, speaker_id)
+    fields = {"attendance": attendance}
+    if attendance == "absent" and absence_reason is not None:
+        fields["absence_reason"] = absence_reason
     try:
-        db.update_speaker(speaker_id, attendance=attendance)
+        db.update_speaker(speaker_id, **fields)
     except ValueError as e:
         raise _value_error(e)
+
+
+def confirm_guest(user: dict, speaker_id: int) -> None:
+    """ชื่อที่พบจาก Meet (ไม่อยู่ในรายชื่อ) -> ยืนยันว่าเป็นผู้มาประชุมทั่วไป (ไม่ใช่กรรมการ)"""
+    person, _ = _person_meeting(user, speaker_id)
+    if person["source"] != "meet" or not db.confirm_meet_speaker_as_guest(speaker_id):
+        raise ServiceError("ยืนยันได้เฉพาะชื่อที่พบจาก Meet ที่ยังไม่ได้จับคู่", "invalid")
+
+
+def exclude_person(user: dict, speaker_id: int) -> str:
+    """ชื่อที่พบจาก Meet -> ไม่นับในรายงาน (ลบถ้าไม่มีข้อความ ไม่งั้นซ่อนไว้) คืน "deleted" หรือ "hidden" """
+    person, _ = _person_meeting(user, speaker_id)
+    if person["source"] != "meet":
+        raise ServiceError("ลบได้เฉพาะชื่อที่พบจาก Meet ที่ยังไม่ได้จับคู่", "invalid")
+    return db.exclude_meet_speaker(speaker_id)
 
 
 def merge_people(user: dict, source_id: int, target_id: int) -> int:
@@ -218,6 +256,7 @@ def apply_people_table(user: dict, meeting_id: int, rows: list[dict]) -> dict:
     """
     meeting = meeting_for(user, meeting_id)
     _require_status(meeting, *EDITABLE_STATUSES, hint="รายงานที่อนุมัติแล้วแก้รายชื่อไม่ได้")
+    _require_roster_unlocked(meeting)
     current = {p["speaker_id"]: p for p in db.list_speakers(meeting_id)}
     result = {"updated": 0, "added": 0, "deleted": 0, "matched": 0, "errors": []}
 
@@ -318,6 +357,10 @@ def verify_transcript(user: dict, meeting_id: int, bot_running: bool = False) ->
         raise ServiceError("บอทยังบันทึกการประชุมนี้อยู่ — หยุดบอทก่อน", "conflict")
     if not db.get_transcript(meeting_id):
         raise ServiceError("ไม่มีข้อความใน transcript ให้ยืนยัน", "conflict")
+    unresolved = db.list_unresolved(meeting_id)
+    if unresolved:
+        raise ServiceError("ยังยืนยันผู้เข้าร่วมไม่ครบ: " + ", ".join(unresolved) + " — ตอบให้ครบที่หัวข้อยืนยันผู้เข้าร่วมก่อน",
+                           "needs_confirmation", {"unresolved": unresolved})
     if not db.set_meeting_status(meeting_id, "transcript_verified"):
         raise ServiceError(f"ยืนยัน transcript ไม่ได้ในสถานะ \"{meeting['status']}\"", "conflict")
     marked_absent = db.mark_unconfirmed_absent(meeting_id)   # ประชุมจบแล้ว: ที่ยังไม่ยืนยัน = ไม่มา (ตรงกับรายงาน)

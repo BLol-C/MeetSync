@@ -32,7 +32,7 @@ def _people_df(people: list[dict]) -> pd.DataFrame:
 
 def table_people(people: list[dict]) -> list[dict]:
     """คนที่แสดงในตารางผู้เข้าร่วม = ที่ลงทะเบียนไว้เท่านั้น — ชื่อที่ Meet แสดงแต่ยังจับคู่ไม่ได้ไปจับคู่ที่แท็บ ③"""
-    return [p for p in people if p["source"] != "meet"]
+    return [p for p in people if p["source"] == "registered"]
 
 
 def people_rows(df: pd.DataFrame) -> list[dict]:
@@ -90,12 +90,15 @@ def render(user: dict, detail: dict):
         if w["code"] in ("no_chair", "no_secretary"):
             st.warning(w["message"])
 
+    roster_locked = locked or detail["roster_locked"]
+    if roster_locked and not locked:
+        st.caption("🔒 รายชื่อถูกล็อกตั้งแต่เริ่มบอท — ยืนยันการเข้าร่วมและจับคู่ชื่อที่แท็บ ③")
     df = _people_df(table_people(detail["people"]))
     edited = st.data_editor(
         df, key=f"people_{mid}_{_rev(mid)}", hide_index=True, width="stretch",
-        height=common.table_height(len(df), max_px=PEOPLE_MAX_H, spare_rows=0 if locked else 2),
-        num_rows="fixed" if locked else "dynamic",
-        disabled=True if locked else ["ที่มา", "ข้อความที่พูด"],
+        height=common.table_height(len(df), max_px=PEOPLE_MAX_H, spare_rows=0 if roster_locked else 2),
+        num_rows="fixed" if roster_locked else "dynamic",
+        disabled=True if roster_locked else ["ที่มา", "ข้อความที่พูด"],
         column_order=VISIBLE,
         column_config={
             "ชื่อภาษาไทย": st.column_config.TextColumn("ชื่อภาษาไทย", help="ชื่อที่จะขึ้นในรายงาน PDF (ภาษาไทย)", width="medium"),
@@ -109,7 +112,7 @@ def render(user: dict, detail: dict):
             "ข้อความที่พูด": st.column_config.NumberColumn("ข้อความที่พูด", format="%d ช่วง"),
         },
     )
-    if st.button("💾 บันทึกรายชื่อ", key=f"save_people_{mid}", disabled=locked):
+    if st.button("💾 บันทึกรายชื่อ", key=f"save_people_{mid}", disabled=roster_locked):
         result = service.apply_people_table(user, mid, people_rows(edited))
         st.session_state[f"rev_people_{mid}"] = _rev(mid) + 1
         parts = [f"{label} {result[k]} คน" for k, label in (("added", "เพิ่ม"), ("updated", "แก้"), ("deleted", "ลบ"), ("matched", "จับคู่ชื่อใน Meet ได้")) if result[k]]

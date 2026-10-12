@@ -183,7 +183,7 @@ async def main(out: pathlib.Path):
             print("3) ตรวจ transcript จับคู่ชื่อ ยืนยัน")
             check(await page.locator('[data-testid="stTabs"]').count() == 1, "มีชุดแท็บชุดเดียว (ไม่มีหน้าเก่าค้างซ้อน)")
             await page.get_by_role("tab", name=re.compile("③ Transcript")).click()
-            check(await has_text("ผู้เข้าร่วมที่ยังไม่ยืนยันการเข้าร่วม"), "แสดงส่วนจับคู่ชื่อ (Bob ยังไม่ยืนยัน มีชื่อ “46 Bob Smith” ให้เลือก)")
+            check(await has_text("ยืนยันผู้เข้าร่วม"), "แสดงส่วนจับคู่ชื่อ (Bob ยังไม่ยืนยัน มีชื่อ “46 Bob Smith” ให้เลือก)")
             await shot("5-transcript")
             await page.get_by_role("combobox", name="ตรงกับ").first.click()
             await page.get_by_role("option", name=re.compile("46 Bob Smith")).first.click()
