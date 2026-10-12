@@ -449,8 +449,8 @@ class UiTests(TempDbCase):
             {"description": "คิดดู", "assignee": None, "due_date": None, "due_time": None, "due_time_end": None, "evidence": []},
         ]
         df = tab_calendar.items_df(items, approved=True)
-        self.assertEqual(list(df["สถานะ"]), ["✓ ส่งแล้ว", "ยังไม่ส่ง", "ไม่มีวันที่ — จะไม่ส่ง"])
-        self.assertEqual(list(tab_calendar.items_df(items, approved=False)["สถานะ"])[1], "จะส่งตอนอนุมัติ")
+        self.assertEqual(list(df["สถานะ"]), ["✓ ส่งแล้ว", "ยังไม่ส่ง", "ไม่มีวันที่"])
+        self.assertEqual(list(tab_calendar.items_df(items, approved=False)["สถานะ"])[1], "รอส่ง")
         from ui import tab_report
         back = tab_report.actions_from_df(df)                                              # แปลงกลับเป็นงานของรายงานได้ (หลักฐานไม่หาย)
         self.assertEqual((back[0]["description"], back[0]["due_date"], back[0]["evidence"]), ("ส่งรายงาน", "2026-10-16", ["จะส่ง"]))
