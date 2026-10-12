@@ -269,6 +269,23 @@ class BotServiceTests(TempDbCase):
         self.assertEqual(mine["error"], "เกิดข้อผิดพลาดบางอย่าง")
         self.assertEqual((theirs["running"], theirs["rows"], theirs["status"], theirs["error"]), (False, [], [], None))
 
+    def test_state_reports_seconds_in_room_only_after_joining(self):
+        mid = self.meeting()
+        FakeEngine.script = [{"type": "status", "text": "ส่งคำขอเข้าร่วมแล้ว — รอหัวหน้าห้องกดยอมรับ…"}]
+        self.start(mid)
+        self.assertTrue(wait_for(lambda: self.state()["status"]))
+        self.assertIsNone(self.state()["in_room_seconds"])                          # ยังไม่ได้เข้าห้อง
+        botapp._handle_event({"type": "status", "text": "กำลังตรวจว่าเข้าห้องได้แล้วและเปิดคำบรรยาย…"})
+        first = self.state()["in_room_seconds"]
+        self.assertIsNotNone(first)
+        self.assertGreaterEqual(first, 0)
+        joined_at = botapp._joined_at
+        botapp._handle_event({"type": "status", "text": "กำลังตรวจว่าเข้าห้องได้แล้วและเปิดคำบรรยาย…"})
+        self.assertEqual(botapp._joined_at, joined_at)                                 # เข้าซ้ำ (หน้าโหลดใหม่) ไม่ทำให้นับใหม่
+        self.assertIsNone(self.state(self.other)["in_room_seconds"])                 # คนอื่นไม่เห็น
+        self.client.post("/bot/stop", headers=self.h(self.owner))
+        self.assertIsNone(self.state()["in_room_seconds"])                          # หยุดแล้วไม่นับ
+
     # ── Calendar OAuth ──
 
     def test_calendar_connect_requires_a_valid_signed_token(self):

@@ -200,6 +200,10 @@ class UiTests(TempDbCase):
         joined = {"rows": [], "status": waiting["status"] + [line("✅ เข้าห้องแล้วและเปิดคำบรรยายแล้ว (ตรวจยืนยันจากหน้าจอ)")]}
         self.assertEqual(tab_bot.phase_text(joined), "เข้าห้องแล้ว — กำลังอ่านคำบรรยาย (CC)")
         self.assertEqual(tab_bot.phase_text({"rows": [{"name": "A"}], "status": []}), "เข้าห้องแล้ว — กำลังอ่านคำบรรยาย (CC)")
+        self.assertTrue(tab_bot.phase_text({**joined, "in_room_seconds": 754}).endswith("อยู่ในห้องมาแล้ว 12 นาที"))
+        self.assertEqual([tab_bot.duration_text(s) for s in (20, 60, 3599, 3900, 7260)],
+                         ["ไม่ถึง 1 นาที", "1 นาที", "59 นาที", "1 ชม. 5 นาที", "2 ชม. 1 นาที"])
+        self.assertEqual(tab_bot.phase_text({**waiting, "in_room_seconds": None}), "รอให้กดยอมรับเข้าห้อง")      # ยังไม่เข้า = ไม่มีเวลา
 
     def test_start_button_calls_the_bot_service_for_this_meeting(self):
         mid = self.meeting("scheduled")
