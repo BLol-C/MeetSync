@@ -143,6 +143,19 @@ class ValidateTests(unittest.TestCase):
         action["action_items"][0]["description"] = "เสร็จภายในประมาณ 3"
         self.assertEqual(codes(self.check(action)), ["unclear_number"])
 
+    def test_same_unclear_number_phrase_in_summary_and_agenda_warns_once(self):
+        body = good_body()
+        phrase = "เสร็จไปแล้วประมาณ 1 ยังเหลือส่วนรายงาน"
+        body["summary"] = "โครงการ" + phrase
+        body["agenda"][0]["discussion"] = "ลองรายงานว่าโครงการ" + phrase
+        warnings = [w for w in self.check(body)["warnings"] if w["code"] == "unclear_number"]
+        self.assertEqual(len(warnings), 1)                                              # ไม่ขึ้นซ้ำสองบรรทัดเพราะวลีเดียวกัน
+        self.assertIn("สรุปภาพรวม และ เรื่องที่ 1", warnings[0]["message"])                  # แต่บอกว่าพบทั้งสองที่
+        other = good_body()
+        other["summary"] = "งบประมาณกว่า 3 ยังรอ"
+        other["agenda"][0]["discussion"] = "ลองรายงานว่าโครงการ" + phrase
+        self.assertEqual(sum(1 for w in self.check(other)["warnings"] if w["code"] == "unclear_number"), 2)   # วลีต่างกัน = เตือนแยก
+
     def test_revalidation_is_idempotent_for_human_edits(self):
         first = self.check(good_body())
         again = summarizer.validate_minutes(first, PARTS, TEXTS, MEETING.date())
