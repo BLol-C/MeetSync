@@ -332,6 +332,22 @@ class UiTests(TempDbCase):
         self.assertIn("ไม่พบหลักฐาน", tab_transcript.evidence_text({"seen_in_room": 0, "segment_count": 0, "attendance": "invited"}))
         self.assertIn("ผู้กรอกตั้งไว้", tab_transcript.evidence_text({"seen_in_room": 0, "segment_count": 0, "attendance": "present"}))
 
+    def test_home_delete_button_warns_about_following_meeting_and_rename_works(self):
+        first = self.meeting("transcript_review")
+        nxt = service.create_meeting(self.user, meet_url=URL, title="ประชุมถัดไป")
+        db.update_meeting_setup(nxt, previous_meeting_id=first)
+        at = self.app()
+        next(b for b in at.button if b.key == f"del_{first}").click().run()
+        warnings = " ".join(w.value for w in at.warning)
+        self.assertIn("ประชุมถัดไป", warnings)                                          # เตือนว่าเกี่ยวเนื่องกับประชุมไหน
+        self.assertTrue(next(b for b in at.button if b.key == f"delete_go_{first}").disabled)   # ต้องติ๊กยืนยันก่อน
+        # (การกดลบในกล่องโต้ตอบรีรันเฉพาะส่วนของมัน ซึ่ง AppTest จำลองไม่ได้ — ตรรกะลบทดสอบที่ชั้นบริการแล้ว)
+        mid = self.meeting("scheduled")
+        at = self.app(m=mid)
+        next(t for t in at.text_input if t.key == f"title_{mid}").set_value("ชื่อใหม่ของประชุม").run()
+        next(b for b in at.button if b.key == f"title_save_{mid}").click().run()
+        self.assertEqual(db.get_meeting(mid)["title"], "ชื่อใหม่ของประชุม")
+
     def test_transcript_tab_shows_conversation_grouped_into_speaker_turns(self):
         mid = self.meeting("transcript_review")            # สมชาย 1 ประโยค แล้ว Alice 1 ประโยค = 2 ช่วงพูด
         at = self.app(m=mid)

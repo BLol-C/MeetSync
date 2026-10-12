@@ -186,7 +186,8 @@ class WorkflowTests(TempDbCase):
         self.assertEqual(db.list_speakers(mid), [])              # ลบพร้อมรายชื่อ
         mid2 = db.create_meeting_setup(uid, meet_url=URL)
         db.begin_recording(mid2)
-        self.assertFalse(db.delete_scheduled_meeting(mid2))      # เริ่มแล้วลบไม่ได้
+        self.assertFalse(db.delete_scheduled_meeting(mid2))      # ฟังก์ชันเดิมลบได้เฉพาะที่ยังไม่เริ่ม
+        self.assertTrue(db.delete_meeting(mid2))                 # ฟังก์ชันใหม่ลบได้ทุกสถานะ
 
     def test_status_transitions(self):
         _, mid = self.new_meeting()

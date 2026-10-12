@@ -66,15 +66,14 @@ def render(user: dict, detail: dict):
         url = st.text_input("ลิงก์ Google Meet", value=meeting["meet_url"] or "",
                             disabled=locked or status != "scheduled", help="เปลี่ยนลิงก์ได้เฉพาะก่อนเริ่มบอท")
         c1, c2 = st.columns(2)
-        title = c1.text_input("ชื่อเรื่องการประชุม", value=meeting["title"] or "", disabled=locked)
-        org = c2.text_input("หน่วยงาน", value=meeting["org_name"] or "", disabled=locked)
-        no = c1.text_input("ครั้งที่", value=meeting["meeting_no"] or "", disabled=locked)
-        venue = c2.text_input("สถานที่", value=meeting["venue"] or "", disabled=locked)
+        org = c1.text_input("หน่วยงาน", value=meeting["org_name"] or "", disabled=locked)
+        no = c2.text_input("ครั้งที่", value=meeting["meeting_no"] or "", disabled=locked)
+        venue = c1.text_input("สถานที่", value=meeting["venue"] or "", disabled=locked)
         previous = common.previous_meeting_select(
             user, key=f"prev_{mid}", current_id=meeting.get("previous_meeting_id"), exclude_id=mid, disabled=locked)
         saved = st.form_submit_button("บันทึกข้อมูล", disabled=locked)
     if saved:
-        fields = {"title": title, "org_name": org, "meeting_no": no, "venue": venue, "previous_meeting_id": previous}
+        fields = {"org_name": org, "meeting_no": no, "venue": venue, "previous_meeting_id": previous}
         if status == "scheduled":
             fields["meet_url"] = url
         try:
@@ -121,16 +120,3 @@ def render(user: dict, detail: dict):
         for err in result["errors"]:
             common.flash("error", err)
         st.rerun()
-
-    if status == "scheduled" and not locked:
-        with st.expander("ลบการประชุมนี้"):
-            st.caption("ลบได้เฉพาะการประชุมที่ยังไม่เคยเริ่มบอท (รายชื่อผู้เข้าร่วมจะถูกลบไปด้วย)")
-            sure = st.checkbox("ยืนยันว่าต้องการลบ", key=f"del_ok_{mid}")
-            if st.button("ลบการประชุม", key=f"del_{mid}", disabled=not sure, type="primary"):
-                try:
-                    service.delete_meeting(user, mid)
-                except ServiceError as e:
-                    st.error(str(e))
-                else:
-                    common.flash("success", "ลบการประชุมแล้ว")
-                    common.go("home")

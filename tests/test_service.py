@@ -520,11 +520,57 @@ class ServiceTests(TempDbCase):
             service.get_detail(self.owner, mid)
         started = self.new_meeting()
         db.begin_recording(started)
-        with self.assertRaises(ServiceError) as cm:
-            service.delete_meeting(self.owner, started)
-        self.assertEqual(cm.exception.kind, "conflict")
         with self.assertRaises(ServiceError):
             service.update_meeting(self.owner, started, meet_url=URL)            # เริ่มแล้วเปลี่ยนลิงก์ไม่ได้
+
+    def test_delete_works_in_every_status_except_while_the_bot_records_it(self):
+        mid = self.new_meeting()
+        db.begin_recording(mid)
+        running = {"running": True, "meeting_id": mid, "mine": True}
+        with mock.patch.object(service.botclient, "state", lambda user: running):
+            with self.assertRaises(ServiceError) as cm:
+                service.delete_meeting(self.owner, mid)                          # บอทกำลังบันทึก = ต้องหยุดก่อน
+            self.assertEqual(cm.exception.kind, "conflict")
+            other = self.new_meeting()
+            service.delete_meeting(self.owner, other)                           # บอทบันทึกประชุมอื่นอยู่ ลบอันนี้ได้
+        with mock.patch.object(service.botclient, "state", lambda user: {"running": False, "meeting_id": None, "mine": False}):
+            service.delete_meeting(self.owner, mid)                              # เริ่มแล้วแต่หยุดแล้ว ลบได้
+        with self.assertRaises(ServiceError):
+            service.get_detail(self.owner, mid)
+        with self.assertRaises(ServiceError):
+            service.delete_meeting(self.other, self.new_meeting())               # คนนอกลบไม่ได้
+
+    def test_delete_warns_about_following_meetings_and_unlinks_them(self):
+        first = self.new_meeting()
+        second = service.create_meeting(self.owner, meet_url=URL, title="ครั้งที่สอง")
+        db.update_meeting_setup(second, previous_meeting_id=first)               # (ผ่านชั้นบริการต้องเป็นประชุมที่อนุมัติแล้ว จึงตั้งตรงในฐานข้อมูล)
+        self.assertEqual([m["title"] for m in service.following_meetings(self.owner, first)], ["ครั้งที่สอง"])
+        self.assertEqual(service.following_meetings(self.owner, second), [])
+        service.delete_meeting(self.owner, first)
+        self.assertIsNone(service.get_detail(self.owner, second)["meeting"]["previous_meeting_id"])
+
+    def test_delete_approved_meeting_removes_calendar_events_or_refuses(self):
+        mid = self.draft()
+        fake = FakeCalendar()
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:
+            service.approve_and_send(self.owner, mid, confirm_warnings=True)
+            out = service.delete_meeting(self.owner, mid)
+            self.assertEqual((out["deleted"], fake.deleted), (1, ["evt1"]))
+        self.assertIsNone(db.get_meeting(mid))
+        mid2 = self.draft()
+        fake2 = FakeCalendar()
+        q1, q2 = self.calendar_env(fake2)
+        with q1, q2:
+            service.approve_and_send(self.owner, mid2, confirm_warnings=True)
+        with mock.patch.object(calendar_sync.calendar_auth, "get_credentials", lambda uid: None):   # เชื่อมต่อหลุด
+            with self.assertRaises(ServiceError) as cm:
+                service.delete_meeting(self.owner, mid2)
+            self.assertEqual(cm.exception.kind, "calendar_failed")
+            self.assertIsNotNone(db.get_meeting(mid2))                           # ลบนัดไม่ได้ = ยังไม่ลบประชุม
+            out = service.delete_meeting(self.owner, mid2, force=True)           # ยอมให้นัดค้าง
+            self.assertEqual(len(out["failed"]), 1)
+        self.assertIsNone(db.get_meeting(mid2))
 
     # ── ผู้เข้าร่วม ──
 

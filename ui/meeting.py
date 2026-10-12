@@ -48,8 +48,19 @@ def render(user: dict, meeting_id: int):
     status = meeting["status"]
     detail["bot"] = _bot_info(user, meeting_id)
 
-    top, back = st.columns([6, 1.3], vertical_alignment="center")
+    top, rename, back = st.columns([6, 1.6, 1.6], vertical_alignment="center")
     top.title(common.md_escape(meeting["title"] or "การประชุม"))
+    with rename.popover("✎ เปลี่ยนชื่อ", width="stretch", disabled=status == "approved",
+                        help="รายงานที่อนุมัติแล้วเปลี่ยนชื่อไม่ได้ (ยกเลิกการอนุมัติก่อน)" if status == "approved" else None):
+        new_title = st.text_input("ชื่อเรื่องการประชุม", value=meeting["title"] or "", key=f"title_{meeting_id}")
+        if st.button("บันทึกชื่อ", key=f"title_save_{meeting_id}", type="primary"):
+            try:
+                service.update_meeting(user, meeting_id, title=new_title)
+            except ServiceError as e:
+                st.error(str(e))
+            else:
+                common.flash("success", "เปลี่ยนชื่อการประชุมแล้ว")
+                st.rerun()
     if back.button("← รายการประชุม", width="stretch"):
         common.go("home")
     st.caption(common.progress_text(status))

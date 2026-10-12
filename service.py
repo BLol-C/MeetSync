@@ -11,6 +11,7 @@ import datetime
 from integrations import calendar_auth
 from integrations import calendar_sync
 import db
+from bot import botclient
 from reports import pdf_report
 from reports import report_data
 from reports import summarizer
@@ -178,10 +179,32 @@ def update_meeting(user: dict, meeting_id: int, **fields) -> None:
         raise _value_error(e)
 
 
-def delete_meeting(user: dict, meeting_id: int) -> None:
+def following_meetings(user: dict, meeting_id: int) -> list[dict]:
+    """ประชุมอื่นที่ใช้การประชุมนี้เป็น "ประชุมครั้งก่อน" (เฉพาะที่ผู้ใช้เห็นได้) — ไว้เตือนก่อนลบ"""
     meeting_for(user, meeting_id)
-    if not db.delete_scheduled_meeting(meeting_id):
-        raise ServiceError("ลบได้เฉพาะการประชุมที่ยังไม่เคยเริ่มบอท", "conflict")
+    visible = {m["meeting_id"] for m in list_meetings(user)}
+    return [{"meeting_id": m["meeting_id"], "title": m["title"] or "(ไม่ได้ตั้งชื่อ)"}
+            for m in db.list_following_meetings(meeting_id) if m["meeting_id"] in visible]
+
+
+def delete_meeting(user: dict, meeting_id: int, force: bool = False) -> dict:
+    """ลบการประชุมได้ทุกสถานะ ยกเว้นบอทกำลังบันทึกประชุมนี้ (ต้องหยุดบอทก่อน)
+    ประชุมที่อนุมัติแล้วและมีนัดใน Google Calendar: ลบนัดออกด้วย ลบไม่สำเร็จ = ไม่ลบประชุม เว้นแต่ force=True (ยอมให้นัดค้างแล้วลบเอง)
+    คืน {"deleted": จำนวนนัดที่ลบ, "failed": [...]}"""
+    meeting_for(user, meeting_id)
+    try:
+        state = botclient.state(user)
+    except botclient.BotError:
+        state = None                           # ติดต่อบริการบอทไม่ได้ = ไม่มีบอทที่เรารู้ว่ากำลังทำงาน
+    if state and state["running"] and state["meeting_id"] == meeting_id:
+        raise ServiceError("บอทกำลังบันทึกการประชุมนี้อยู่ — หยุดบอทก่อนจึงจะลบได้", "conflict")
+    report = db.get_report(meeting_id)
+    out = {"deleted": 0, "failed": []}
+    if report and report["approved"]:
+        out = _delete_calendar_events(user, report, force, "ลบนัดที่ส่งไปแล้วออกจาก Google Calendar ไม่สำเร็จ จึงยังไม่ลบการประชุม")
+    if not db.delete_meeting(meeting_id):
+        raise ServiceError("ไม่พบการประชุมนี้", "not_found")
+    return out
 
 
 # ── ผู้เข้าร่วม ──
@@ -517,6 +540,15 @@ def reopen_report(user: dict, meeting_id: int, force: bool = False) -> dict:
     report = db.get_report(meeting_id)
     if not report or not report["approved"]:
         raise ServiceError("ยกเลิกการอนุมัติได้เฉพาะรายงานที่อนุมัติแล้ว", "conflict")
+    out = _delete_calendar_events(user, report, force, "ลบนัดที่ส่งไปแล้วออกจาก Google Calendar ไม่สำเร็จ จึงยังไม่ยกเลิกการอนุมัติ")
+    if not db.reopen_report(meeting_id):
+        raise ServiceError("ยกเลิกการอนุมัติได้เฉพาะรายงานที่อนุมัติแล้ว", "conflict")
+    return out
+
+
+def _delete_calendar_events(user: dict, report: dict, force: bool, fail_message: str) -> dict:
+    """ลบนัดที่เคยส่งเข้า Google Calendar ของรายงานนี้ (นัดอยู่ในปฏิทินของผู้อนุมัติ คนอื่นลบแทนไม่ได้)
+    มีที่ลบไม่สำเร็จและไม่ force = ยก calendar_failed"""
     sent = [it for it in report["content"]["action_items"] if it["google_calendar_event_id"]]
     deleted, failed = 0, []
     for it in sent:
@@ -528,9 +560,7 @@ def reopen_report(user: dict, meeting_id: int, force: bool = False) -> dict:
         except Exception as e:  # noqa: BLE001
             failed.append({"description": it["description"], "error": str(e)})
     if failed and not force:
-        raise ServiceError("ลบนัดที่ส่งไปแล้วออกจาก Google Calendar ไม่สำเร็จ จึงยังไม่ยกเลิกการอนุมัติ", "calendar_failed", {"failed": failed})
-    if not db.reopen_report(meeting_id):
-        raise ServiceError("ยกเลิกการอนุมัติได้เฉพาะรายงานที่อนุมัติแล้ว", "conflict")
+        raise ServiceError(fail_message, "calendar_failed", {"failed": failed})
     return {"deleted": deleted, "failed": failed}
 
 

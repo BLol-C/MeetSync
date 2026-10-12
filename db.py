@@ -406,6 +406,28 @@ def delete_scheduled_meeting(meeting_id: int) -> bool:
         conn.close()
 
 
+def delete_meeting(meeting_id: int) -> bool:
+    """ลบการประชุมทุกสถานะ (ผู้พูด ข้อความ รายงาน งาน ลบตามด้วย CASCADE; ประชุมที่อ้างอิงเป็น "ครั้งก่อน" ลิงก์ว่าง)"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM meetings WHERE meeting_id = %s", (meeting_id,))
+            return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def list_following_meetings(meeting_id: int) -> list[dict]:
+    """ประชุมที่ตั้งการประชุมนี้เป็น "ประชุมครั้งก่อน" """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT meeting_id, title, owner_user_id FROM meetings WHERE previous_meeting_id = %s", (meeting_id,))
+            return list(cur.fetchall())
+    finally:
+        conn.close()
+
+
 def begin_recording(meeting_id: int) -> bool:
     """เริ่ม (หรือกลับมาบันทึกต่อ) — ได้จาก scheduled / transcript_review / recording เท่านั้น
     เวลาเริ่มถูกตั้งใหม่เฉพาะตอนเริ่มครั้งแรก (scheduled) ถ้าบันทึกต่อจะคงเวลาเริ่มเดิมไว้
