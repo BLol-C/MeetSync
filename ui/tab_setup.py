@@ -53,32 +53,6 @@ def people_rows(df: pd.DataFrame) -> list[dict]:
     return rows
 
 
-def _name_picker(user: dict, mid: int, people: list[dict]):
-    """เลือก "ชื่อภาษาอังกฤษ" จากชื่อที่บอทเห็นในห้อง แทนการพิมพ์ (ไม่สะกดผิด) — ขึ้นเฉพาะเมื่อบอทเห็นชื่อที่ไม่ตรงกับรายชื่อ
-    และมีคนที่ลงทะเบียนไว้ที่ยังไม่ยืนยัน ใช้ได้ตอนตารางไม่ล็อก (หลังหยุดบอท) เลือกแล้วข้อความที่พูดและสถานะอัปเดตทันที"""
-    seen = [p for p in people if p["source"] == "meet"]
-    pending = [p for p in people if p["source"] == "registered" and p["attendance"] == "invited"]
-    if not seen or not pending:
-        return
-    labels = {m["speaker_id"]: (f"{m['display_name']} — พูด {m['segment_count']} ช่วง" if m["segment_count"]
-                                else f"{m['display_name']} — อยู่ในห้อง") for m in seen}
-    with st.expander("เลือกชื่อภาษาอังกฤษจากชื่อที่บอทเห็นในห้อง"):
-        for p in pending:
-            a, b, c = st.columns([3, 4, 1.4], vertical_alignment="center")
-            a.markdown(f"**{common.md_escape(p['display_name'])}**  \n{common.md_escape(p.get('meet_alias') or '(ไม่ได้กรอกชื่ออังกฤษ)')}")
-            choice = b.selectbox("ชื่อในห้อง", options=list(labels), format_func=labels.get, index=None,
-                                 placeholder="เลือกชื่อที่บอทเห็น…", key=f"pick_{p['speaker_id']}", label_visibility="collapsed")
-            if c.button("ใช้ชื่อนี้", key=f"pick_go_{p['speaker_id']}", disabled=choice is None, width="stretch"):
-                try:
-                    moved = service.merge_people(user, choice, p["speaker_id"])
-                except ServiceError as e:
-                    st.error(str(e))
-                else:
-                    common.flash("success", f"ตั้งชื่อภาษาอังกฤษของ {p['display_name']} จาก Meet แล้ว" + (f" (ย้ายข้อความ {moved} ช่วง)" if moved else ""))
-                    st.session_state[f"rev_people_{mid}"] = _rev(mid) + 1
-                    st.rerun()
-
-
 def render(user: dict, detail: dict):
     meeting = detail["meeting"]
     mid = meeting["meeting_id"]
@@ -119,8 +93,6 @@ def render(user: dict, detail: dict):
     roster_locked = locked or detail["roster_locked"]
     if roster_locked and not locked:
         st.caption("🔒 รายชื่อถูกล็อกระหว่างบอทบันทึก — แก้ได้อีกหลังกดหยุดบอท")
-    if not roster_locked:
-        _name_picker(user, mid, detail["people"])
     df = _people_df(table_people(detail["people"]))
     edited = st.data_editor(
         df, key=f"people_{mid}_{_rev(mid)}", hide_index=True, width="stretch",

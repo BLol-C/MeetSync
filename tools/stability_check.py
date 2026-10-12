@@ -2,7 +2,7 @@
 
   1) สร้างบทพูด 90 ประโยค (ประโยคละ 1 บรรทัด พูดทุก ~40 วินาที = 60 นาที):
        .\\venv\\Scripts\\python.exe tools\\stability_check.py make
-     ได้ไฟล์ evaluation\\stability_script.txt  (ผู้พูด 2 คนสลับกันอ่านตามบรรทัด)
+     ได้ไฟล์ tools\\stability_script.txt  (ผู้พูด 2 คนสลับกันอ่านตามบรรทัด)
 
   2) ระหว่างประชุม เปิดอีกหน้าต่าง PowerShell วัดหน่วยความจำ (ดู tools\\proc_monitor.ps1)
 
@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT))
 LINES = 90                 # 90 ประโยค x 40 วินาที = 60 นาที
 SECONDS_PER_LINE = 40
 MATCH_THRESHOLD = 0.6      # ประโยคถือว่า "จับได้" เมื่อความคล้ายกับ transcript ไม่ต่ำกว่านี้ (เผื่อคำที่ CC ถอดผิด)
-DEFAULT_SCRIPT = ROOT / "evaluation" / "stability_script.txt"
+DEFAULT_SCRIPT = ROOT / "tools" / "stability_script.txt"
 
 TOPICS = [
     "ระบบทะเบียนนักศึกษา", "เครื่องพิมพ์ใหม่ของห้องธุรการ", "การจัดซื้อโน้ตบุ๊ก", "การปรับปรุงห้องประชุมชั้นสอง",
