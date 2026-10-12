@@ -292,6 +292,23 @@ class UiTests(TempDbCase):
         next(b for b in at.button if b.key == f"verify_{mid}").click().run()
         self.assertEqual(db.get_meeting(mid)["status"], "transcript_verified")
 
+    def test_setup_tab_flags_mistyped_english_names_and_one_click_fixes_them(self):
+        mid = service.create_meeting(self.user, meet_url=URL, title="ชื่อพิมพ์ผิด", people=[
+            {"display_name": "กฤตินล แสงขาว", "meet_alias": "kittinon sangkraw", "role": "secretary", "attendance": "invited"}])
+        db.begin_recording(mid)
+        k = db.get_or_create_speaker(mid, "Kittinon SAENGKHAO")
+        db.insert_segment(mid, k, 1, "สวัสดีครับ")
+        at = self.app(m=mid)
+        button_key = next(b.key for b in at.button if b.key and b.key.startswith("use_name_"))
+        card = " ".join(texts(at.markdown))
+        self.assertIn("Kittinon SAENGKHAO", card)
+        self.assertIn("kittinon sangkraw", card)                                           # บอกทั้งชื่อใน Meet และที่กรอกไว้
+        next(b for b in at.button if b.key == button_key).click().run()
+        people = {p["display_name"]: p for p in db.list_speakers(mid)}
+        self.assertEqual((people["กฤตินล แสงขาว"]["meet_alias"], people["กฤตินล แสงขาว"]["attendance"],
+                          people["กฤตินล แสงขาว"]["segment_count"]), ("Kittinon SAENGKHAO", "present", 1))
+        self.assertFalse(any(b.key and b.key.startswith("use_name_") for b in self.app(m=mid).button))   # แก้แล้ว การ์ดหาย
+
     def test_transcript_tab_shows_conversation_grouped_into_speaker_turns(self):
         mid = self.meeting("transcript_review")            # สมชาย 1 ประโยค แล้ว Alice 1 ประโยค = 2 ช่วงพูด
         at = self.app(m=mid)

@@ -557,6 +557,53 @@ class ServiceTests(TempDbCase):
         self.assertIsNone(db.get_speaker(silent))                              # รวมเข้ากับ Bob แล้ว
         self.assertIsNotNone(db.get_speaker(room_only))                        # ที่ยังไม่ตรงคงอยู่
 
+    def mistyped_meeting(self):
+        """เคสจริงวันที่ 12 ต.ค.: ชื่อภาษาอังกฤษที่กรอกสะกดต่างจากที่ Meet แสดง (ตัวพิมพ์เล็กใหญ่และตัวสะกดผิด)"""
+        mid = service.create_meeting(self.owner, meet_url="https://meet.google.com/abc-defg-hij", title="ทดสอบชื่อ", people=[
+            {"display_name": "กฤตินล แสงขาว", "meet_alias": "kittinon sangkraw", "role": "secretary", "attendance": "present"},
+            {"display_name": "ณัฐกมล ยาคุ้มภัย", "meet_alias": "nutkamon yakhumpai", "role": "attendee", "attendance": "invited"},
+            {"display_name": "ธนาวีร์ บุญเกิด", "meet_alias": "Thanawee Boonkerd", "role": "chair", "attendance": "present"}])
+        db.begin_recording(mid)
+        k = db.get_or_create_speaker(mid, "Kittinon SAENGKHAO")                  # ไม่ตรง -> สร้างแถว "พบจาก Meet"
+        db.insert_segment(mid, k, 1, "สวัสดีครับ")
+        db.record_room_names(mid, ["Natkamon YAKHUMPHAI", "BOZZISX", "Thanawee BOONKERD"])   # Thanawee ตรงอยู่แล้ว
+        return mid
+
+    def test_typo_suggestions_pair_the_real_names_and_leave_strangers_alone(self):
+        mid = self.mistyped_meeting()
+        data = service.name_mismatches(self.owner, mid)
+        pairs = {(s["meet_name"], s["target_name"]) for s in data["suggestions"]}
+        self.assertEqual(pairs, {("Kittinon SAENGKHAO", "กฤตินล แสงขาว"), ("Natkamon YAKHUMPHAI", "ณัฐกมล ยาคุ้มภัย")})
+        self.assertEqual(data["unmatched"], ["BOZZISX"])                              # ไม่มีชื่อใกล้เคียง ไม่เดามั่ว
+        self.assertTrue(all(s["score"] >= 0.7 for s in data["suggestions"]))                  # ผ่านเกณฑ์ความคล้ายเท่านั้น
+        with self.assertRaises(ServiceError):
+            service.name_mismatches(self.other, mid)                                  # คนนอกเห็นไม่ได้
+
+    def test_using_the_meet_name_fixes_the_alias_merges_segments_and_marks_present(self):
+        mid = self.mistyped_meeting()
+        sug = next(s for s in service.name_mismatches(self.owner, mid)["suggestions"] if s["meet_name"] == "Natkamon YAKHUMPHAI")
+        self.assertEqual(db.get_speaker(sug["target_id"])["attendance"], "invited")
+        service.use_meet_name(self.owner, sug["meet_speaker_id"], sug["target_id"])
+        person = db.get_speaker(sug["target_id"])
+        self.assertEqual((person["meet_alias"], person["attendance"]), ("Natkamon YAKHUMPHAI", "present"))   # เข้าร่วมทันที ระหว่างยังบันทึกอยู่
+        self.assertIsNone(db.get_speaker(sug["meet_speaker_id"]))                                          # แถวพบจาก Meet ถูกรวมแล้ว
+        sug = next(s for s in service.name_mismatches(self.owner, mid)["suggestions"] if s["meet_name"] == "Kittinon SAENGKHAO")
+        self.assertEqual(service.use_meet_name(self.owner, sug["meet_speaker_id"], sug["target_id"]), 1)   # ย้ายข้อความ 1 ช่วงมาที่เลขา
+        secretary = next(p for p in db.list_speakers(mid) if p["display_name"] == "กฤตินล แสงขาว")
+        self.assertEqual(secretary["segment_count"], 1)                                                    # "ข้อความที่พูด" ไม่เป็น 0 อีกแล้ว
+        self.assertEqual([s["meet_name"] for s in service.name_mismatches(self.owner, mid)["suggestions"]], [])
+        db.get_or_create_speaker(mid, "Kittinon SAENGKHAO")                                                # ประโยคถัดไปเข้าแถวที่ลงทะเบียนเอง
+        self.assertEqual(len([p for p in db.list_speakers(mid) if p["source"] == "meet"]), 1)              # เหลือแต่ BOZZISX
+
+    def test_ambiguous_close_names_are_not_suggested(self):
+        mid = service.create_meeting(self.owner, meet_url="https://meet.google.com/abc-defg-hij", title="ชื่อคล้ายกัน", people=[
+            {"display_name": "ก", "meet_alias": "Somchai Jaidee", "role": "chair", "attendance": "present"},
+            {"display_name": "ข", "meet_alias": "Somchai Jaidea", "role": "secretary", "attendance": "present"}])
+        db.begin_recording(mid)
+        db.get_or_create_speaker(mid, "Somchai Jaidey")                                                   # ใกล้ทั้งสองคนพอกัน
+        data = service.name_mismatches(self.owner, mid)
+        self.assertEqual((data["suggestions"], data["unmatched"]), ([], ["Somchai Jaidey"]))              # กำกวม = ไม่เดา
+
     def test_people_table_reports_row_errors_without_losing_the_rest(self):
         mid = self.new_meeting()
         rows = self.table_rows(mid)
