@@ -16,7 +16,6 @@
 """
 
 import contextlib
-import difflib
 import json
 import os
 import re
@@ -799,39 +798,6 @@ def merge_speakers(source_id: int, target_id: int) -> int:
         if moved or src["attendance"] == "present":
             _mark_present(cur, target_id)
         return moved
-
-
-TYPO_MATCH_MIN = 0.7      # ความคล้ายขั้นต่ำของชื่อ (0–1) ที่ถือว่า "น่าจะพิมพ์ผิดจากชื่อเดียวกัน" — ชื่อคนละคนในเคสจริงได้ไม่เกิน ~0.55
-TYPO_MATCH_MARGIN = 0.1   # ต้องคล้ายกว่าอันดับสองอย่างน้อยเท่านี้ ไม่งั้นถือว่ากำกวม (ไม่เดา)
-
-
-def _name_key(name: str) -> str:
-    return re.sub(r"\s+", "", normalize_name(name or ""))
-
-
-def suggest_name_matches(meeting_id: int) -> dict:
-    """ชื่อที่บอทเห็นใน Meet (source = 'meet') ที่ยังไม่ตรงกับใคร กับคนที่ลงทะเบียนไว้ที่ "ชื่อภาษาอังกฤษ" น่าจะพิมพ์ผิดจากชื่อเดียวกัน
-    เทียบเฉพาะชื่อภาษาอังกฤษ (meet_alias) ไม่ผูกกับตัวสะกดทีละตัวอักษร ไม่จับคู่เองเด็ดขาด — แค่เสนอให้ผู้ใช้กดยืนยัน
-    คืน {"suggestions": [{meet_speaker_id, meet_name, segment_count, target_id, target_name, target_alias, score}], "unmatched": [ชื่อ Meet ที่ไม่มีชื่อใกล้เคียง]}"""
-    people = list_speakers(meeting_id)
-    registered = [p for p in people if p["source"] == "registered" and p["meet_alias"]]
-    scored = []
-    for m in (p for p in people if p["source"] == "meet"):
-        ranked = sorted(((difflib.SequenceMatcher(None, _name_key(m["display_name"]), _name_key(r["meet_alias"])).ratio(), r)
-                         for r in registered), key=lambda x: -x[0])
-        if ranked and ranked[0][0] >= TYPO_MATCH_MIN and (len(ranked) == 1 or ranked[0][0] - ranked[1][0] >= TYPO_MATCH_MARGIN):
-            scored.append((ranked[0][0], m, ranked[0][1]))
-    suggestions, used_targets, matched = [], set(), set()
-    for score, m, r in sorted(scored, key=lambda x: -x[0]):
-        if r["speaker_id"] in used_targets:
-            continue                                     # คนที่ลงทะเบียนหนึ่งคน เสนอให้ชื่อ Meet ได้แค่ชื่อเดียว (ใกล้สุด)
-        used_targets.add(r["speaker_id"])
-        matched.add(m["speaker_id"])
-        suggestions.append({"meet_speaker_id": m["speaker_id"], "meet_name": m["display_name"], "segment_count": m["segment_count"],
-                            "target_id": r["speaker_id"], "target_name": r["display_name"], "target_alias": r["meet_alias"],
-                            "score": round(score, 2)})
-    unmatched = [p["display_name"] for p in people if p["source"] == "meet" and p["speaker_id"] not in matched]
-    return {"suggestions": suggestions, "unmatched": unmatched}
 
 
 def rematch_meet_speakers(meeting_id: int) -> int:

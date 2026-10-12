@@ -53,39 +53,6 @@ def people_rows(df: pd.DataFrame) -> list[dict]:
     return rows
 
 
-def _mismatch_card(user: dict, mid: int, running: bool):
-    """ชื่อที่ Meet แสดงแต่ไม่ตรงกับรายชื่อ — เสนอชื่อที่น่าจะพิมพ์ผิด กดครั้งเดียวแก้ให้ตรงและรวมให้ทันที
-    (ระหว่างบอทบันทึกอยู่ การ์ดนี้รีเฟรชเองทุก 5 วินาที)"""
-
-    def body():
-        data = service.name_mismatches(user, mid)
-        if not data["suggestions"] and not data["unmatched"]:
-            return
-        with st.container(border=True):
-            st.markdown("**ชื่อใน Meet ที่ไม่ตรงกับรายชื่อ**")
-            for s in data["suggestions"]:
-                left, right = st.columns([5, 1.6], vertical_alignment="center")
-                left.markdown(f"**{common.md_escape(s['meet_name'])}** ≈ {common.md_escape(s['target_name'])} "
-                              f"(กรอกไว้: {common.md_escape(s['target_alias'])})")
-                if right.button("ใช้ชื่อตาม Meet", key=f"use_name_{s['meet_speaker_id']}_{s['target_id']}", width="stretch"):
-                    try:
-                        moved = service.use_meet_name(user, s["meet_speaker_id"], s["target_id"])
-                    except ServiceError as e:
-                        st.error(str(e))
-                        return
-                    common.flash("success", f"แก้ชื่อภาษาอังกฤษของ {s['target_name']} ให้ตรงกับ Meet แล้ว"
-                                 + (f" (ย้ายข้อความ {moved} ช่วง)" if moved else ""))
-                    st.session_state[f"rev_people_{mid}"] = _rev(mid) + 1
-                    st.rerun()
-            for name in data["unmatched"]:
-                st.caption(f"{name} — ไม่พบชื่อใกล้เคียงในรายชื่อ")
-
-    if running:
-        st.fragment(run_every=5)(body)()
-    else:
-        body()
-
-
 def render(user: dict, detail: dict):
     meeting = detail["meeting"]
     mid = meeting["meeting_id"]
@@ -123,8 +90,6 @@ def render(user: dict, detail: dict):
         if w["code"] in ("no_chair", "no_secretary"):
             st.warning(w["message"])
 
-    if not locked:
-        _mismatch_card(user, mid, bool(detail.get("bot", {}).get("running_here")))
     df = _people_df(table_people(detail["people"]))
     edited = st.data_editor(
         df, key=f"people_{mid}_{_rev(mid)}", hide_index=True, width="stretch",

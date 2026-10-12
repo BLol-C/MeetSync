@@ -208,31 +208,6 @@ def merge_people(user: dict, source_id: int, target_id: int) -> int:
         raise _value_error(e)
 
 
-def name_mismatches(user: dict, meeting_id: int) -> dict:
-    """ชื่อใน Meet ที่ไม่ตรงกับรายชื่อ พร้อมข้อเสนอว่าน่าจะเป็นใคร (ผู้ใช้กดยืนยันเอง) — ดู db.suggest_name_matches"""
-    meeting_for(user, meeting_id)
-    return db.suggest_name_matches(meeting_id)
-
-
-def use_meet_name(user: dict, meet_speaker_id: int, target_id: int) -> int:
-    """ยืนยันว่าชื่อที่ Meet แสดง (meet_speaker_id) คือคนที่ลงทะเบียนไว้ (target_id): ตั้ง "ชื่อภาษาอังกฤษ" ของเขาให้ตรงกับชื่อใน Meet
-    แล้วรวมข้อความ/สถานะเข้าด้วยกันทันที คืนจำนวนช่วงคำพูดที่ย้ายมา"""
-    source, meeting = _person_meeting(user, meet_speaker_id)
-    target = db.get_speaker(target_id)
-    if source["source"] != "meet" or not target or target["source"] != "registered" or target["meeting_id"] != source["meeting_id"]:
-        raise ServiceError("จับคู่ไม่ได้ — ต้องเป็นชื่อที่พบจาก Meet กับผู้เข้าร่วมที่ลงทะเบียนไว้ในการประชุมเดียวกัน", "invalid")
-    moved = db.list_speakers(source["meeting_id"])
-    segs = next((p["segment_count"] for p in moved if p["speaker_id"] == meet_speaker_id), 0)
-    try:
-        db.update_speaker(target_id, meet_alias=source["display_name"])
-    except ValueError as e:
-        raise _value_error(e)
-    db.rematch_meet_speakers(source["meeting_id"])
-    if db.get_speaker(meet_speaker_id) is not None:    # ยังไม่ถูกรวม = มีคนอื่นใช้ชื่ออังกฤษเดียวกันอยู่ (กำกวม)
-        raise ServiceError("ชื่อนี้ซ้ำกับชื่อภาษาอังกฤษของอีกคนในรายชื่อ — แก้ที่ตารางให้ไม่ซ้ำกันก่อน", "conflict")
-    return segs
-
-
 _PERSON_FIELDS = ("display_name", "email", "role", "attendance", "absence_reason", "position", "meet_alias")
 
 
