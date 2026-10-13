@@ -90,10 +90,11 @@ def previous_meeting_select(user: dict, *, key: str, current_id: int | None = No
         labels[f"{m['title'] or '(ไม่ได้ตั้งชื่อ)'}{no} · {thai_date(m['started_at'])} (#{m['meeting_id']})"] = m["meeting_id"]
     ids = list(labels.values())
     wanted = current_id if current_id is not None and current_id in ids else None
-    return labels[st.selectbox(
-        "การประชุมครั้งก่อน", options=list(labels), index=ids.index(wanted), key=key, disabled=disabled,
-        help="ระบบเติมรายงานวาระที่ 2 (รับรองรายงานครั้งก่อน) วาระที่ 3 (งานที่มอบหมายไว้) และวาระที่ 4.1 (เรื่องที่ไม่มีมติ) "
-             "จากรายงานของการประชุมนี้ เลือกได้เฉพาะที่อนุมัติรายงานแล้ว — ตรวจและแก้ได้ที่แท็บ ④ ก่อนอนุมัติ")]
+    choice = labels[st.selectbox(
+        "การประชุมครั้งก่อน", options=list(labels), index=ids.index(wanted), key=key, disabled=disabled)]
+    if len(labels) == 1:     # ไม่มีให้เลือกเลย — บอกเหตุผลแทนที่จะปล่อยให้งง
+        st.caption("ยังไม่มีการประชุมให้เลือก — เลือกได้เฉพาะการประชุมที่อนุมัติรายงานแล้วเท่านั้น")
+    return choice
 
 
 # ── นำทาง ──

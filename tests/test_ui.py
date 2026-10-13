@@ -98,6 +98,15 @@ class UiTests(TempDbCase):
         new_box = next(x for x in new.selectbox if x.key == "new_previous_meeting")
         self.assertEqual(new_box.value, "— ไม่มี / ไม่ใช้ข้อมูลครั้งก่อน —")              # หน้าสร้างใหม่เริ่มที่ "ไม่ใช้" แม้มีครั้งที่อนุมัติแล้ว ผู้ใช้เลือกเอง
         self.assertIn(new_box.value, new_box.options)
+        self.assertFalse(any("ยังไม่มีการประชุมให้เลือก" in v for v in texts(new.caption)))     # มีให้เลือก = ไม่ต้องอธิบาย
+
+    def test_previous_meeting_box_explains_why_it_is_empty_and_has_no_help_icon(self):
+        mid = self.meeting("draft")                                                       # ยังไม่มีประชุมที่อนุมัติแล้วเลย
+        at = self.app(m=mid)
+        box = next(x for x in at.selectbox if x.key == f"prev_{mid}")
+        self.assertEqual(list(box.options), ["— ไม่มี / ไม่ใช้ข้อมูลครั้งก่อน —"])
+        self.assertEqual(box.help, "")                                                    # ไม่มีเครื่องหมาย ? มุมขวาบน
+        self.assertTrue(any("เลือกได้เฉพาะการประชุมที่อนุมัติรายงานแล้ว" in v for v in texts(at.caption)))
 
     # ── หน้ารวมและหน้าสร้าง ──
 
