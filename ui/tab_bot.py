@@ -34,20 +34,25 @@ def duration_text(seconds: int) -> str:
     return f"{seconds // 3600} ชั่วโมง {seconds % 3600 // 60} นาที {seconds % 60} วินาที"
 
 
-def phase_text(state: dict) -> str:
-    """สถานะบอทบรรทัดเดียว: ยังไม่ได้เข้าห้อง (รอ host กดยอมรับ) หรือเข้าห้องแล้วและอ่านคำบรรยายอยู่"""
-    joined = bool(state["rows"]) or any(
-        "✅" in line["text"] or "กำลังฟังคำบรรยาย" in line["text"] for line in state["status"])
-    return "เข้าห้องแล้ว — กำลังอ่านคำบรรยาย (CC)" if joined else "รอให้กดยอมรับเข้าห้อง"
-
-
-def activity_text(state: dict) -> str:
-    """สิ่งที่บอทกำลังทำล่าสุด (ข้อความสถานะล่าสุดจากบอท ไม่รวมคำเตือนที่แสดงแยกอยู่แล้ว) พร้อมเวลา"""
-    for line in reversed(state["status"]):
-        if line["text"].startswith("⚠️"):
-            continue
-        return f"บอททำอะไรอยู่: {line['text']} ({line['t']})"
-    return "บอททำอะไรอยู่: เริ่มทำงาน…"
+def bot_state_text(state: dict) -> str:
+    """สถานะบอทสั้นๆ บรรทัดเดียว: กำลังเข้าห้อง / กำลังรอเข้าห้อง (รอผู้จัดกดอนุญาต) / กำลังฟังอยู่
+    (ไม่แสดงข้อความดิบจากบันทึกของบอท — คำเตือนจริงแสดงแยกในกล่องเหลือง)"""
+    texts = [line["text"] for line in state["status"]]
+    joined = (state.get("in_room_seconds") is not None or bool(state["rows"])
+              or any("✅" in t or "กำลังฟังคำบรรยาย" in t for t in texts))
+    if joined:
+        for t in reversed(texts):                 # เข้าห้องแล้วแต่เปิดคำบรรยายไม่ได้ = ยังไม่ได้ฟังจริง
+            if "ยังเปิดคำบรรยายไม่สำเร็จ" in t or t.startswith("⚠️ เปิดคำบรรยายไม่สำเร็จ"):
+                return "บอทอยู่ในห้องแล้ว แต่ยังฟังไม่ได้ (เปิดคำบรรยายไม่สำเร็จ)"
+            if "เปิดคำบรรยายแล้ว" in t or "กำลังฟังคำบรรยาย" in t:
+                break
+        return "บอทกำลังฟังอยู่"
+    for t in reversed(texts):
+        if "ส่งคำขอเข้าร่วมแล้ว" in t:
+            return "บอทกำลังรอเข้าห้อง"
+        if "กดเข้าร่วมแล้ว" in t or "กำลังตรวจว่าเข้าห้อง" in t:
+            break
+    return "บอทกำลังเข้าห้อง"
 
 
 def _live_panel(user: dict, mid: int):
@@ -67,11 +72,10 @@ def _live_panel(user: dict, mid: int):
                 st.rerun()
             return
         left, right = st.columns([3, 2], vertical_alignment="center")
-        left.caption(phase_text(state))
+        left.markdown(f"**{bot_state_text(state)}**")
         if state.get("in_room_seconds") is not None:
             right.markdown(f"<div style='text-align:right'><b>อยู่ในห้องมาแล้ว {duration_text(state['in_room_seconds'])}</b></div>",
                            unsafe_allow_html=True)
-        st.caption(activity_text(state))
         outsiders = service.outsider_names(user, mid)
         if outsiders:
             st.warning("มีชื่อในห้องที่ไม่อยู่ในรายชื่อ: " + ", ".join(outsiders)

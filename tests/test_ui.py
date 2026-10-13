@@ -201,22 +201,28 @@ class UiTests(TempDbCase):
         self.assertFalse(any("เริ่มบอท" in b.label for b in at.button if b.key and b.key.startswith("start_")))
         self.assertTrue(any("บริการบอทไม่ได้เปิดอยู่" in v for v in texts(at.sidebar.error)))
 
-    def test_live_status_is_either_waiting_to_be_admitted_or_reading_captions(self):
+    def test_live_status_says_entering_waiting_or_listening(self):
         from ui import tab_bot
         line = lambda text: {"t": "10:00:00", "text": text}
         waiting = {"rows": [], "status": [line("กำลังเปิดเบราว์เซอร์…"), line("ส่งคำขอเข้าร่วมแล้ว — รอหัวหน้าห้องกดยอมรับ…")]}
-        self.assertEqual(tab_bot.phase_text(waiting), "รอให้กดยอมรับเข้าห้อง")
+        self.assertEqual(tab_bot.bot_state_text(waiting), "บอทกำลังรอเข้าห้อง")
+        entering = {"rows": [], "status": [line("กำลังเปิดเบราว์เซอร์…")]}
+        self.assertEqual(tab_bot.bot_state_text(entering), "บอทกำลังเข้าห้อง")
+        self.assertEqual(tab_bot.bot_state_text({"rows": [], "status": []}), "บอทกำลังเข้าห้อง")                  # เพิ่งสั่งเริ่ม ยังไม่มีสถานะ
+        after_admit = {"rows": [], "status": waiting["status"] + [line("กดเข้าร่วมแล้ว (ไม่ต้องรอ host) — กำลังเข้าห้อง…")]}
+        self.assertEqual(tab_bot.bot_state_text(after_admit), "บอทกำลังเข้าห้อง")                                  # ได้รับอนุญาตแล้ว ไม่ใช่รออีก
         joined = {"rows": [], "status": waiting["status"] + [line("✅ เข้าห้องแล้วและเปิดคำบรรยายแล้ว (ตรวจยืนยันจากหน้าจอ)")]}
-        self.assertEqual(tab_bot.phase_text(joined), "เข้าห้องแล้ว — กำลังอ่านคำบรรยาย (CC)")
-        self.assertEqual(tab_bot.phase_text({"rows": [{"name": "A"}], "status": []}), "เข้าห้องแล้ว — กำลังอ่านคำบรรยาย (CC)")
+        self.assertEqual(tab_bot.bot_state_text(joined), "บอทกำลังฟังอยู่")
+        self.assertEqual(tab_bot.bot_state_text({"rows": [{"name": "A"}], "status": []}), "บอทกำลังฟังอยู่")
+        self.assertEqual(tab_bot.bot_state_text({"rows": [], "status": [], "in_room_seconds": 5}), "บอทกำลังฟังอยู่")   # สถานะเก่าหลุดจากบันทึกแล้วก็ยังรู้ว่าอยู่ในห้อง
+        no_cc = {"rows": [], "status": [line("กำลังตรวจว่าเข้าห้องได้แล้วและเปิดคำบรรยาย…"),
+                                         line("⚠️ เปิดคำบรรยายไม่สำเร็จ — ยังไม่ได้ฟังอะไร")], "in_room_seconds": 9}
+        self.assertIn("ยังฟังไม่ได้", tab_bot.bot_state_text(no_cc))
+        self.assertEqual(tab_bot.bot_state_text({**no_cc, "status": no_cc["status"] + [line("✅ เปิดคำบรรยายแล้ว (ตรวจยืนยันจากหน้าจอ)")]}),
+                         "บอทกำลังฟังอยู่")                                                                         # เปิดได้ทีหลังแล้ว
         self.assertEqual([tab_bot.duration_text(s) for s in (0, 20, 60, 3599, 3905, 7261)],
                          ["0 ชั่วโมง 0 นาที 0 วินาที", "0 ชั่วโมง 0 นาที 20 วินาที", "0 ชั่วโมง 1 นาที 0 วินาที",
                           "0 ชั่วโมง 59 นาที 59 วินาที", "1 ชั่วโมง 5 นาที 5 วินาที", "2 ชั่วโมง 1 นาที 1 วินาที"])
-        # คำบรรยายว่าบอททำอะไรอยู่ = ข้อความสถานะล่าสุดที่ไม่ใช่คำเตือน
-        self.assertEqual(tab_bot.activity_text(waiting), "บอททำอะไรอยู่: ส่งคำขอเข้าร่วมแล้ว — รอหัวหน้าห้องกดยอมรับ… (10:00:00)")
-        with_warning = {"rows": [], "status": waiting["status"] + [line("⚠️ อ่านรายชื่อผู้เข้าร่วมในห้องไม่ได้")]}
-        self.assertIn("ส่งคำขอเข้าร่วมแล้ว", tab_bot.activity_text(with_warning))                           # คำเตือนแสดงแยก ไม่ซ้ำที่นี่
-        self.assertEqual(tab_bot.activity_text({"rows": [], "status": []}), "บอททำอะไรอยู่: เริ่มทำงาน…")
 
     def test_start_button_calls_the_bot_service_for_this_meeting(self):
         mid = self.meeting("scheduled")
