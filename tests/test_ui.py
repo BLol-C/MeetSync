@@ -209,10 +209,14 @@ class UiTests(TempDbCase):
         joined = {"rows": [], "status": waiting["status"] + [line("✅ เข้าห้องแล้วและเปิดคำบรรยายแล้ว (ตรวจยืนยันจากหน้าจอ)")]}
         self.assertEqual(tab_bot.phase_text(joined), "เข้าห้องแล้ว — กำลังอ่านคำบรรยาย (CC)")
         self.assertEqual(tab_bot.phase_text({"rows": [{"name": "A"}], "status": []}), "เข้าห้องแล้ว — กำลังอ่านคำบรรยาย (CC)")
-        self.assertTrue(tab_bot.phase_text({**joined, "in_room_seconds": 754}).endswith("อยู่ในห้องมาแล้ว 12 นาที"))
-        self.assertEqual([tab_bot.duration_text(s) for s in (20, 60, 3599, 3900, 7260)],
-                         ["ไม่ถึง 1 นาที", "1 นาที", "59 นาที", "1 ชม. 5 นาที", "2 ชม. 1 นาที"])
-        self.assertEqual(tab_bot.phase_text({**waiting, "in_room_seconds": None}), "รอให้กดยอมรับเข้าห้อง")      # ยังไม่เข้า = ไม่มีเวลา
+        self.assertEqual([tab_bot.duration_text(s) for s in (0, 20, 60, 3599, 3905, 7261)],
+                         ["0 ชั่วโมง 0 นาที 0 วินาที", "0 ชั่วโมง 0 นาที 20 วินาที", "0 ชั่วโมง 1 นาที 0 วินาที",
+                          "0 ชั่วโมง 59 นาที 59 วินาที", "1 ชั่วโมง 5 นาที 5 วินาที", "2 ชั่วโมง 1 นาที 1 วินาที"])
+        # คำบรรยายว่าบอททำอะไรอยู่ = ข้อความสถานะล่าสุดที่ไม่ใช่คำเตือน
+        self.assertEqual(tab_bot.activity_text(waiting), "บอททำอะไรอยู่: ส่งคำขอเข้าร่วมแล้ว — รอหัวหน้าห้องกดยอมรับ… (10:00:00)")
+        with_warning = {"rows": [], "status": waiting["status"] + [line("⚠️ อ่านรายชื่อผู้เข้าร่วมในห้องไม่ได้")]}
+        self.assertIn("ส่งคำขอเข้าร่วมแล้ว", tab_bot.activity_text(with_warning))                           # คำเตือนแสดงแยก ไม่ซ้ำที่นี่
+        self.assertEqual(tab_bot.activity_text({"rows": [], "status": []}), "บอททำอะไรอยู่: เริ่มทำงาน…")
 
     def test_start_button_calls_the_bot_service_for_this_meeting(self):
         mid = self.meeting("scheduled")
