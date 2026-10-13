@@ -168,8 +168,9 @@ def _handle_event(ev: dict):
             return
         row_id = ev.get("id")
         first_seen = (_live_rows.get(row_id) or {}).get("t") or time.strftime("%H:%M:%S")   # เวลาที่เริ่มพูด (แถวเดิมที่ถูกแก้ข้อความคงเวลาแรกไว้)
+        # แถวใหม่ต่อท้าย แถวเดิมที่ถูกส่งซ้ำ/แก้ข้อความอยู่ที่เดิม (เรียงตามเวลาที่เริ่มพูด) — ไม่ย้ายไปท้ายสุด
+        # ไม่งั้นแถวเก่าที่ Meet ส่งซ้ำจะโผล่ขึ้นมาอยู่บนสุดของกล่องสดทั้งที่พูดไปนานแล้ว
         _live_rows[row_id] = {"id": row_id, "name": name, "text": text, "final": bool(ev.get("final")), "t": first_seen}
-        _live_rows.move_to_end(row_id)
         while len(_live_rows) > _LIVE_ROWS_MAX:
             _live_rows.popitem(last=False)
         if ev.get("final") and _db_ready and _current_meeting_id is not None and _save_queue is not None:
