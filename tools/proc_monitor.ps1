@@ -1,4 +1,4 @@
-# วัดหน่วยความจำของ Python (uvicorn) และ Chrome ของบอท ทุก N วินาที เก็บเป็น CSV ไว้เป็นหลักฐานทดสอบรัน 1 ชั่วโมงขึ้นไป
+﻿# วัดหน่วยความจำของ Python (uvicorn) และ Chrome ของบอท ทุก N วินาที เก็บเป็น CSV ไว้เป็นหลักฐานทดสอบรัน 1 ชั่วโมงขึ้นไป
 #
 # วิธีใช้ (เปิดอีกหน้าต่าง PowerShell ระหว่างที่บอทกำลังอยู่ในห้องประชุมจริง):
 #   powershell -ExecutionPolicy Bypass -File tools\proc_monitor.ps1 -Minutes 95

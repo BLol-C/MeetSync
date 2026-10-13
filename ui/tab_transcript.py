@@ -39,45 +39,89 @@ def segment_rows(df: pd.DataFrame) -> list[dict]:
     return rows
 
 
-def _unconfirmed_section(user: dict, people: list[dict], editable: bool):
-    """ผู้ที่ลงทะเบียนไว้แต่ยังไม่ยืนยันการเข้าร่วม — เลือกว่าตรงกับชื่อไหนที่เห็นใน Meet (บอทอ่านจากห้อง/จากคนที่พูด)
-    หรือกำหนดเองว่ามา/ไม่มา; ถ้าไม่ตั้ง ตอนยืนยัน transcript จะถูกบันทึกเป็น "ไม่มา" """
+def evidence_text(p: dict) -> str:
+    """หลักฐานว่าคนนี้เข้าร่วมประชุมหรือไม่ — จากสิ่งที่บอทเห็นจริง (เห็นชื่อในห้อง / เคยพูด) ไม่ใช่การเดา"""
+    parts = []
+    if p.get("seen_in_room"):
+        parts.append("เห็นในห้อง")
+    if p.get("segment_count"):
+        parts.append(f"พูด {p['segment_count']} ช่วง")
+    if parts:
+        return " · ".join(parts)
+    return "ผู้กรอกตั้งไว้ (ไม่พบหลักฐานจากบอท)" if p["attendance"] != "invited" else "ไม่พบหลักฐาน (ไม่เห็นในห้อง ไม่เคยพูด)"
+
+
+def _confirm_section(user: dict, people: list[dict], editable: bool) -> int:
+    """หัวข้อเดียว "ยืนยันผู้เข้าร่วม" — ต้องตอบให้ครบก่อนยืนยัน transcript คืนจำนวนที่ยังไม่ได้ตอบ
+
+    1) คนที่ลงทะเบียนไว้แต่ยังไม่ยืนยัน (บอทไม่เห็นชื่อตรงกับ "ชื่อภาษาอังกฤษ"): เลือกว่าตรงกับชื่อไหนที่เห็นใน Meet (กรณีสะกดผิด)
+       หรือยืนยันว่ามา (เข้าห้องแต่ไม่พูด) / ไม่มา (พร้อมสาเหตุ)
+    2) ชื่อที่ Meet แสดงแต่ไม่อยู่ในรายชื่อ: เลือกว่าเป็นคนไหนในรายชื่อ / ผู้มาประชุมทั่วไป / ไม่นับในรายงาน"""
     pending = [p for p in people if p["source"] == "registered" and p["attendance"] == "invited"]
-    if not pending:
-        return
-    seen = [p for p in people if p["source"] == "meet"]
-    labels = {}
-    for m in seen:
-        labels[f"meet:{m['speaker_id']}"] = (f"{m['display_name']} — พูด {m['segment_count']} ช่วง" if m["segment_count"]
-                                             else f"{m['display_name']} — อยู่ในห้อง")
-    labels["present"] = "มาประชุม (ไม่พบชื่อในรายการ Meet)"
-    labels["absent"] = "ไม่ได้เข้าประชุม (ไม่มา)"
-    st.subheader("ผู้เข้าร่วมที่ยังไม่ยืนยันการเข้าร่วม")
-    st.caption("บอทอ่านชื่อคนที่อยู่ในห้อง Meet ไว้ให้เลือก เลือกชื่อที่ตรงกับแต่ละคน (ระบบจำชื่อนี้ไว้ ครั้งหน้าจับคู่ให้เอง) "
-               "หรือกำหนดเองว่ามา/ไม่มา — ถ้าไม่ตั้ง ตอนกดยืนยัน transcript ระบบจะบันทึกเป็น “ไม่มา”")
-    if not seen:
-        st.info("ยังไม่พบชื่อใน Meet ที่ไม่ตรงกับรายชื่อ (บอทอ่านรายชื่อในห้องไม่ได้ หรือทุกคนที่อยู่ในห้องจับคู่ได้แล้ว)")
+    outsiders = [p for p in people if p["source"] == "meet"]
+    if not pending and not outsiders:
+        return 0
+    registered = [p for p in people if p["source"] == "registered"]
+
+    def seen_label(m):
+        return (f"{m['display_name']} — พูด {m['segment_count']} ช่วง" if m["segment_count"] else f"{m['display_name']} — อยู่ในห้อง")
+
+    st.subheader("ยืนยันผู้เข้าร่วม")
+    done = lambda msg, mid: (common.flash("success", msg), st.session_state.__setitem__(f"rev_segs_{mid}", _rev(mid) + 1), st.rerun())  # noqa: E731
+
     for p in pending:
+        labels = {f"meet:{m['speaker_id']}": seen_label(m) for m in outsiders}
+        labels["present"] = "มาประชุม (เข้าห้องแต่ไม่พูด / ไม่พบชื่อใน Meet)"
+        labels["absent"] = "ไม่ได้เข้าประชุม (ไม่มา)"
         with st.container(border=True):
             a, b, c = st.columns([3, 4, 1.2], vertical_alignment="center")
-            a.markdown(f"**{common.md_escape(p['display_name'])}**  \n{common.ROLE_LABEL.get(p['role'], p['role'])}")
+            a.markdown(f"**{common.md_escape(p['display_name'])}**  \n{common.ROLE_LABEL.get(p['role'], p['role'])} · {evidence_text(p)}")
             choice = b.selectbox("ตรงกับ", options=list(labels), format_func=labels.get, index=None,
-                                 placeholder="เลือกชื่อใน Meet ที่ตรงกัน หรือกำหนดสถานะ…", key=f"unc_{p['speaker_id']}",
+                                 placeholder="เลือกชื่อใน Meet ที่ตรงกัน หรือยืนยันมา/ไม่มา…", key=f"unc_{p['speaker_id']}",
                                  label_visibility="collapsed", disabled=not editable)
+            reason = ""
+            if choice == "absent":
+                reason = st.text_input("สาเหตุที่ไม่มา (ถ้ามี)", value=p.get("absence_reason") or "", key=f"unc_reason_{p['speaker_id']}")
             if c.button("ยืนยัน", key=f"unc_go_{p['speaker_id']}", disabled=not editable or choice is None, width="stretch"):
                 try:
                     if choice in ("present", "absent"):
-                        service.set_person_attendance(user, p["speaker_id"], choice)
-                        done = "ตั้งเป็น " + ("เข้าร่วม" if choice == "present" else "ไม่มา") + f": {p['display_name']}"
+                        service.set_person_attendance(user, p["speaker_id"], choice, reason if choice == "absent" else None)
+                        msg = "ตั้งเป็น " + ("เข้าร่วม" if choice == "present" else "ไม่มา") + f": {p['display_name']}"
                     else:
                         moved = service.merge_people(user, int(choice.split(":")[1]), p["speaker_id"])
-                        done = f"จับคู่แล้ว: {p['display_name']} เข้าร่วม" + (f" (ย้าย {moved} ช่วง)" if moved else "")
+                        msg = f"จับคู่แล้ว: {p['display_name']} เข้าร่วม" + (f" (ย้าย {moved} ช่วง)" if moved else "")
                 except ServiceError as e:
                     st.error(str(e))
                 else:
-                    common.flash("success", done)
-                    st.session_state[f"rev_segs_{p['meeting_id']}"] = _rev(p["meeting_id"]) + 1
-                    st.rerun()
+                    done(msg, p["meeting_id"])
+
+    for m in outsiders:
+        labels = {f"person:{r['speaker_id']}": f"คือ {r['display_name']}" for r in registered}
+        labels["guest"] = "ผู้มาประชุมทั่วไป (ไม่อยู่ในรายชื่อ)"
+        labels["exclude"] = "ไม่นับในรายงาน"
+        with st.container(border=True):
+            a, b, c = st.columns([3, 4, 1.2], vertical_alignment="center")
+            a.markdown(f"**{common.md_escape(m['display_name'])}**  \nชื่อใน Meet ที่ไม่อยู่ในรายชื่อ · "
+                       + ("พูด " + str(m["segment_count"]) + " ช่วง" if m["segment_count"] else "อยู่ในห้อง"))
+            choice = b.selectbox("เป็นใคร", options=list(labels), format_func=labels.get, index=None,
+                                 placeholder="เลือกว่าชื่อนี้คือใคร…", key=f"out_{m['speaker_id']}",
+                                 label_visibility="collapsed", disabled=not editable)
+            if c.button("ยืนยัน", key=f"out_go_{m['speaker_id']}", disabled=not editable or choice is None, width="stretch"):
+                try:
+                    if choice == "guest":
+                        service.confirm_guest(user, m["speaker_id"])
+                        msg = f"ยืนยันเป็นผู้มาประชุมทั่วไป: {m['display_name']}"
+                    elif choice == "exclude":
+                        how = service.exclude_person(user, m["speaker_id"])
+                        msg = f"ไม่นับในรายงาน: {m['display_name']}" + (" (ซ่อนไว้ เพราะมีข้อความที่ยังอ้างอิงอยู่)" if how == "hidden" else "")
+                    else:
+                        moved = service.merge_people(user, m["speaker_id"], int(choice.split(":")[1]))
+                        msg = f"จับคู่แล้ว: {m['display_name']} = {labels[choice][4:]}" + (f" (ย้าย {moved} ช่วง)" if moved else "")
+                except ServiceError as e:
+                    st.error(str(e))
+                else:
+                    done(msg, m["meeting_id"])
+    return len(pending) + len(outsiders)
 
 
 def render(user: dict, detail: dict):
@@ -101,7 +145,7 @@ def render(user: dict, detail: dict):
         st.success("🔒 รายงานอนุมัติแล้ว transcript ถูกล็อก")
 
     people_in_meeting = [{**p, "meeting_id": mid} for p in people]
-    _unconfirmed_section(user, people_in_meeting, editable and status != "approved")
+    unresolved = _confirm_section(user, people_in_meeting, editable and status != "approved")
 
     if not segments:
         st.subheader("ข้อความที่บอทจับได้")
@@ -160,21 +204,15 @@ def render(user: dict, detail: dict):
         if left.button("💾 บันทึกการแก้ไข", key=f"save_segs_{mid}"):
             save_edits()
             st.rerun()
-        if mid_col.button("✓ ยืนยัน transcript (ปลดล็อกให้ AI ร่างรายงาน)", key=f"verify_{mid}", type="primary"):
+        if mid_col.button("✓ ยืนยัน transcript (ปลดล็อกให้ AI ร่างรายงาน)", key=f"verify_{mid}", type="primary",
+                          disabled=bool(unresolved), help=f"ยังยืนยันผู้เข้าร่วมไม่ครบ ({unresolved} รายการ)" if unresolved else None):
             if save_edits():   # ยืนยันสิ่งที่เห็นอยู่ในตารางตอนนี้ — บันทึกที่แก้ค้างไว้ก่อนเสมอ ไม่ทิ้งการแก้ไขโดยไม่รู้ตัว
                 try:
                     out = service.verify_transcript(user, mid, bot_running=bot["running_here"])
                 except ServiceError as e:
                     st.error(str(e))
                 else:
-                    if out["unmapped"]:
-                        common.flash("warning", "ยืนยันแล้ว แต่ยังมีชื่อจาก Meet ที่ไม่ได้รวมกับผู้เข้าร่วม: "
-                                     + ", ".join(out["unmapped"]) + " (AI จะระบุผู้รับผิดชอบงานให้คนเหล่านี้ไม่ได้)")
-                    else:
-                        common.flash("success", "ยืนยัน transcript แล้ว — ไปแท็บ ④ รายงาน เพื่อให้ AI ร่างรายงาน")
-                    if out["marked_absent"]:
-                        common.flash("info", "ผู้ที่ยังไม่ยืนยันการเข้าร่วมถูกบันทึกเป็น \"ไม่มา\": "
-                                     + ", ".join(out["marked_absent"]) + " (ถ้ามาจริงแต่ไม่ได้พูด แก้เป็น \"เข้าร่วม\" ที่แท็บ ① ข้อมูล)")
+                    common.flash("success", "ยืนยัน transcript แล้ว — ไปแท็บ ④ รายงาน เพื่อให้ AI ร่างรายงาน")
                     st.rerun()
             else:
                 st.rerun()

@@ -25,8 +25,8 @@ def status_text(item: dict, approved: bool) -> str:
     if item.get("google_calendar_event_id"):
         return "✓ ส่งแล้ว"
     if not item.get("due_date"):
-        return "ไม่มีวันที่ — จะไม่ส่ง"
-    return "ยังไม่ส่ง" if approved else "จะส่งตอนอนุมัติ"
+        return "ไม่มีวันที่"
+    return "ยังไม่ส่ง" if approved else "รอส่ง"
 
 
 def items_df(items: list[dict], approved: bool) -> pd.DataFrame:

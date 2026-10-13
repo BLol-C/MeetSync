@@ -147,12 +147,21 @@ class ServiceTests(TempDbCase):
         db.insert_segment(mid, s3, 3, "ทดสอบไมค์ ๆ")
         db.end_meeting(mid)
 
+    def settle(self, mid, absent=()):
+        """ตอบหัวข้อ "ยืนยันผู้เข้าร่วม" ให้ครบ: ชื่อจาก Meet = ไม่นับในรายงาน, คนที่ยังไม่ยืนยัน = มา (ยกเว้นที่ระบุว่าไม่มา)"""
+        for person in db.list_speakers(mid):
+            if person["source"] == "meet":
+                db.exclude_meet_speaker(person["speaker_id"])
+            elif person["attendance"] == "invited":
+                db.update_speaker(person["speaker_id"], attendance="absent" if person["display_name"] in absent else "present")
+
     def verified(self):
         mid = self.new_meeting()
         self.record(mid)
         zed = next(s for s in service.list_segments(self.owner, mid) if s["display_name"] == "Zed")
         service.apply_segments_table(self.owner, mid, [{"segment_id": zed["segment_id"], "display_name": "Zed",
                                                          "text": zed["text"], "deleted": True}])
+        self.settle(mid)
         service.verify_transcript(self.owner, mid)
         return mid
 
@@ -298,6 +307,7 @@ class ServiceTests(TempDbCase):
     def generate_for(self, **over):
         mid = self.new_meeting(**over)
         self.record(mid)
+        self.settle(mid)
         service.verify_transcript(self.owner, mid)
         service.generate_report(self.owner, mid, generate=fake_ai)
         return mid
@@ -510,11 +520,57 @@ class ServiceTests(TempDbCase):
             service.get_detail(self.owner, mid)
         started = self.new_meeting()
         db.begin_recording(started)
-        with self.assertRaises(ServiceError) as cm:
-            service.delete_meeting(self.owner, started)
-        self.assertEqual(cm.exception.kind, "conflict")
         with self.assertRaises(ServiceError):
             service.update_meeting(self.owner, started, meet_url=URL)            # เริ่มแล้วเปลี่ยนลิงก์ไม่ได้
+
+    def test_delete_works_in_every_status_except_while_the_bot_records_it(self):
+        mid = self.new_meeting()
+        db.begin_recording(mid)
+        running = {"running": True, "meeting_id": mid, "mine": True}
+        with mock.patch.object(service.botclient, "state", lambda user: running):
+            with self.assertRaises(ServiceError) as cm:
+                service.delete_meeting(self.owner, mid)                          # บอทกำลังบันทึก = ต้องหยุดก่อน
+            self.assertEqual(cm.exception.kind, "conflict")
+            other = self.new_meeting()
+            service.delete_meeting(self.owner, other)                           # บอทบันทึกประชุมอื่นอยู่ ลบอันนี้ได้
+        with mock.patch.object(service.botclient, "state", lambda user: {"running": False, "meeting_id": None, "mine": False}):
+            service.delete_meeting(self.owner, mid)                              # เริ่มแล้วแต่หยุดแล้ว ลบได้
+        with self.assertRaises(ServiceError):
+            service.get_detail(self.owner, mid)
+        with self.assertRaises(ServiceError):
+            service.delete_meeting(self.other, self.new_meeting())               # คนนอกลบไม่ได้
+
+    def test_delete_warns_about_following_meetings_and_unlinks_them(self):
+        first = self.new_meeting()
+        second = service.create_meeting(self.owner, meet_url=URL, title="ครั้งที่สอง")
+        db.update_meeting_setup(second, previous_meeting_id=first)               # (ผ่านชั้นบริการต้องเป็นประชุมที่อนุมัติแล้ว จึงตั้งตรงในฐานข้อมูล)
+        self.assertEqual([m["title"] for m in service.following_meetings(self.owner, first)], ["ครั้งที่สอง"])
+        self.assertEqual(service.following_meetings(self.owner, second), [])
+        service.delete_meeting(self.owner, first)
+        self.assertIsNone(service.get_detail(self.owner, second)["meeting"]["previous_meeting_id"])
+
+    def test_delete_approved_meeting_removes_calendar_events_or_refuses(self):
+        mid = self.draft()
+        fake = FakeCalendar()
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:
+            service.approve_and_send(self.owner, mid, confirm_warnings=True)
+            out = service.delete_meeting(self.owner, mid)
+            self.assertEqual((out["deleted"], fake.deleted), (1, ["evt1"]))
+        self.assertIsNone(db.get_meeting(mid))
+        mid2 = self.draft()
+        fake2 = FakeCalendar()
+        q1, q2 = self.calendar_env(fake2)
+        with q1, q2:
+            service.approve_and_send(self.owner, mid2, confirm_warnings=True)
+        with mock.patch.object(calendar_sync.calendar_auth, "get_credentials", lambda uid: None):   # เชื่อมต่อหลุด
+            with self.assertRaises(ServiceError) as cm:
+                service.delete_meeting(self.owner, mid2)
+            self.assertEqual(cm.exception.kind, "calendar_failed")
+            self.assertIsNotNone(db.get_meeting(mid2))                           # ลบนัดไม่ได้ = ยังไม่ลบประชุม
+            out = service.delete_meeting(self.owner, mid2, force=True)           # ยอมให้นัดค้าง
+            self.assertEqual(len(out["failed"]), 1)
+        self.assertIsNone(db.get_meeting(mid2))
 
     # ── ผู้เข้าร่วม ──
 
@@ -570,13 +626,47 @@ class ServiceTests(TempDbCase):
         self.assertTrue(any("มีผู้เข้าร่วมชื่อ" in e for e in result["errors"]))
         self.assertEqual(next(p for p in service.get_detail(self.owner, mid)["people"] if p["display_name"] == "Alice")["attendance"], "present")
 
-    def test_people_with_transcript_cannot_be_deleted_by_removing_the_row(self):
+    def test_roster_is_locked_while_the_bot_records_and_editable_again_after_stop(self):
         mid = self.new_meeting()
-        self.record(mid)
-        rows = [r for r in self.table_rows(mid) if r["display_name"] != "Alice"]      # Alice มีข้อความแล้ว
+        self.assertFalse(service.get_detail(self.owner, mid)["roster_locked"])           # ก่อนเริ่มบอท แก้ได้
+        rows = self.table_rows(mid)
+        self.assertEqual(service.apply_people_table(self.owner, mid, rows)["errors"], [])
+        db.begin_recording(mid)                                                         # กดเริ่มบอทแล้ว
+        self.assertTrue(service.get_detail(self.owner, mid)["roster_locked"])
+        with self.assertRaises(ServiceError) as cm:
+            service.apply_people_table(self.owner, mid, rows)
+        self.assertEqual(cm.exception.kind, "conflict")
+        with self.assertRaises(ServiceError):
+            service.add_person(self.owner, mid, "คนเพิ่มทีหลัง")
+        db.end_meeting(mid)                                                             # กดหยุดบอทแล้ว -> แก้ได้อีก
+        self.assertFalse(service.get_detail(self.owner, mid)["roster_locked"])
+        self.assertEqual(service.apply_people_table(self.owner, mid, rows)["errors"], [])
+        self.assertTrue(service.get_detail(self.owner, self.approved_meeting())["roster_locked"])   # อนุมัติแล้วล็อกเสมอ
+
+    def test_fixing_an_english_name_after_stop_updates_everything_together(self):
+        mid = service.create_meeting(self.owner, meet_url=URL, title="แก้ชื่อหลังหยุดบอท", people=[
+            {"display_name": "กฤตินล", "meet_alias": "kittinon sangkraw", "role": "secretary", "attendance": "invited"},
+            {"display_name": "ธนาวีร์", "meet_alias": "Thanawee Boonkerd", "role": "chair", "attendance": "present"}])
+        db.begin_recording(mid)
+        k = db.get_or_create_speaker(mid, "Kittinon SAENGKHAO")                           # สะกดต่างจากที่กรอก -> แถว "พบจาก Meet"
+        db.insert_segment(mid, k, 1, "สวัสดีครับ")
+        db.insert_segment(mid, k, 2, "ขอเสนอเรื่องงบ")
+        db.end_meeting(mid)
+        rows = self.table_rows(mid)
+        next(r for r in rows if r["display_name"] == "กฤตินล")["meet_alias"] = "Kittinon SAENGKHAO"   # แก้ให้ตรงหลังหยุดบอท
         result = service.apply_people_table(self.owner, mid, rows)
-        self.assertEqual(result["deleted"], 0)
-        self.assertTrue(any("Alice" in e and "มีข้อความ" in e for e in result["errors"]))
+        self.assertEqual((result["errors"], result["matched"]), ([], 1))
+        people = {p["display_name"]: p for p in db.list_speakers(mid)}
+        self.assertNotIn("Kittinon SAENGKHAO", people)                                    # แถวพบจาก Meet ถูกรวมแล้ว
+        self.assertEqual((people["กฤตินล"]["segment_count"], people["กฤตินล"]["attendance"]), (2, "present"))   # ข้อความและสถานะอัปเดตพร้อมกัน
+
+    def try_delete(self, mid):
+        alice = next(p for p in db.list_speakers(mid) if p["display_name"] == "Alice")
+        try:
+            db.delete_speaker(alice["speaker_id"])
+        except ValueError as e:
+            return e
+        return ""
 
     # ── transcript ──
 
@@ -632,6 +722,7 @@ class ServiceTests(TempDbCase):
         self.assertEqual(len(service.apply_segments_table(self.owner, mid, rows)["errors"]), 1)   # ข้อความว่างไม่ได้
         with self.assertRaises(ServiceError):
             service.verify_transcript(self.owner, mid, bot_running=True)         # บอทยังรันอยู่
+        self.settle(mid)
         v = service.verify_transcript(self.owner, mid)
         self.assertEqual(v["unmapped"], [])                                      # Zed มีแต่ช่วงที่ลบ -> ไม่นับ
         with self.assertRaises(ServiceError) as cm:                              # ยืนยันแล้วแก้ไม่ได้ ต้อง reopen
@@ -640,19 +731,28 @@ class ServiceTests(TempDbCase):
         service.reopen_transcript(self.owner, mid)
         self.assertEqual(service.apply_segments_table(self.owner, mid, rows)["errors"] != [], True)
 
-    def test_verify_turns_unconfirmed_people_into_absent_so_the_database_matches_the_report(self):
-        mid = self.new_meeting()          # Alice พูดในประชุม -> เข้าร่วมเอง, Bob ไม่ได้พูด ยังเป็น "ยังไม่ยืนยัน"
+    def test_verify_is_blocked_until_everyone_is_confirmed_then_database_matches_the_report(self):
+        mid = self.new_meeting()          # Alice พูดในประชุม -> เข้าร่วมเอง, Bob ไม่ได้พูด ยังเป็น "ยังไม่ยืนยัน", Zed = ชื่อจาก Meet ไม่อยู่ในรายชื่อ
         self.record(mid)
         status = {p["display_name"]: p["attendance"] for p in db.list_speakers(mid)}
         self.assertEqual((status["Alice"], status["Bob"]), ("present", "invited"))
+        with self.assertRaises(ServiceError) as cm:
+            service.verify_transcript(self.owner, mid)
+        self.assertEqual(cm.exception.kind, "needs_confirmation")
+        self.assertEqual(sorted(cm.exception.extra["unresolved"]), ["Bob", "Zed"])        # ยืนยันไม่ได้จนกว่าจะตอบครบ
+        bob = next(p for p in db.list_speakers(mid) if p["display_name"] == "Bob")
+        zed = next(p for p in db.list_speakers(mid) if p["display_name"] == "Zed")
+        service.set_person_attendance(self.owner, bob["speaker_id"], "absent", "ติดภารกิจ")   # ยืนยันว่าไม่มา พร้อมสาเหตุ
+        with self.assertRaises(ServiceError):
+            service.verify_transcript(self.owner, mid)                                   # Zed ยังไม่ได้ตอบ
+        service.confirm_guest(self.owner, zed["speaker_id"])
         out = service.verify_transcript(self.owner, mid)
-        self.assertEqual(out["marked_absent"], ["Bob"])
+        self.assertEqual(out["marked_absent"], [])                                       # ไม่มีใครถูกบันทึกเป็นไม่มาโดยไม่ตั้งใจ
         status = {p["display_name"]: p["attendance"] for p in db.list_speakers(mid)}
-        self.assertEqual((status["Alice"], status["Bob"]), ("present", "absent"))
+        self.assertEqual((status["Alice"], status["Bob"], status["Zed"]), ("present", "absent", "present"))
         header = service.get_detail(self.owner, mid)["header"]
-        absent_in_report = {a["name"] for a in header["absent"]}
-        absent_in_db = {p["display_name"] for p in db.list_speakers(mid) if p["attendance"] == "absent"}
-        self.assertEqual(absent_in_report, absent_in_db)           # ฐานข้อมูลกับรายงานตรงกัน
+        self.assertEqual({a["name"]: a["reason"] for a in header["absent"]}, {"Bob": "ติดภารกิจ"})
+        self.assertEqual([g["name"] for g in header["guests"]], ["Zed"])                 # ผู้มาประชุมทั่วไปขึ้นในรายงาน
         self.assertEqual(header["unconfirmed_count"], 0)
 
     def test_verify_keeps_explicit_attendance_and_reports_nothing_when_all_are_settled(self):
@@ -662,21 +762,81 @@ class ServiceTests(TempDbCase):
             {"display_name": "Alice", "attendance": "present"},
             {"display_name": "Bob", "attendance": "absent", "absence_reason": "ลาป่วย"}])
         self.record(mid)
+        self.settle(mid)
         self.assertEqual(service.verify_transcript(self.owner, mid)["marked_absent"], [])
         bob = next(p for p in db.list_speakers(mid) if p["display_name"] == "Bob")
         self.assertEqual((bob["attendance"], bob["absence_reason"]), ("absent", "ลาป่วย"))
 
-    def test_approve_also_settles_people_added_after_verification(self):
-        mid = self.draft()
-        service.add_person(self.owner, mid, "Carol")                # เพิ่มทีหลัง ค่าเริ่มต้น = ยังไม่ยืนยัน
-        self.assertEqual(next(p for p in db.list_speakers(mid) if p["display_name"] == "Carol")["attendance"], "invited")
-        service.approve_report(self.owner, mid, confirm_warnings=True)
-        self.assertEqual(next(p for p in db.list_speakers(mid) if p["display_name"] == "Carol")["attendance"], "absent")
-
-    def test_verify_lists_unmapped_meet_names(self):
+    def test_people_cannot_be_added_while_recording_but_can_after_stop_until_approval(self):
         mid = self.new_meeting()
-        self.record(mid)
-        self.assertEqual(service.verify_transcript(self.owner, mid)["unmapped"], ["Zed"])
+        db.begin_recording(mid)
+        with self.assertRaises(ServiceError) as cm:
+            service.add_person(self.owner, mid, "Carol")                                 # ระหว่างบันทึก รายชื่อล็อก
+        self.assertEqual(cm.exception.kind, "conflict")
+        db.end_meeting(mid)
+        service.add_person(self.owner, mid, "Carol")                                     # หยุดบอทแล้วเพิ่มได้
+        approved = self.approved_meeting()
+        with self.assertRaises(ServiceError):
+            service.add_person(self.owner, approved, "Dave")                             # อนุมัติแล้วล็อก
+
+    def test_each_outsider_can_be_matched_confirmed_as_guest_or_excluded(self):
+        mid = self.new_meeting()
+        db.begin_recording(mid)
+        typo = db.get_or_create_speaker(mid, "46 Bob Smith")                             # Bob ที่ชื่อ Meet ไม่ตรง
+        stranger = db.get_or_create_speaker(mid, "BOZZISX")
+        silent = db.get_or_create_speaker(mid, "Test Account")                           # บัญชีทดสอบที่ไม่ควรอยู่ในรายงาน
+        db.insert_segment(mid, typo, 1, "สวัสดีครับ")
+        db.insert_segment(mid, stranger, 2, "มาฟังครับ")
+        db.end_meeting(mid)
+        bob = next(p for p in db.list_speakers(mid) if p["display_name"] == "Bob")["speaker_id"]
+        self.assertEqual(service.merge_people(self.owner, typo, bob), 1)                 # จับคู่เองกับคนในรายชื่อ
+        self.assertEqual(db.get_speaker(bob)["meet_alias"], "46 Bob Smith")              # ชื่อ Meet ที่ยืนยันแล้วถูกจำเป็นชื่ออังกฤษ
+        service.confirm_guest(self.owner, stranger)
+        self.assertEqual(service.exclude_person(self.owner, silent), "deleted")          # ไม่มีข้อความ = ลบแถวทิ้ง
+        self.assertIsNone(db.get_speaker(silent))
+        with self.assertRaises(ServiceError):
+            service.confirm_guest(self.owner, bob)                                       # ใช้ได้เฉพาะชื่อที่พบจาก Meet
+        again = db.get_or_create_speaker(mid, "BOZZISX")                                 # ประโยคถัดไปของคนเดิมเข้าแถวเดิม ไม่สร้างใหม่
+        self.assertEqual(again, stranger)
+        hidden = db.get_or_create_speaker(mid, "Hidden Person")
+        db.insert_segment(mid, hidden, 3, "อยู่ในประชุมแต่ไม่นับ")
+        self.assertEqual(service.exclude_person(self.owner, hidden), "hidden")           # มีข้อความ = ซ่อนไว้
+        names = [g["name"] for g in service.get_detail(self.owner, mid)["header"]["guests"]]
+        self.assertEqual(names, ["BOZZISX"])                                             # คนที่ไม่นับไม่ขึ้นในรายงาน
+
+    def test_room_scan_records_evidence_and_outsider_names_for_the_alert(self):
+        mid = service.create_meeting(self.owner, meet_url=URL, title="หลักฐาน", people=[
+            {"display_name": "ธนาวีร์", "meet_alias": "Thanawee BOONKERD", "role": "chair", "attendance": "invited"},
+            {"display_name": "ณัฐกมล", "meet_alias": "nutkamon yakhumpai", "role": "attendee", "attendance": "invited"},
+            {"display_name": "ศศิน", "meet_alias": "Sasin T", "role": "attendee", "attendance": "invited"}])
+        db.begin_recording(mid)
+        db.record_room_names(mid, ["Thanawee BOONKERD", "Natkamon YAKHUMPHAI", "BOZZISX"])
+        people = {p["display_name"]: p for p in db.list_speakers(mid)}
+        self.assertEqual((people["ธนาวีร์"]["seen_in_room"], people["ธนาวีร์"]["attendance"]), (1, "present"))   # ชื่อตรง = เห็นในห้อง + มา
+        self.assertEqual((people["ศศิน"]["seen_in_room"], people["ศศิน"]["attendance"]), (0, "invited"))         # ไม่เห็นเลย = ไม่มีหลักฐาน
+        self.assertEqual(people["BOZZISX"]["seen_in_room"], 1)                                                  # คนนอกที่บอทเห็นก็มีหลักฐานว่าอยู่ในห้อง
+        self.assertEqual(sorted(service.outsider_names(self.owner, mid)), ["BOZZISX", "Natkamon YAKHUMPHAI"])  # แจ้งเตือนระหว่างบันทึก (รวมที่สะกดต่าง)
+        with self.assertRaises(ServiceError):
+            service.outsider_names(self.other, mid)
+        nat = next(p for p in db.list_speakers(mid) if p["display_name"] == "Natkamon YAKHUMPHAI")
+        target = people["ณัฐกมล"]["speaker_id"]
+        service.merge_people(self.owner, nat["speaker_id"], target)                                             # ผู้ใช้ยืนยันว่าเป็นคนเดียวกัน
+        merged = db.get_speaker(target)
+        self.assertEqual((merged["seen_in_room"], merged["attendance"], merged["meet_alias"]), (1, "present", "Natkamon YAKHUMPHAI"))   # หลักฐานติดตามไปด้วย
+        self.assertEqual(service.outsider_names(self.owner, mid), ["BOZZISX"])
+
+    def test_matching_uses_the_english_name_only_when_one_is_filled(self):
+        mid = service.create_meeting(self.owner, meet_url=URL, title="จับคู่ภาษาอังกฤษ", people=[
+            {"display_name": "Thanachai", "meet_alias": "Thanachai SRITHONG", "role": "chair", "attendance": "invited"},
+            {"display_name": "Natkamon", "role": "attendee"}])                              # ไม่ได้กรอกชื่ออังกฤษ -> ใช้ชื่อหลักจับคู่
+        db.begin_recording(mid)
+        wrong = db.get_or_create_speaker(mid, "Thanachai S")                              # ใกล้เคียงทั้งชื่อหลักและชื่ออังกฤษ แต่ไม่เหมือนเป๊ะ -> ไม่เดา
+        self.assertEqual(db.get_speaker(wrong)["source"], "meet")
+        self.assertEqual(db.get_or_create_speaker(mid, "Thanachai"),                       # เหมือนชื่อหลักเป๊ะ (สร้างแถวซ้ำไม่ได้) -> ถือเป็นคนเดียวกัน ไม่ล้ม
+                         next(p["speaker_id"] for p in db.list_speakers(mid) if p["display_name"] == "Thanachai"))
+        right = db.get_or_create_speaker(mid, "thanachai srithong")                      # ตรงชื่ออังกฤษ (ไม่สนตัวพิมพ์เล็กใหญ่)
+        self.assertEqual(db.get_speaker(right)["source"], "registered")
+        self.assertEqual(db.get_or_create_speaker(mid, "Natkamon"), next(p["speaker_id"] for p in db.list_speakers(mid) if p["display_name"] == "Natkamon"))
 
     # ── รายงาน ──
 
@@ -754,6 +914,7 @@ class ServiceTests(TempDbCase):
         self.record(mid)
         zed = next(s for s in service.list_segments(self.owner, mid) if s["display_name"] == "Zed")
         db.edit_segment(zed["segment_id"], deleted=True)                         # ชื่อที่ไม่รู้จักถูกจัดการแล้ว
+        self.settle(mid)
         service.verify_transcript(self.owner, mid)
 
         def clean_ai(prompt, schema=None):

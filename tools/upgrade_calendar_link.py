@@ -2,10 +2,11 @@
 
     .\\venv\\Scripts\\python.exe tools\\upgrade_calendar_link.py
 
-ทำสามอย่าง (รันซ้ำได้ปลอดภัย):
+ทำสี่อย่าง (รันซ้ำได้ปลอดภัย):
   1. เพิ่มคอลัมน์ action_items.google_calendar_link (ลิงก์เปิดนัดใน Google Calendar)
   2. ลบคอลัมน์ action_items.calendar_synced ที่ซ้ำกับ google_calendar_event_id (มี event id = ส่งแล้ว)
-  3. ลบตาราง calendar_tasks ที่เคยสร้างไว้ในรุ่นก่อนหน้า (ตอนนี้ส่งเข้า Calendar จาก action_items โดยตรง)
+  3. เพิ่มคอลัมน์ speakers.seen_in_room (หลักฐานว่าบอทเห็นชื่อในห้อง ใช้สรุปให้ผู้ใช้ยืนยันมา/ไม่มาที่แท็บ ③)
+  4. ลบตาราง calendar_tasks ที่เคยสร้างไว้ในรุ่นก่อนหน้า (ตอนนี้ส่งเข้า Calendar จาก action_items โดยตรง)
      — ลบเฉพาะเมื่อตารางว่าง ถ้ามีข้อมูลอยู่จะไม่แตะและแจ้งให้ทราบ
 """
 
@@ -44,6 +45,13 @@ def main() -> int:
                     print("action_items.calendar_synced: ลบคอลัมน์ที่ซ้ำกับ google_calendar_event_id แล้ว")
             else:
                 print("action_items.calendar_synced: ไม่มี (ไม่ต้องทำอะไร)")
+            cur.execute("SELECT COUNT(*) AS n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() "
+                        "AND TABLE_NAME = 'speakers' AND COLUMN_NAME = 'seen_in_room'")
+            if cur.fetchone()["n"]:
+                print("speakers.seen_in_room: มีอยู่แล้ว")
+            else:
+                cur.execute("ALTER TABLE speakers ADD COLUMN seen_in_room BOOLEAN NOT NULL DEFAULT FALSE")
+                print("speakers.seen_in_room: เพิ่มแล้ว (หลักฐานว่าบอทเห็นชื่อในห้อง)")
             cur.execute("SHOW TABLES LIKE 'calendar_tasks'")
             if cur.fetchone():
                 cur.execute("SELECT COUNT(*) AS n FROM calendar_tasks")

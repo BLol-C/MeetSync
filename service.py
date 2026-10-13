@@ -11,6 +11,7 @@ import datetime
 from integrations import calendar_auth
 from integrations import calendar_sync
 import db
+from bot import botclient
 from reports import pdf_report
 from reports import report_data
 from reports import summarizer
@@ -132,12 +133,30 @@ def meetings_with_url(user: dict, meet_url: str) -> list[dict]:
     return [m for m in list_meetings(user) if (m["meet_url"] or "").split("?")[0].lower() == base]
 
 
+def outsider_names(user: dict, meeting_id: int) -> list[str]:
+    """ชื่อใน Meet ที่บอทเห็นแล้วไม่ตรงกับรายชื่อ (คนนอกที่ไม่ได้รับเชิญ หรือสะกดชื่อภาษาอังกฤษต่างจาก Meet) — ยังไม่ได้ยืนยันที่แท็บ ③"""
+    meeting_for(user, meeting_id)
+    return [p["display_name"] for p in db.list_speakers(meeting_id) if p["source"] == "meet"]
+
+
+def roster_locked(meeting: dict) -> bool:
+    """ตารางผู้เข้าร่วมแท็บ ① ถูกล็อกระหว่างบอทบันทึก (ตั้งแต่กดเริ่มบอทจนกดหยุดบอท) กันชื่อเปลี่ยนกลางประชุม
+    พอหยุดบอทแล้วแก้ได้อีก (แก้ชื่อภาษาอังกฤษแล้วระบบจับคู่ชื่อใน Meet ที่ค้างอยู่ให้ทันที) รายงานที่อนุมัติแล้วล็อกเสมอ"""
+    return meeting["status"] in ("recording", "approved")
+
+
+def _require_roster_unlocked(meeting: dict):
+    if roster_locked(meeting):
+        raise ServiceError("รายชื่อถูกล็อกตั้งแต่เริ่มบอท — ยืนยันการเข้าร่วมและจับคู่ชื่อที่แท็บ ③", "conflict")
+
+
 def get_detail(user: dict, meeting_id: int) -> dict:
     meeting = meeting_for(user, meeting_id)
     people = db.list_speakers(meeting_id)
     header = report_data.build_header(meeting, people)
     return {
         "meeting": meeting,
+        "roster_locked": roster_locked(meeting),
         "people": people,
         "header": header,
         "header_warnings": report_data.header_warnings(header),
@@ -160,10 +179,32 @@ def update_meeting(user: dict, meeting_id: int, **fields) -> None:
         raise _value_error(e)
 
 
-def delete_meeting(user: dict, meeting_id: int) -> None:
+def following_meetings(user: dict, meeting_id: int) -> list[dict]:
+    """ประชุมอื่นที่ใช้การประชุมนี้เป็น "ประชุมครั้งก่อน" (เฉพาะที่ผู้ใช้เห็นได้) — ไว้เตือนก่อนลบ"""
     meeting_for(user, meeting_id)
-    if not db.delete_scheduled_meeting(meeting_id):
-        raise ServiceError("ลบได้เฉพาะการประชุมที่ยังไม่เคยเริ่มบอท", "conflict")
+    visible = {m["meeting_id"] for m in list_meetings(user)}
+    return [{"meeting_id": m["meeting_id"], "title": m["title"] or "(ไม่ได้ตั้งชื่อ)"}
+            for m in db.list_following_meetings(meeting_id) if m["meeting_id"] in visible]
+
+
+def delete_meeting(user: dict, meeting_id: int, force: bool = False) -> dict:
+    """ลบการประชุมได้ทุกสถานะ ยกเว้นบอทกำลังบันทึกประชุมนี้ (ต้องหยุดบอทก่อน)
+    ประชุมที่อนุมัติแล้วและมีนัดใน Google Calendar: ลบนัดออกด้วย ลบไม่สำเร็จ = ไม่ลบประชุม เว้นแต่ force=True (ยอมให้นัดค้างแล้วลบเอง)
+    คืน {"deleted": จำนวนนัดที่ลบ, "failed": [...]}"""
+    meeting_for(user, meeting_id)
+    try:
+        state = botclient.state(user)
+    except botclient.BotError:
+        state = None                           # ติดต่อบริการบอทไม่ได้ = ไม่มีบอทที่เรารู้ว่ากำลังทำงาน
+    if state and state["running"] and state["meeting_id"] == meeting_id:
+        raise ServiceError("บอทกำลังบันทึกการประชุมนี้อยู่ — หยุดบอทก่อนจึงจะลบได้", "conflict")
+    report = db.get_report(meeting_id)
+    out = {"deleted": 0, "failed": []}
+    if report and report["approved"]:
+        out = _delete_calendar_events(user, report, force, "ลบนัดที่ส่งไปแล้วออกจาก Google Calendar ไม่สำเร็จ จึงยังไม่ลบการประชุม")
+    if not db.delete_meeting(meeting_id):
+        raise ServiceError("ไม่พบการประชุมนี้", "not_found")
+    return out
 
 
 # ── ผู้เข้าร่วม ──
@@ -182,19 +223,38 @@ def add_person(user: dict, meeting_id: int, display_name: str, email: str | None
                position: str | None = None, meet_alias: str | None = None) -> int:
     meeting = meeting_for(user, meeting_id)
     _require_status(meeting, *EDITABLE_STATUSES, hint="รายงานที่อนุมัติแล้วแก้รายชื่อไม่ได้")
+    _require_roster_unlocked(meeting)
     try:
         return db.add_speaker(meeting_id, display_name, email, role, attendance, absence_reason, position, meet_alias)
     except ValueError as e:
         raise _value_error(e)
 
 
-def set_person_attendance(user: dict, speaker_id: int, attendance: str) -> None:
-    """ตั้งสถานะการเข้าร่วมของผู้เข้าร่วมคนเดียว (เข้าร่วม / ไม่มา) — ใช้จากหน้าจับคู่ผู้ที่ยังไม่ยืนยัน"""
+def set_person_attendance(user: dict, speaker_id: int, attendance: str, absence_reason: str | None = None) -> None:
+    """ตั้งสถานะการเข้าร่วมของผู้เข้าร่วมคนเดียว (เข้าร่วม / ไม่มา + สาเหตุที่ไม่มา) — ใช้จากหัวข้อยืนยันผู้เข้าร่วมที่แท็บ ③"""
     _person_meeting(user, speaker_id)
+    fields = {"attendance": attendance}
+    if attendance == "absent" and absence_reason is not None:
+        fields["absence_reason"] = absence_reason
     try:
-        db.update_speaker(speaker_id, attendance=attendance)
+        db.update_speaker(speaker_id, **fields)
     except ValueError as e:
         raise _value_error(e)
+
+
+def confirm_guest(user: dict, speaker_id: int) -> None:
+    """ชื่อที่พบจาก Meet (ไม่อยู่ในรายชื่อ) -> ยืนยันว่าเป็นผู้มาประชุมทั่วไป (ไม่ใช่กรรมการ)"""
+    person, _ = _person_meeting(user, speaker_id)
+    if person["source"] != "meet" or not db.confirm_meet_speaker_as_guest(speaker_id):
+        raise ServiceError("ยืนยันได้เฉพาะชื่อที่พบจาก Meet ที่ยังไม่ได้จับคู่", "invalid")
+
+
+def exclude_person(user: dict, speaker_id: int) -> str:
+    """ชื่อที่พบจาก Meet -> ไม่นับในรายงาน (ลบถ้าไม่มีข้อความ ไม่งั้นซ่อนไว้) คืน "deleted" หรือ "hidden" """
+    person, _ = _person_meeting(user, speaker_id)
+    if person["source"] != "meet":
+        raise ServiceError("ลบได้เฉพาะชื่อที่พบจาก Meet ที่ยังไม่ได้จับคู่", "invalid")
+    return db.exclude_meet_speaker(speaker_id)
 
 
 def merge_people(user: dict, source_id: int, target_id: int) -> int:
@@ -218,6 +278,7 @@ def apply_people_table(user: dict, meeting_id: int, rows: list[dict]) -> dict:
     """
     meeting = meeting_for(user, meeting_id)
     _require_status(meeting, *EDITABLE_STATUSES, hint="รายงานที่อนุมัติแล้วแก้รายชื่อไม่ได้")
+    _require_roster_unlocked(meeting)
     current = {p["speaker_id"]: p for p in db.list_speakers(meeting_id)}
     result = {"updated": 0, "added": 0, "deleted": 0, "matched": 0, "errors": []}
 
@@ -318,6 +379,10 @@ def verify_transcript(user: dict, meeting_id: int, bot_running: bool = False) ->
         raise ServiceError("บอทยังบันทึกการประชุมนี้อยู่ — หยุดบอทก่อน", "conflict")
     if not db.get_transcript(meeting_id):
         raise ServiceError("ไม่มีข้อความใน transcript ให้ยืนยัน", "conflict")
+    unresolved = db.list_unresolved(meeting_id)
+    if unresolved:
+        raise ServiceError("ยังยืนยันผู้เข้าร่วมไม่ครบ: " + ", ".join(unresolved) + " — ตอบให้ครบที่หัวข้อยืนยันผู้เข้าร่วมก่อน",
+                           "needs_confirmation", {"unresolved": unresolved})
     if not db.set_meeting_status(meeting_id, "transcript_verified"):
         raise ServiceError(f"ยืนยัน transcript ไม่ได้ในสถานะ \"{meeting['status']}\"", "conflict")
     marked_absent = db.mark_unconfirmed_absent(meeting_id)   # ประชุมจบแล้ว: ที่ยังไม่ยืนยัน = ไม่มา (ตรงกับรายงาน)
@@ -475,6 +540,15 @@ def reopen_report(user: dict, meeting_id: int, force: bool = False) -> dict:
     report = db.get_report(meeting_id)
     if not report or not report["approved"]:
         raise ServiceError("ยกเลิกการอนุมัติได้เฉพาะรายงานที่อนุมัติแล้ว", "conflict")
+    out = _delete_calendar_events(user, report, force, "ลบนัดที่ส่งไปแล้วออกจาก Google Calendar ไม่สำเร็จ จึงยังไม่ยกเลิกการอนุมัติ")
+    if not db.reopen_report(meeting_id):
+        raise ServiceError("ยกเลิกการอนุมัติได้เฉพาะรายงานที่อนุมัติแล้ว", "conflict")
+    return out
+
+
+def _delete_calendar_events(user: dict, report: dict, force: bool, fail_message: str) -> dict:
+    """ลบนัดที่เคยส่งเข้า Google Calendar ของรายงานนี้ (นัดอยู่ในปฏิทินของผู้อนุมัติ คนอื่นลบแทนไม่ได้)
+    มีที่ลบไม่สำเร็จและไม่ force = ยก calendar_failed"""
     sent = [it for it in report["content"]["action_items"] if it["google_calendar_event_id"]]
     deleted, failed = 0, []
     for it in sent:
@@ -486,9 +560,7 @@ def reopen_report(user: dict, meeting_id: int, force: bool = False) -> dict:
         except Exception as e:  # noqa: BLE001
             failed.append({"description": it["description"], "error": str(e)})
     if failed and not force:
-        raise ServiceError("ลบนัดที่ส่งไปแล้วออกจาก Google Calendar ไม่สำเร็จ จึงยังไม่ยกเลิกการอนุมัติ", "calendar_failed", {"failed": failed})
-    if not db.reopen_report(meeting_id):
-        raise ServiceError("ยกเลิกการอนุมัติได้เฉพาะรายงานที่อนุมัติแล้ว", "conflict")
+        raise ServiceError(fail_message, "calendar_failed", {"failed": failed})
     return {"deleted": deleted, "failed": failed}
 
 

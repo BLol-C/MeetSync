@@ -10,3 +10,4 @@ soak_*.csv
 .bot_token
 .streamlit/secrets.toml
 *.sql
+ai_review/

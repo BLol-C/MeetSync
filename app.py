@@ -42,11 +42,13 @@ _current_meeting_id: int | None = None
 _last_meeting_id: int | None = None   # การประชุมของรอบล่าสุด (คงไว้หลังหยุด เพื่อให้ผู้จัดการยังเห็นสถานะ/ข้อผิดพลาดของรอบนั้น)
 _run_owner_id: int | None = None   # user_id ของคนที่สั่งเริ่มบอทรอบนี้
 _last_error: str | None = None
+_joined_at: float | None = None   # เวลา (monotonic) ที่บอทเข้าห้องได้ครั้งแรกของรอบนี้ ไว้บอกว่าอยู่ในห้องมากี่นาทีแล้ว
 _seq_no = 0
 _segment_by_row: OrderedDict[int, tuple] = OrderedDict()   # id แถวคำบรรยาย (จาก JS) -> (segment_id ล่าสุดใน DB, offset)
                                                           # กันไม่ให้คนพูดยาวคนเดียวถูกบันทึกเป็นหลายแถวซ้ำ ๆ
 _live_rows: OrderedDict[int, dict] = OrderedDict()       # คำบรรยายล่าสุด (รวมที่ยังไม่ final) ให้หน้าเว็บแสดงสด
 _status_log: deque = deque(maxlen=_STATUS_MAX)
+_JOINED_MARK = "กำลังตรวจว่าเข้าห้องได้แล้ว"   # ข้อความสถานะของเอนจินตอนเห็นว่าอยู่ในห้องแล้ว
 _save_queue: asyncio.Queue | None = None    # คิวเขียน segment ลง DB (ประมวลผลทีละอัน ตามลำดับ)
 _save_worker: asyncio.Task | None = None
 _finalize_lock = asyncio.Lock()
@@ -146,10 +148,12 @@ async def _save_worker_loop(q: asyncio.Queue):
 
 def _handle_event(ev: dict):
     """รับ event จากเอนจินบอท: เก็บไว้ให้หน้าเว็บอ่านสด และส่งคำบรรยายที่ final เข้าคิวเขียน DB"""
-    global _last_error
+    global _last_error, _joined_at
     kind = ev.get("type")
     if kind == "status":
         _log(ev.get("text", ""))
+        if _joined_at is None and ev.get("text", "").startswith(_JOINED_MARK):
+            _joined_at = time.monotonic()
     elif kind == "error":
         _last_error = ev.get("text", "")
         _log("ผิดพลาด: " + _last_error)
@@ -164,8 +168,9 @@ def _handle_event(ev: dict):
             return
         row_id = ev.get("id")
         first_seen = (_live_rows.get(row_id) or {}).get("t") or time.strftime("%H:%M:%S")   # เวลาที่เริ่มพูด (แถวเดิมที่ถูกแก้ข้อความคงเวลาแรกไว้)
+        # แถวใหม่ต่อท้าย แถวเดิมที่ถูกส่งซ้ำ/แก้ข้อความอยู่ที่เดิม (เรียงตามเวลาที่เริ่มพูด) — ไม่ย้ายไปท้ายสุด
+        # ไม่งั้นแถวเก่าที่ Meet ส่งซ้ำจะโผล่ขึ้นมาอยู่บนสุดของกล่องสดทั้งที่พูดไปนานแล้ว
         _live_rows[row_id] = {"id": row_id, "name": name, "text": text, "final": bool(ev.get("final")), "t": first_seen}
-        _live_rows.move_to_end(row_id)
         while len(_live_rows) > _LIVE_ROWS_MAX:
             _live_rows.popitem(last=False)
         if ev.get("final") and _db_ready and _current_meeting_id is not None and _save_queue is not None:
@@ -252,7 +257,7 @@ async def health() -> dict:
 @app.post("/bot/start")
 async def bot_start(body: StartIn, user: dict = Depends(identity)) -> dict:
     """เริ่มบอท (หรือกลับมาบันทึกต่อหลังบอทหลุด) สำหรับการประชุมที่ตั้งค่าไว้แล้ว"""
-    global _engine, _current_meeting_id, _last_meeting_id, _seq_no, _run_owner_id, _save_queue, _save_worker, _last_error
+    global _engine, _current_meeting_id, _last_meeting_id, _seq_no, _run_owner_id, _save_queue, _save_worker, _last_error, _joined_at
     if not _db_ready:
         raise HTTPException(status_code=503, detail="ฐานข้อมูลไม่พร้อม เริ่มบอทไม่ได้")
     meeting = await _manager_of(body.meeting_id, user)
@@ -272,6 +277,7 @@ async def bot_start(body: StartIn, user: dict = Depends(identity)) -> dict:
     _live_rows.clear()
     _status_log.clear()
     _last_error = None
+    _joined_at = None
     _run_owner_id = user["user_id"]
     _current_meeting_id = _last_meeting_id = body.meeting_id
     _save_queue = asyncio.Queue()
@@ -298,7 +304,7 @@ async def bot_state(user: dict = Depends(identity)) -> dict:
     running = _is_running()
     visible = _last_meeting_id is not None and bool(await _manager_of(_last_meeting_id, user))
     if not visible:
-        return {"running": running, "mine": False, "meeting_id": None, "rows": [], "status": [], "error": None}
+        return {"running": running, "mine": False, "meeting_id": None, "rows": [], "status": [], "error": None, "in_room_seconds": None}
     return {
         "running": running,
         "mine": True,
@@ -306,6 +312,7 @@ async def bot_state(user: dict = Depends(identity)) -> dict:
         "rows": list(_live_rows.values()),
         "status": list(_status_log),
         "error": _last_error,
+        "in_room_seconds": int(time.monotonic() - _joined_at) if running and _joined_at is not None else None,
     }
 
 

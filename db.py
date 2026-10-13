@@ -73,6 +73,7 @@ CREATE TABLE speakers (
     absence_reason VARCHAR(255) NULL,
     position      VARCHAR(100) NULL,
     source        VARCHAR(10) NOT NULL DEFAULT 'registered',
+    seen_in_room  BOOLEAN NOT NULL DEFAULT FALSE,
     UNIQUE KEY uq_speaker (meeting_id, display_name),
     FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -405,6 +406,28 @@ def delete_scheduled_meeting(meeting_id: int) -> bool:
         conn.close()
 
 
+def delete_meeting(meeting_id: int) -> bool:
+    """ลบการประชุมทุกสถานะ (ผู้พูด ข้อความ รายงาน งาน ลบตามด้วย CASCADE; ประชุมที่อ้างอิงเป็น "ครั้งก่อน" ลิงก์ว่าง)"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM meetings WHERE meeting_id = %s", (meeting_id,))
+            return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def list_following_meetings(meeting_id: int) -> list[dict]:
+    """ประชุมที่ตั้งการประชุมนี้เป็น "ประชุมครั้งก่อน" """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT meeting_id, title, owner_user_id FROM meetings WHERE previous_meeting_id = %s", (meeting_id,))
+            return list(cur.fetchall())
+    finally:
+        conn.close()
+
+
 def begin_recording(meeting_id: int) -> bool:
     """เริ่ม (หรือกลับมาบันทึกต่อ) — ได้จาก scheduled / transcript_review / recording เท่านั้น
     เวลาเริ่มถูกตั้งใหม่เฉพาะตอนเริ่มครั้งแรก (scheduled) ถ้าบันทึกต่อจะคงเวลาเริ่มเดิมไว้
@@ -571,6 +594,7 @@ def mark_present_by_names(meeting_id: int, meet_names: list[str]) -> list[str]:
             speaker_id = _find_speaker_for_name(cur, meeting_id, (name or "").strip()[:100])
             if speaker_id is None:
                 continue
+            cur.execute("UPDATE speakers SET seen_in_room = TRUE WHERE speaker_id = %s", (speaker_id,))   # หลักฐาน: บอทเห็นชื่อนี้ในห้อง
             cur.execute(
                 "UPDATE speakers SET attendance = 'present' WHERE speaker_id = %s AND attendance = 'invited'", (speaker_id,)
             )
@@ -597,8 +621,8 @@ def record_room_names(meeting_id: int, meet_names: list[str]) -> dict:
                 continue
             try:
                 cur.execute(
-                    """INSERT INTO speakers (meeting_id, display_name, role, attendance, source)
-                       VALUES (%s, %s, 'guest', 'present', 'meet')""",
+                    """INSERT INTO speakers (meeting_id, display_name, role, attendance, source, seen_in_room)
+                       VALUES (%s, %s, 'guest', 'present', 'meet', TRUE)""",
                     (meeting_id, name),
                 )
                 created.append(name)
@@ -607,23 +631,24 @@ def record_room_names(meeting_id: int, meet_names: list[str]) -> dict:
     return {"marked": marked, "new": created}
 
 
+def _match_key(row: dict) -> str:
+    """ชื่อที่ใช้จับคู่กับชื่อใน Meet: ถ้ากรอก "ชื่อภาษาอังกฤษ" ไว้ใช้ชื่อนั้นอย่างเดียว (ไม่ใช้ชื่อภาษาไทย)
+    ถ้าไม่ได้กรอกไว้ ถอยไปใช้ชื่อหลักของแถว (คนที่ไม่ได้ลงทะเบียน = ชื่อที่ Meet แสดง ใช้จับคู่ประโยคถัดไปของคนเดิม)"""
+    return row["meet_alias"] or row["display_name"]
+
+
 def _find_speaker_for_name(cur, meeting_id: int, meet_name: str) -> int | None:
-    """ชื่อที่ Meet แสดง -> ผู้เข้าร่วมที่ตรงกัน (ชื่อ/ชื่อเรียกใน Meet) — ตรงคนเดียวเท่านั้น ชื่อกำกวมไม่เดา"""
-    cur.execute(
-        "SELECT speaker_id FROM speakers WHERE meeting_id = %s AND (display_name = %s OR meet_alias = %s)",
-        (meeting_id, meet_name, meet_name),
-    )
-    exact = cur.fetchall()
+    """ชื่อที่ Meet แสดง -> ผู้เข้าร่วมที่ตรงกัน — ตรงเฉพาะ "ชื่อภาษาอังกฤษ" (หรือชื่อที่ Meet แสดงของแถวที่พบจาก Meet)
+    ตรงคนเดียวเท่านั้นสำหรับการเทียบแบบไม่สนตัวพิมพ์/ช่องว่าง ชื่อกำกวมไม่เดา"""
+    cur.execute("SELECT speaker_id, display_name, meet_alias FROM speakers WHERE meeting_id = %s ORDER BY speaker_id", (meeting_id,))
+    rows = list(cur.fetchall())
+    exact = [r for r in rows if _match_key(r) == meet_name]
     if exact:
         return exact[0]["speaker_id"]
     target = normalize_name(meet_name)
     if not target:
         return None
-    cur.execute("SELECT speaker_id, display_name, meet_alias FROM speakers WHERE meeting_id = %s", (meeting_id,))
-    matches = [
-        r["speaker_id"] for r in cur.fetchall()
-        if normalize_name(r["display_name"]) == target or (r["meet_alias"] and normalize_name(r["meet_alias"]) == target)
-    ]
+    matches = [r["speaker_id"] for r in rows if normalize_name(_match_key(r)) == target]
     return matches[0] if len(matches) == 1 else None
 
 
@@ -639,11 +664,19 @@ def get_or_create_speaker(meeting_id: int, meet_name: str) -> int:
             if found is not None:
                 _mark_present(cur, found)
                 return found
-            cur.execute(
-                """INSERT INTO speakers (meeting_id, display_name, role, attendance, source)
-                   VALUES (%s, %s, 'attendee', 'present', 'meet')""",
-                (meeting_id, meet_name),
-            )
+            try:
+                cur.execute(
+                    """INSERT INTO speakers (meeting_id, display_name, role, attendance, source)
+                       VALUES (%s, %s, 'attendee', 'present', 'meet')""",
+                    (meeting_id, meet_name),
+                )
+            except pymysql.err.IntegrityError:
+                # ชื่อที่ Meet แสดงเหมือนชื่อหลัก (ภาษาไทย) ของคนที่ลงทะเบียนไว้เป๊ะ แต่เขาใช้ชื่ออังกฤษจับคู่ — ชื่อซ้ำกันทุกตัวอักษร
+                # จึงถือเป็นคนเดียวกัน (ดีกว่าสร้างแถวซ้ำไม่ได้แล้วระบบล้ม)
+                cur.execute("SELECT speaker_id FROM speakers WHERE meeting_id = %s AND display_name = %s", (meeting_id, meet_name))
+                existing = cur.fetchone()["speaker_id"]
+                _mark_present(cur, existing)
+                return existing
             return cur.lastrowid
     finally:
         conn.close()
@@ -759,6 +792,41 @@ def update_speaker(speaker_id: int, **fields) -> None:
         conn.close()
 
 
+def confirm_meet_speaker_as_guest(speaker_id: int) -> bool:
+    """ชื่อที่พบจาก Meet ซึ่งผู้ใช้ยืนยันว่าเป็นผู้มาประชุมทั่วไปที่ไม่อยู่ในรายชื่อ -> ผู้เข้าร่วมประชุม (guest, เข้าร่วม)"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE speakers SET source = 'registered', role = 'guest', attendance = 'present' "
+                        "WHERE speaker_id = %s AND source = 'meet'", (speaker_id,))
+            return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def exclude_meet_speaker(speaker_id: int) -> str:
+    """ชื่อที่พบจาก Meet ซึ่งผู้ใช้ไม่นับเป็นผู้เข้าร่วมในรายงาน: ไม่มีข้อความ = ลบแถวทิ้ง ('deleted')
+    มีข้อความอยู่ = เก็บแถวไว้ (ข้อความยังอ้างอิงอยู่) แต่ซ่อนจากรายงานและรายชื่อ ('hidden')"""
+    try:
+        delete_speaker(speaker_id)
+        return "deleted"
+    except ValueError:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE speakers SET source = 'excluded', attendance = 'absent' WHERE speaker_id = %s AND source = 'meet'",
+                            (speaker_id,))
+        finally:
+            conn.close()
+        return "hidden"
+
+
+def list_unresolved(meeting_id: int) -> list[str]:
+    """สิ่งที่ผู้ใช้ต้องยืนยันก่อนยืนยัน transcript: ชื่อจาก Meet ที่ยังไม่ได้จับคู่/ตอบ และคนที่ลงทะเบียนไว้แต่ยังไม่ยืนยันมา/ไม่มา"""
+    return [p["display_name"] for p in list_speakers(meeting_id)
+            if p["source"] == "meet" or (p["source"] == "registered" and p["attendance"] == "invited")]
+
+
 def delete_speaker(speaker_id: int) -> None:
     """ลบผู้เข้าร่วมที่ไม่มีข้อความใน transcript เลย — ถ้ามีข้อความให้ใช้ merge_speakers รวมเข้ากับคนที่ถูกต้องแทน"""
     conn = get_connection()
@@ -791,10 +859,11 @@ def merge_speakers(source_id: int, target_id: int) -> int:
             raise ValueError("ไม่รวมผู้ที่เป็นประธาน/เลขา — เปลี่ยนบทบาทก่อน")
         cur.execute("UPDATE transcript_segments SET speaker_id = %s WHERE speaker_id = %s", (target_id, source_id))
         moved = cur.rowcount
-        alias = dst["meet_alias"] or src["display_name"]
+        alias = src["display_name"] if src["source"] == "meet" else (dst["meet_alias"] or src["display_name"])   # ผู้ใช้ยืนยันว่าชื่อที่ Meet แสดงคือคนนี้ — ใช้ชื่อนั้นแทนที่ชื่อที่กรอกผิด
         email = dst["email"] or src["email"]
         cur.execute("DELETE FROM speakers WHERE speaker_id = %s", (source_id,))
-        cur.execute("UPDATE speakers SET meet_alias = %s, email = %s WHERE speaker_id = %s", (alias, email, target_id))
+        cur.execute("UPDATE speakers SET meet_alias = %s, email = %s, seen_in_room = %s WHERE speaker_id = %s",
+                    (alias, email, bool(dst["seen_in_room"] or src["seen_in_room"]), target_id))
         if moved or src["attendance"] == "present":
             _mark_present(cur, target_id)
         return moved
@@ -810,9 +879,7 @@ def rematch_meet_speakers(meeting_id: int) -> int:
         target = normalize_name(meet["display_name"])
         if not target:
             continue
-        hits = [r["speaker_id"] for r in registered
-                if normalize_name(r["display_name"]) == target
-                or (r["meet_alias"] and normalize_name(r["meet_alias"]) == target)]
+        hits = [r["speaker_id"] for r in registered if normalize_name(_match_key(r)) == target]
         if len(hits) == 1:
             try:
                 merge_speakers(meet["speaker_id"], hits[0])

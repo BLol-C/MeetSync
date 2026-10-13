@@ -32,7 +32,7 @@ def _people_df(people: list[dict]) -> pd.DataFrame:
 
 def table_people(people: list[dict]) -> list[dict]:
     """คนที่แสดงในตารางผู้เข้าร่วม = ที่ลงทะเบียนไว้เท่านั้น — ชื่อที่ Meet แสดงแต่ยังจับคู่ไม่ได้ไปจับคู่ที่แท็บ ③"""
-    return [p for p in people if p["source"] != "meet"]
+    return [p for p in people if p["source"] == "registered"]
 
 
 def people_rows(df: pd.DataFrame) -> list[dict]:
@@ -66,15 +66,14 @@ def render(user: dict, detail: dict):
         url = st.text_input("ลิงก์ Google Meet", value=meeting["meet_url"] or "",
                             disabled=locked or status != "scheduled", help="เปลี่ยนลิงก์ได้เฉพาะก่อนเริ่มบอท")
         c1, c2 = st.columns(2)
-        title = c1.text_input("ชื่อเรื่องการประชุม", value=meeting["title"] or "", disabled=locked)
-        org = c2.text_input("หน่วยงาน", value=meeting["org_name"] or "", disabled=locked)
-        no = c1.text_input("ครั้งที่", value=meeting["meeting_no"] or "", disabled=locked)
-        venue = c2.text_input("สถานที่", value=meeting["venue"] or "", disabled=locked)
+        org = c1.text_input("หน่วยงาน", value=meeting["org_name"] or "", disabled=locked)
+        no = c2.text_input("ครั้งที่", value=meeting["meeting_no"] or "", disabled=locked)
+        venue = c1.text_input("สถานที่", value=meeting["venue"] or "", disabled=locked)
         previous = common.previous_meeting_select(
             user, key=f"prev_{mid}", current_id=meeting.get("previous_meeting_id"), exclude_id=mid, disabled=locked)
         saved = st.form_submit_button("บันทึกข้อมูล", disabled=locked)
     if saved:
-        fields = {"title": title, "org_name": org, "meeting_no": no, "venue": venue, "previous_meeting_id": previous}
+        fields = {"org_name": org, "meeting_no": no, "venue": venue, "previous_meeting_id": previous}
         if status == "scheduled":
             fields["meet_url"] = url
         try:
@@ -90,12 +89,15 @@ def render(user: dict, detail: dict):
         if w["code"] in ("no_chair", "no_secretary"):
             st.warning(w["message"])
 
+    roster_locked = locked or detail["roster_locked"]
+    if roster_locked and not locked:
+        st.caption("🔒 รายชื่อถูกล็อกระหว่างบอทบันทึก — แก้ได้อีกหลังกดหยุดบอท")
     df = _people_df(table_people(detail["people"]))
     edited = st.data_editor(
         df, key=f"people_{mid}_{_rev(mid)}", hide_index=True, width="stretch",
-        height=common.table_height(len(df), max_px=PEOPLE_MAX_H, spare_rows=0 if locked else 2),
-        num_rows="fixed" if locked else "dynamic",
-        disabled=True if locked else ["ที่มา", "ข้อความที่พูด"],
+        height=common.table_height(len(df), max_px=PEOPLE_MAX_H, spare_rows=0 if roster_locked else 2),
+        num_rows="fixed" if roster_locked else "dynamic",
+        disabled=True if roster_locked else ["ที่มา", "ข้อความที่พูด"],
         column_order=VISIBLE,
         column_config={
             "ชื่อภาษาไทย": st.column_config.TextColumn("ชื่อภาษาไทย", help="ชื่อที่จะขึ้นในรายงาน PDF (ภาษาไทย)", width="medium"),
@@ -109,7 +111,7 @@ def render(user: dict, detail: dict):
             "ข้อความที่พูด": st.column_config.NumberColumn("ข้อความที่พูด", format="%d ช่วง"),
         },
     )
-    if st.button("💾 บันทึกรายชื่อ", key=f"save_people_{mid}", disabled=locked):
+    if st.button("💾 บันทึกรายชื่อ", key=f"save_people_{mid}", disabled=roster_locked):
         result = service.apply_people_table(user, mid, people_rows(edited))
         st.session_state[f"rev_people_{mid}"] = _rev(mid) + 1
         parts = [f"{label} {result[k]} คน" for k, label in (("added", "เพิ่ม"), ("updated", "แก้"), ("deleted", "ลบ"), ("matched", "จับคู่ชื่อใน Meet ได้")) if result[k]]
@@ -118,16 +120,3 @@ def render(user: dict, detail: dict):
         for err in result["errors"]:
             common.flash("error", err)
         st.rerun()
-
-    if status == "scheduled" and not locked:
-        with st.expander("ลบการประชุมนี้"):
-            st.caption("ลบได้เฉพาะการประชุมที่ยังไม่เคยเริ่มบอท (รายชื่อผู้เข้าร่วมจะถูกลบไปด้วย)")
-            sure = st.checkbox("ยืนยันว่าต้องการลบ", key=f"del_ok_{mid}")
-            if st.button("ลบการประชุม", key=f"del_{mid}", disabled=not sure, type="primary"):
-                try:
-                    service.delete_meeting(user, mid)
-                except ServiceError as e:
-                    st.error(str(e))
-                else:
-                    common.flash("success", "ลบการประชุมแล้ว")
-                    common.go("home")

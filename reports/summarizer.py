@@ -202,10 +202,12 @@ def validate_minutes(
             warn("ungrounded", path, f"{what}อ้างอิงข้อความที่หาไม่เจอใน transcript (อาจเป็นข้อมูลที่ AI แต่งขึ้น)")
         return ok
 
+    unclear: dict[str, list[tuple[str, str]]] = {}     # ข้อความรอบตัวเลข -> [(path, ที่ที่พบ)] — วลีเดียวกันซ้ำในสรุปและวาระ เตือนครั้งเดียว
+
     def check_numbers(path: str, text: str | None, where: str):
         hit = find_unclear_number(text)
         if hit:
-            warn("unclear_number", path, f"{where}: มีตัวเลขที่อ่านแล้วไม่เป็นประโยค (“…{hit}…”) อาจเป็นการถอดเสียงผิด — ตรวจกับ transcript แล้วแก้")
+            unclear.setdefault(hit, []).append((path, where))
 
     summary = _clean_str(content.get("summary")) or ""
     check_numbers("summary", summary, "สรุปภาพรวม")
@@ -287,6 +289,11 @@ def validate_minutes(
             f"action_items[{i}].evidence", item["evidence"], required=True, what=f"{label} "
         )
         actions.append(item)
+
+    for hit, places in unclear.items():
+        where = " และ ".join(dict.fromkeys(w for _, w in places))
+        warn("unclear_number", places[0][0],
+             f"{where}: มีตัวเลขที่อ่านแล้วไม่เป็นประโยค (“…{hit}…”) อาจเป็นการถอดเสียงผิด — ตรวจกับ transcript แล้วแก้")
 
     return {
         "summary": summary,
@@ -468,7 +475,7 @@ def generate_for_meeting(meeting_id: int, generate: Callable | None = None) -> d
         raise ValueError("ต้องตรวจทานและกด \"ยืนยัน transcript\" ก่อน จึงจะให้ AI สร้างรายงานได้")
 
     rows = db.get_transcript(meeting_id)
-    participants = db.list_speakers(meeting_id)
+    participants = [p for p in db.list_speakers(meeting_id) if p["source"] != "excluded"]
     content = generate_minutes_content(
         rows, participants, meeting.get("title"),
         meeting.get("started_at") or datetime.datetime.now(), generate,

@@ -64,11 +64,11 @@ class UiTests(TempDbCase):
         self.assertEqual([e.value for e in at.exception], [], "หน้าเว็บต้องไม่มี exception")
         return at
 
-    def meeting(self, status="scheduled", people=True):
+    def meeting(self, status="scheduled", people=True, extra=()):
         mid = service.create_meeting(self.user, meet_url=URL, title="ประชุมทดสอบหน้าเว็บ", people=[
             {"display_name": "สมชาย ใจดี", "email": "chair@x.com", "role": "chair", "attendance": "present"},
             {"display_name": "สมหญิง", "role": "secretary", "attendance": "present"},
-            {"display_name": "Alice", "email": "alice@x.com"}] if people else [])
+            {"display_name": "Alice", "email": "alice@x.com"}, *extra] if people else [])
         if status != "scheduled":
             db.begin_recording(mid)
             s1, s2 = db.get_or_create_speaker(mid, "สมชาย ใจดี (You)"), db.get_or_create_speaker(mid, "Alice")
@@ -98,6 +98,15 @@ class UiTests(TempDbCase):
         new_box = next(x for x in new.selectbox if x.key == "new_previous_meeting")
         self.assertEqual(new_box.value, "— ไม่มี / ไม่ใช้ข้อมูลครั้งก่อน —")              # หน้าสร้างใหม่เริ่มที่ "ไม่ใช้" แม้มีครั้งที่อนุมัติแล้ว ผู้ใช้เลือกเอง
         self.assertIn(new_box.value, new_box.options)
+        self.assertFalse(any("ยังไม่มีการประชุมให้เลือก" in v for v in texts(new.caption)))     # มีให้เลือก = ไม่ต้องอธิบาย
+
+    def test_previous_meeting_box_explains_why_it_is_empty_and_has_no_help_icon(self):
+        mid = self.meeting("draft")                                                       # ยังไม่มีประชุมที่อนุมัติแล้วเลย
+        at = self.app(m=mid)
+        box = next(x for x in at.selectbox if x.key == f"prev_{mid}")
+        self.assertEqual(list(box.options), ["— ไม่มี / ไม่ใช้ข้อมูลครั้งก่อน —"])
+        self.assertEqual(box.help, "")                                                    # ไม่มีเครื่องหมาย ? มุมขวาบน
+        self.assertTrue(any("เลือกได้เฉพาะการประชุมที่อนุมัติรายงานแล้ว" in v for v in texts(at.caption)))
 
     # ── หน้ารวมและหน้าสร้าง ──
 
@@ -192,14 +201,28 @@ class UiTests(TempDbCase):
         self.assertFalse(any("เริ่มบอท" in b.label for b in at.button if b.key and b.key.startswith("start_")))
         self.assertTrue(any("บริการบอทไม่ได้เปิดอยู่" in v for v in texts(at.sidebar.error)))
 
-    def test_live_status_is_either_waiting_to_be_admitted_or_reading_captions(self):
+    def test_live_status_says_entering_waiting_or_listening(self):
         from ui import tab_bot
         line = lambda text: {"t": "10:00:00", "text": text}
         waiting = {"rows": [], "status": [line("กำลังเปิดเบราว์เซอร์…"), line("ส่งคำขอเข้าร่วมแล้ว — รอหัวหน้าห้องกดยอมรับ…")]}
-        self.assertEqual(tab_bot.phase_text(waiting), "รอให้กดยอมรับเข้าห้อง")
+        self.assertEqual(tab_bot.bot_state_text(waiting), "บอทกำลังรอเข้าห้อง")
+        entering = {"rows": [], "status": [line("กำลังเปิดเบราว์เซอร์…")]}
+        self.assertEqual(tab_bot.bot_state_text(entering), "บอทกำลังเข้าห้อง")
+        self.assertEqual(tab_bot.bot_state_text({"rows": [], "status": []}), "บอทกำลังเข้าห้อง")                  # เพิ่งสั่งเริ่ม ยังไม่มีสถานะ
+        after_admit = {"rows": [], "status": waiting["status"] + [line("กดเข้าร่วมแล้ว (ไม่ต้องรอ host) — กำลังเข้าห้อง…")]}
+        self.assertEqual(tab_bot.bot_state_text(after_admit), "บอทกำลังเข้าห้อง")                                  # ได้รับอนุญาตแล้ว ไม่ใช่รออีก
         joined = {"rows": [], "status": waiting["status"] + [line("✅ เข้าห้องแล้วและเปิดคำบรรยายแล้ว (ตรวจยืนยันจากหน้าจอ)")]}
-        self.assertEqual(tab_bot.phase_text(joined), "เข้าห้องแล้ว — กำลังอ่านคำบรรยาย (CC)")
-        self.assertEqual(tab_bot.phase_text({"rows": [{"name": "A"}], "status": []}), "เข้าห้องแล้ว — กำลังอ่านคำบรรยาย (CC)")
+        self.assertEqual(tab_bot.bot_state_text(joined), "บอทกำลังฟังอยู่")
+        self.assertEqual(tab_bot.bot_state_text({"rows": [{"name": "A"}], "status": []}), "บอทกำลังฟังอยู่")
+        self.assertEqual(tab_bot.bot_state_text({"rows": [], "status": [], "in_room_seconds": 5}), "บอทกำลังฟังอยู่")   # สถานะเก่าหลุดจากบันทึกแล้วก็ยังรู้ว่าอยู่ในห้อง
+        no_cc = {"rows": [], "status": [line("กำลังตรวจว่าเข้าห้องได้แล้วและเปิดคำบรรยาย…"),
+                                         line("⚠️ เปิดคำบรรยายไม่สำเร็จ — ยังไม่ได้ฟังอะไร")], "in_room_seconds": 9}
+        self.assertIn("ยังฟังไม่ได้", tab_bot.bot_state_text(no_cc))
+        self.assertEqual(tab_bot.bot_state_text({**no_cc, "status": no_cc["status"] + [line("✅ เปิดคำบรรยายแล้ว (ตรวจยืนยันจากหน้าจอ)")]}),
+                         "บอทกำลังฟังอยู่")                                                                         # เปิดได้ทีหลังแล้ว
+        self.assertEqual([tab_bot.duration_text(s) for s in (0, 20, 60, 3599, 3905, 7261)],
+                         ["0 ชั่วโมง 0 นาที 0 วินาที", "0 ชั่วโมง 0 นาที 20 วินาที", "0 ชั่วโมง 1 นาที 0 วินาที",
+                          "0 ชั่วโมง 59 นาที 59 วินาที", "1 ชั่วโมง 5 นาที 5 วินาที", "2 ชั่วโมง 1 นาที 1 วินาที"])
 
     def test_start_button_calls_the_bot_service_for_this_meeting(self):
         mid = self.meeting("scheduled")
@@ -247,13 +270,13 @@ class UiTests(TempDbCase):
     # ── transcript ──
 
     def test_unconfirmed_people_can_be_matched_to_names_seen_in_the_room_or_set_absent(self):
-        mid = self.meeting("transcript_review")
-        silent = service.add_person(self.user, mid, "ธนาวีร์ ผู้ฟังเงียบ")            # ลงทะเบียนไว้ แต่ไม่ได้พูด
-        away = service.add_person(self.user, mid, "ศศิน ลากิจ")
+        mid = self.meeting("transcript_review", extra=[{"display_name": "ธนาวีร์ ผู้ฟังเงียบ"}, {"display_name": "ศศิน ลากิจ"}])   # ลงทะเบียนไว้ แต่ไม่ได้พูด
+        ids = {p["display_name"]: p["speaker_id"] for p in db.list_speakers(mid)}
+        silent, away = ids["ธนาวีร์ ผู้ฟังเงียบ"], ids["ศศิน ลากิจ"]
         db.record_room_names(mid, ["Thanawee BOONKERD"])                              # บอทเห็นชื่อนี้ในห้อง แต่ไม่ตรงกับใคร
         room = next(p for p in db.list_speakers(mid) if p["display_name"] == "Thanawee BOONKERD")
         at = self.app(m=mid)
-        self.assertTrue(any("ยังไม่ยืนยันการเข้าร่วม" in v for v in texts(at.subheader)))
+        self.assertTrue(any("ยืนยันผู้เข้าร่วม" in v for v in texts(at.subheader)))
         select = next(x for x in at.selectbox if x.key == f"unc_{silent}")
         self.assertTrue(any("Thanawee BOONKERD" in o for o in select.options))        # ชื่อที่เห็นในห้องอยู่ในตัวเลือก
         select.select(f"meet:{room['speaker_id']}").run()
@@ -268,8 +291,8 @@ class UiTests(TempDbCase):
         self.assertEqual(db.get_speaker(away)["attendance"], "absent")
 
     def test_unmatched_meet_names_are_hidden_from_the_people_table_and_matched_in_the_single_panel(self):
-        mid = self.meeting("transcript_review")
-        carol = service.add_person(self.user, mid, "แครอล", None, "attendee", "invited")   # ลงทะเบียนไว้ ยังไม่ยืนยัน
+        mid = self.meeting("transcript_review", extra=[{"display_name": "แครอล"}])         # ลงทะเบียนไว้ ยังไม่ยืนยัน
+        carol = next(p["speaker_id"] for p in db.list_speakers(mid) if p["display_name"] == "แครอล")
         s = db.get_or_create_speaker(mid, "46 Carol Wonderland")                          # Meet แสดงชื่อพ่วงเลข ไม่ตรงรายชื่อ
         db.insert_segment(mid, s, 3, "ผมคือ Carol เอง")
         at = self.app(m=mid)
@@ -278,8 +301,8 @@ class UiTests(TempDbCase):
         self.assertNotIn("46 Carol Wonderland", shown)                                      # แท็บ ① ไม่แสดงชื่อที่พบจาก Meet ในตารางรายชื่อ
         self.assertIn("แครอล", shown)
         subheaders = texts(at.subheader)
-        self.assertTrue(any("ยังไม่ยืนยันการเข้าร่วม" in v for v in subheaders))
-        self.assertFalse(any("ยังจับคู่ไม่ได้" in v for v in subheaders))                    # ไม่มีหน้าจอจับคู่แยกอีกอัน
+        self.assertEqual([v for v in subheaders if "ยืนยัน" in v], ["ยืนยันผู้เข้าร่วม"])     # หัวข้อเดียว ไม่มีหน้าจอจับคู่แยกอีกอัน
+        self.assertTrue(next(b for b in at.button if b.key == f"verify_{mid}").disabled)    # ยังตอบไม่ครบ ยืนยัน transcript ไม่ได้
         select = next(x for x in at.selectbox if x.key == f"unc_{carol}")
         self.assertTrue(any("46 Carol Wonderland" in o for o in select.options))
         select.select(f"meet:{s}").run()
@@ -291,6 +314,62 @@ class UiTests(TempDbCase):
         at = self.app(m=mid)
         next(b for b in at.button if b.key == f"verify_{mid}").click().run()
         self.assertEqual(db.get_meeting(mid)["status"], "transcript_verified")
+
+    def test_roster_table_is_locked_after_start_and_outsiders_are_confirmed_one_by_one(self):
+        before = self.meeting("scheduled")
+        at = self.app(m=before)
+        self.assertFalse(any("ล็อกระหว่างบอทบันทึก" in v for v in texts(at.caption)))        # ก่อนเริ่มบอท แก้ได้
+        self.assertFalse(next(b for b in at.button if b.key == f"save_people_{before}").disabled)
+        recording = self.meeting("recording")
+        at = self.app(m=recording)
+        self.assertTrue(any("ล็อกระหว่างบอทบันทึก" in v for v in texts(at.caption)))
+        self.assertTrue(next(b for b in at.button if b.key == f"save_people_{recording}").disabled)   # ระหว่างบันทึก แก้รายชื่อไม่ได้
+        mid = self.meeting("transcript_review")
+        at = self.app(m=mid)
+        self.assertFalse(any("ล็อกระหว่างบอทบันทึก" in v for v in texts(at.caption)))              # หยุดบอทแล้ว แก้ได้อีก
+        self.assertFalse(next(b for b in at.button if b.key == f"save_people_{mid}").disabled)
+        stranger = db.get_or_create_speaker(mid, "BOZZISX")
+        test_acc = db.get_or_create_speaker(mid, "Test Account")
+        db.insert_segment(mid, stranger, 9, "มาฟังครับ")
+        at = self.app(m=mid)
+        self.assertTrue(next(b for b in at.button if b.key == f"verify_{mid}").disabled)        # ยังมีชื่อนอกรายชื่อรอยืนยัน
+        next(x for x in at.selectbox if x.key == f"out_{stranger}").select("guest").run()
+        next(b for b in at.button if b.key == f"out_go_{stranger}").click().run()
+        at = self.app(m=mid)
+        next(x for x in at.selectbox if x.key == f"out_{test_acc}").select("exclude").run()
+        next(b for b in at.button if b.key == f"out_go_{test_acc}").click().run()
+        at = self.app(m=mid)
+        self.assertFalse(next(b for b in at.button if b.key == f"verify_{mid}").disabled)       # ตอบครบแล้วกดได้
+        next(b for b in at.button if b.key == f"verify_{mid}").click().run()
+        self.assertEqual(db.get_meeting(mid)["status"], "transcript_verified")
+        header = service.get_detail(self.user, mid)["header"]
+        self.assertEqual([g["name"] for g in header["guests"]], ["BOZZISX"])                    # "ไม่นับ" ไม่ขึ้นในรายงาน
+
+    def test_outsider_alert_and_evidence_text(self):
+        from ui import tab_transcript
+        mid = self.meeting("recording", extra=[{"display_name": "ณัฐกมล", "meet_alias": "nutkamon yakhumpai"}])
+        db.record_room_names(mid, ["Natkamon YAKHUMPHAI"])                                 # บอทเห็นชื่อที่สะกดต่างจากที่กรอก
+        self.assertEqual(service.outsider_names(self.user, mid), ["Natkamon YAKHUMPHAI"])  # ข้อความที่แท็บ ② ใช้แจ้งเตือน
+        self.assertEqual(tab_transcript.evidence_text({"seen_in_room": 0, "segment_count": 3, "attendance": "present"}), "พูด 3 ช่วง")
+        self.assertEqual(tab_transcript.evidence_text({"seen_in_room": 1, "segment_count": 2, "attendance": "present"}), "เห็นในห้อง · พูด 2 ช่วง")
+        self.assertIn("ไม่พบหลักฐาน", tab_transcript.evidence_text({"seen_in_room": 0, "segment_count": 0, "attendance": "invited"}))
+        self.assertIn("ผู้กรอกตั้งไว้", tab_transcript.evidence_text({"seen_in_room": 0, "segment_count": 0, "attendance": "present"}))
+
+    def test_home_delete_button_warns_about_following_meeting_and_rename_works(self):
+        first = self.meeting("transcript_review")
+        nxt = service.create_meeting(self.user, meet_url=URL, title="ประชุมถัดไป")
+        db.update_meeting_setup(nxt, previous_meeting_id=first)
+        at = self.app()
+        next(b for b in at.button if b.key == f"del_{first}").click().run()
+        warnings = " ".join(w.value for w in at.warning)
+        self.assertIn("ประชุมถัดไป", warnings)                                          # เตือนว่าเกี่ยวเนื่องกับประชุมไหน
+        self.assertTrue(next(b for b in at.button if b.key == f"delete_go_{first}").disabled)   # ต้องติ๊กยืนยันก่อน
+        # (การกดลบในกล่องโต้ตอบรีรันเฉพาะส่วนของมัน ซึ่ง AppTest จำลองไม่ได้ — ตรรกะลบทดสอบที่ชั้นบริการแล้ว)
+        mid = self.meeting("scheduled")
+        at = self.app(m=mid)
+        next(t for t in at.text_input if t.key == f"title_{mid}").set_value("ชื่อใหม่ของประชุม").run()
+        next(b for b in at.button if b.key == f"title_save_{mid}").click().run()
+        self.assertEqual(db.get_meeting(mid)["title"], "ชื่อใหม่ของประชุม")
 
     def test_transcript_tab_shows_conversation_grouped_into_speaker_turns(self):
         mid = self.meeting("transcript_review")            # สมชาย 1 ประโยค แล้ว Alice 1 ประโยค = 2 ช่วงพูด
@@ -449,8 +528,8 @@ class UiTests(TempDbCase):
             {"description": "คิดดู", "assignee": None, "due_date": None, "due_time": None, "due_time_end": None, "evidence": []},
         ]
         df = tab_calendar.items_df(items, approved=True)
-        self.assertEqual(list(df["สถานะ"]), ["✓ ส่งแล้ว", "ยังไม่ส่ง", "ไม่มีวันที่ — จะไม่ส่ง"])
-        self.assertEqual(list(tab_calendar.items_df(items, approved=False)["สถานะ"])[1], "จะส่งตอนอนุมัติ")
+        self.assertEqual(list(df["สถานะ"]), ["✓ ส่งแล้ว", "ยังไม่ส่ง", "ไม่มีวันที่"])
+        self.assertEqual(list(tab_calendar.items_df(items, approved=False)["สถานะ"])[1], "รอส่ง")
         from ui import tab_report
         back = tab_report.actions_from_df(df)                                              # แปลงกลับเป็นงานของรายงานได้ (หลักฐานไม่หาย)
         self.assertEqual((back[0]["description"], back[0]["due_date"], back[0]["evidence"]), ("ส่งรายงาน", "2026-10-16", ["จะส่ง"]))

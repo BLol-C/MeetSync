@@ -81,6 +81,7 @@ async def main(out: pathlib.Path):
         # บริการบอท (เอนจินปลอมส่งคำบรรยายตามสคริปต์)
         botapp.MeetCaptionEngine = FakeEngine
         FakeEngine.script = [
+            {"type": "status", "text": "กำลังตรวจว่าเข้าห้องได้แล้วและเปิดคำบรรยาย…"},     # ข้อความจริงของเอนจิน ทำให้ตัวนับเวลาเริ่ม
             {"type": "status", "text": "เข้าห้องแล้ว — กำลังฟังคำบรรยาย"},
             cap(1, "สมชาย ใจดี (You)", "วันนี้เรามีเรื่องงบประมาณ ผมเสนอให้อนุมัติงบสองหมื่นบาท"),
             cap(2, "Alice", "เห็นด้วยค่ะ ดิฉันจะส่งรายงานความก้าวหน้าวันศุกร์หน้า"),
@@ -171,8 +172,9 @@ async def main(out: pathlib.Path):
             print("2) เริ่มบอทและคำบรรยายสด")
             await page.get_by_role("tab", name=re.compile("② บอท")).click()
             await click_button(re.compile("เริ่มบอทเข้าห้องประชุม"))
-            check(await has_text("เข้าห้องแล้ว — กำลังอ่านคำบรรยาย (CC)", 20000), "สั่งเริ่มแล้วแผงสดขึ้นสถานะ เข้าห้องแล้ว กำลังอ่านคำบรรยาย")
+            check(await has_text("บอทกำลังฟังอยู่", 20000), "สั่งเริ่มแล้วแผงสดขึ้นสถานะ บอทกำลังฟังอยู่")
             check(await has_text("วันนี้เรามีเรื่องงบประมาณ", 15000), "คำบรรยายสดโผล่ในกล่องคำบรรยาย (รีเฟรชเฉพาะกล่อง)")
+            check(await has_text("อยู่ในห้องมาแล้ว 0 ชั่วโมง", 10000), "แผงสดแสดงเวลาที่อยู่ในห้อง (… ชั่วโมง … นาที … วินาที)")
             await shot("4-bot-live")
             await click_button(re.compile("หยุดบอท"))
             check(await has_text("ขั้นที่ 3 จาก 5", 20000), "หยุดบอทแล้วระบบพาไปขั้นตรวจทาน transcript")
@@ -183,7 +185,7 @@ async def main(out: pathlib.Path):
             print("3) ตรวจ transcript จับคู่ชื่อ ยืนยัน")
             check(await page.locator('[data-testid="stTabs"]').count() == 1, "มีชุดแท็บชุดเดียว (ไม่มีหน้าเก่าค้างซ้อน)")
             await page.get_by_role("tab", name=re.compile("③ Transcript")).click()
-            check(await has_text("ผู้เข้าร่วมที่ยังไม่ยืนยันการเข้าร่วม"), "แสดงส่วนจับคู่ชื่อ (Bob ยังไม่ยืนยัน มีชื่อ “46 Bob Smith” ให้เลือก)")
+            check(await has_text("ยืนยันผู้เข้าร่วม"), "แสดงส่วนจับคู่ชื่อ (Bob ยังไม่ยืนยัน มีชื่อ “46 Bob Smith” ให้เลือก)")
             await shot("5-transcript")
             await page.get_by_role("combobox", name="ตรงกับ").first.click()
             await page.get_by_role("option", name=re.compile("46 Bob Smith")).first.click()

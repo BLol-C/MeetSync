@@ -269,6 +269,34 @@ class BotServiceTests(TempDbCase):
         self.assertEqual(mine["error"], "เกิดข้อผิดพลาดบางอย่าง")
         self.assertEqual((theirs["running"], theirs["rows"], theirs["status"], theirs["error"]), (False, [], [], None))
 
+    def test_live_rows_keep_the_order_they_started_even_when_an_old_row_is_resent(self):
+        mid = self.meeting()
+        FakeEngine.script = [cap(1, "Alice", "แถวแรก"), cap(2, "Bob", "แถวสอง")]
+        self.start(mid)
+        self.assertTrue(wait_for(lambda: len(self.state()["rows"]) == 2))
+        botapp._handle_event(cap(1, "Alice", "แถวแรก แก้ข้อความแล้ว"))               # Meet ส่งแถวเก่ากลับมาอีกรอบ
+        rows = self.state()["rows"]
+        self.assertEqual([r["id"] for r in rows], [1, 2])                         # แถวเก่ายังอยู่ที่เดิม ไม่โดดไปท้ายสุด
+        self.assertEqual(rows[0]["text"], "แถวแรก แก้ข้อความแล้ว")                  # แต่ข้อความอัปเดต
+        self.client.post("/bot/stop", headers=self.h(self.owner))
+
+    def test_state_reports_seconds_in_room_only_after_joining(self):
+        mid = self.meeting()
+        FakeEngine.script = [{"type": "status", "text": "ส่งคำขอเข้าร่วมแล้ว — รอหัวหน้าห้องกดยอมรับ…"}]
+        self.start(mid)
+        self.assertTrue(wait_for(lambda: self.state()["status"]))
+        self.assertIsNone(self.state()["in_room_seconds"])                          # ยังไม่ได้เข้าห้อง
+        botapp._handle_event({"type": "status", "text": "กำลังตรวจว่าเข้าห้องได้แล้วและเปิดคำบรรยาย…"})
+        first = self.state()["in_room_seconds"]
+        self.assertIsNotNone(first)
+        self.assertGreaterEqual(first, 0)
+        joined_at = botapp._joined_at
+        botapp._handle_event({"type": "status", "text": "กำลังตรวจว่าเข้าห้องได้แล้วและเปิดคำบรรยาย…"})
+        self.assertEqual(botapp._joined_at, joined_at)                                 # เข้าซ้ำ (หน้าโหลดใหม่) ไม่ทำให้นับใหม่
+        self.assertIsNone(self.state(self.other)["in_room_seconds"])                 # คนอื่นไม่เห็น
+        self.client.post("/bot/stop", headers=self.h(self.owner))
+        self.assertIsNone(self.state()["in_room_seconds"])                          # หยุดแล้วไม่นับ
+
     # ── Calendar OAuth ──
 
     def test_calendar_connect_requires_a_valid_signed_token(self):
