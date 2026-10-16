@@ -22,6 +22,7 @@ def main():
     common.inject_css()
     auth.ensure_db()
     user = auth.require_login()
+    auth.connect_calendar_on_first_login(user)
     common.render_sidebar(user, dev=auth.is_dev())
     common.show_flash()
 
