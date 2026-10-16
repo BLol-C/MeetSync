@@ -280,18 +280,32 @@ class BotServiceTests(TempDbCase):
         self.assertEqual(rows[0]["text"], "แถวแรก แก้ข้อความแล้ว")                  # แต่ข้อความอัปเดต
         self.client.post("/bot/stop", headers=self.h(self.owner))
 
+    def test_a_caption_arriving_also_proves_the_bot_is_in_the_room(self):
+        mid = self.meeting()
+        FakeEngine.script = [{"type": "status", "text": "ส่งคำขอเข้าร่วมแล้ว — รอหัวหน้าห้องกดยอมรับ…"}]
+        self.start(mid)
+        self.assertTrue(wait_for(lambda: self.state()["status"]))
+        self.assertIsNone(self.state()["in_room_seconds"])
+        botapp._handle_event(cap(1, "Alice", "สวัสดีครับ"))                          # ผู้ใช้เปิด CC เองแล้ว (บอทเปิดเองไม่ได้)
+        self.assertIsNotNone(self.state()["in_room_seconds"])
+        self.client.post("/bot/stop", headers=self.h(self.owner))
+
     def test_state_reports_seconds_in_room_only_after_joining(self):
         mid = self.meeting()
         FakeEngine.script = [{"type": "status", "text": "ส่งคำขอเข้าร่วมแล้ว — รอหัวหน้าห้องกดยอมรับ…"}]
         self.start(mid)
         self.assertTrue(wait_for(lambda: self.state()["status"]))
         self.assertIsNone(self.state()["in_room_seconds"])                          # ยังไม่ได้เข้าห้อง
+        # เห็นปุ่มวางสายแล้วแต่ยังอยู่หน้ารอ host กดยอมรับ — ยังไม่ใช่อยู่ในห้อง ห้ามเริ่มนับเวลา
         botapp._handle_event({"type": "status", "text": "กำลังตรวจว่าเข้าห้องได้แล้วและเปิดคำบรรยาย…"})
+        botapp._handle_event({"type": "status", "text": "⏳ ยังไม่ได้เข้าห้อง/ยังเปิดคำบรรยายไม่ได้ — ถ้า host ยังไม่กดยอมรับบอท ให้กดยอมรับ"})
+        self.assertIsNone(self.state()["in_room_seconds"])
+        botapp._handle_event({"type": "status", "text": "✅ เข้าห้องแล้วและเปิดคำบรรยายแล้ว (ตรวจยืนยันจากหน้าจอ)"})   # เปิดคำบรรยายได้จริง = อยู่ในห้องแล้ว
         first = self.state()["in_room_seconds"]
         self.assertIsNotNone(first)
         self.assertGreaterEqual(first, 0)
         joined_at = botapp._joined_at
-        botapp._handle_event({"type": "status", "text": "กำลังตรวจว่าเข้าห้องได้แล้วและเปิดคำบรรยาย…"})
+        botapp._handle_event({"type": "status", "text": "✅ เปิดคำบรรยายแล้ว (ตรวจยืนยันจากหน้าจอ)"})
         self.assertEqual(botapp._joined_at, joined_at)                                 # เข้าซ้ำ (หน้าโหลดใหม่) ไม่ทำให้นับใหม่
         self.assertIsNone(self.state(self.other)["in_room_seconds"])                 # คนอื่นไม่เห็น
         self.client.post("/bot/stop", headers=self.h(self.owner))
