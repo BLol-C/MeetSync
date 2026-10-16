@@ -314,6 +314,16 @@ def save_calendar_token(user_id: int, token_json: str) -> None:
         conn.close()
 
 
+def clear_calendar_token(user_id: int) -> None:
+    """ลบ token Calendar ของผู้ใช้ (ใช้เมื่อ Google บอกว่าหมดอายุ/ถูกเพิกถอน) — ผู้ใช้ต้องกดเชื่อมต่อใหม่"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET calendar_token = NULL WHERE user_id = %s", (user_id,))
+    finally:
+        conn.close()
+
+
 def get_calendar_token(user_id: int) -> str | None:
     conn = get_connection()
     try:

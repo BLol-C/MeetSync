@@ -1005,6 +1005,23 @@ class ServiceTests(TempDbCase):
             self.assertEqual([r["ok"] for r in service.sync_calendar(self.owner, mid)], [True])
         self.assertEqual(len(fake.inserted), 1)
 
+    def test_a_revoked_calendar_token_is_cleared_and_the_user_is_told_to_reconnect(self):
+        from google.auth.exceptions import RefreshError
+        from google.oauth2.credentials import Credentials
+        from integrations import calendar_auth
+        uid = self.owner["user_id"]
+        db.save_calendar_token(uid, json.dumps({"token": "old", "refresh_token": "r", "client_id": "c", "client_secret": "s",
+                                                "token_uri": "https://oauth2.googleapis.com/token",
+                                                "expiry": "2020-01-01T00:00:00Z"}))
+        self.assertTrue(service.calendar_connected(self.owner))
+        err = RefreshError("invalid_grant: Token has been expired or revoked.", {"error": "invalid_grant"})
+        with mock.patch.object(Credentials, "refresh", side_effect=err):
+            with self.assertRaises(calendar_auth.CalendarReconnectNeeded) as cm:
+                calendar_auth.get_credentials(uid)
+        self.assertIn("เชื่อมต่อใหม่", str(cm.exception))
+        self.assertFalse(service.calendar_connected(self.owner))            # ล้างแล้ว -> หน้าจอขึ้นปุ่มเชื่อมต่อให้ ไม่ติดวน
+        self.assertIsNone(db.get_calendar_token(uid))
+
     def test_reopen_deletes_sent_events_and_clears_marks_then_approval_sends_again(self):
         mid = self.draft()
         fake = FakeCalendar()
