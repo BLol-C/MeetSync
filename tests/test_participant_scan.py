@@ -105,5 +105,47 @@ class ParticipantScanTests(unittest.TestCase):
         self.assertEqual(out[0], meet_engine.PEOPLE_OPEN_ATTEMPTS)
 
 
+class ParticipantScanTimingTests(unittest.TestCase):
+    """รอบอ่านรายชื่อ: ต้องอ่านทันทีที่เข้าห้อง และอ่านอีกรอบตอนหยุดบอท (เคยรอ 60 วินาทีก่อนรอบแรก ประชุมสั้นๆ ไม่เคยถูกอ่านเลย)"""
+
+    PAGE = '<button aria-label="Leave call">leave</button>' + REAL_BUTTON
+
+    def test_the_first_scan_happens_right_after_joining_not_a_minute_later(self):
+        events = []
+
+        async def go():
+            async with async_playwright() as pw:
+                browser, page = await _page(pw, self.PAGE)
+                engine = meet_engine.MeetCaptionEngine(events.append)
+                await engine._install_watcher(page)
+                joined = page.locator('[aria-label*="leave" i]').first
+                task = asyncio.create_task(engine._monitor(page, page.context, joined))
+                for _ in range(int((meet_engine.WATCHDOG_INTERVAL_S + 10) * 4)):     # รอได้ไม่เกินรอบตรวจหนึ่งรอบ + เผื่อ
+                    await asyncio.sleep(0.25)
+                    if any(e["type"] == "participants" for e in events):
+                        break
+                engine._stop.set()
+                try:
+                    await asyncio.wait_for(task, timeout=meet_engine.WATCHDOG_INTERVAL_S + 5)
+                except (meet_engine._Stopped, asyncio.TimeoutError):
+                    pass
+                await browser.close()
+        asyncio.run(go())
+        self.assertEqual([e["names"] for e in events if e["type"] == "participants"][:1], [NAMES])
+
+    def test_the_final_scan_on_stop_reads_the_room_and_never_blocks_stopping(self):
+        events = []
+
+        async def go():
+            async with async_playwright() as pw:
+                browser, page = await _page(pw, self.PAGE)
+                engine = meet_engine.MeetCaptionEngine(events.append)
+                await engine._final_scan(page)
+                await browser.close()
+                await engine._final_scan(page)                                       # หน้าปิดไปแล้ว: ต้องไม่ยก exception
+        asyncio.run(go())
+        self.assertEqual([e["names"] for e in events if e["type"] == "participants"], [NAMES])
+
+
 if __name__ == "__main__":
     unittest.main()
