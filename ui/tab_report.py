@@ -93,7 +93,7 @@ def actions_from_df(df: pd.DataFrame) -> list[dict]:
 
 def _header_card(header: dict):
     with st.container(border=True):
-        st.caption("ส่วนหัวรายงาน — มาจากข้อมูลในระบบ ไม่ได้มาจาก AI (แก้ที่แท็บ ① ข้อมูล)")
+        st.caption("ส่วนหัวรายงาน")
         c1, c2 = st.columns(2)
         c1.markdown(f"**{common.md_escape(header['title'])}**")
         if header["org_name"]:

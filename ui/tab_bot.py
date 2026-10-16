@@ -94,7 +94,8 @@ def _live_panel(user: dict, mid: int):
                 st.rerun()
             return
         left, right = st.columns([3, 2], vertical_alignment="center")
-        left.markdown(f"**{bot_state_text(state)}**")
+        if bot_phase(state) != "listening":              # ฟังอยู่ปกติ = ไม่ต้องบอก (มีตัวนับเวลาและคำบรรยายสดให้เห็นอยู่แล้ว) แสดงเฉพาะสถานะอื่น
+            left.markdown(f"**{bot_state_text(state)}**")
         if state.get("in_room_seconds") is not None:
             right.markdown(f"<div style='text-align:right'><b>อยู่ในห้องมาแล้ว {duration_text(state['in_room_seconds'])}</b></div>",
                            unsafe_allow_html=True)
