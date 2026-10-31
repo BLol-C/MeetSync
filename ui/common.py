@@ -153,6 +153,9 @@ def render_sidebar(user: dict, dev: bool):
             go("new")
         st.divider()
         _bot_chip(user)
+        if not dev:
+            st.divider()
+            _calendar_chip(user)
 
 
 def _bot_chip(user: dict):
@@ -177,6 +180,17 @@ def _bot_chip(user: dict):
         st.warning("🟠 บอทกำลังบันทึกการประชุมของผู้อื่น")
     else:
         st.success("🟢 บอทว่าง")
+
+
+def _calendar_chip(user: dict):
+    st.caption("Google Calendar")
+    if service.calendar_connected(user):
+        st.success("🟢 เชื่อมแล้ว")
+        return
+    st.warning("🟠 ยังไม่เชื่อม")
+    mid = st.query_params.get("m")
+    back = f"{botclient.UI_URL}/?m={mid}" if mid else botclient.UI_URL
+    st.link_button("เชื่อมต่อ Google Calendar", botclient.calendar_connect_url(user, back), width="stretch")
 
 
 def thai_date(d):

@@ -379,23 +379,21 @@ class UiTests(TempDbCase):
         next(b for b in at.button if b.key == f"title_save_{mid}").click().run()
         self.assertEqual(db.get_meeting(mid)["title"], "ชื่อใหม่ของประชุม")
 
-    def test_first_login_sends_the_user_straight_to_the_calendar_consent_once_per_browser(self):
+    def test_sidebar_shows_calendar_status_and_connect_button_only_when_not_connected(self):
         from unittest import mock
         import streamlit as st
-        from ui import auth
+        from ui import common
         user = {"user_id": 5, "email": "a@x.com"}
-        with mock.patch.object(auth, "is_dev", return_value=False),                 mock.patch.object(auth.service, "calendar_connected", return_value=False),                 mock.patch.object(auth.botclient, "calendar_connect_url", return_value="https://x.test/connect?t=abc"),                 mock.patch.object(st, "html") as html:
-            auth.connect_calendar_on_first_login(user)
-        html.assert_called_once()
-        script = html.call_args.args[0]
-        self.assertTrue(html.call_args.kwargs["unsafe_allow_javascript"])
-        self.assertIn("https://x.test/connect?t=abc", script)
-        self.assertIn("ms_cal_prompted_5", script)                                        # จำว่าเคยพาไปแล้ว กันวนซ้ำถ้าผู้ใช้กดปฏิเสธ
-        self.assertIn("localStorage.getItem", script)
-        for dev, connected in ((True, False), (False, True)):                              # โหมดทดสอบ / เชื่อมแล้ว = ไม่พาไป
-            with mock.patch.object(auth, "is_dev", return_value=dev),                     mock.patch.object(auth.service, "calendar_connected", return_value=connected),                     mock.patch.object(st, "html") as html:
-                auth.connect_calendar_on_first_login(user)
-            html.assert_not_called()
+        with mock.patch.object(common.service, "calendar_connected", return_value=False),                 mock.patch.object(common.botclient, "calendar_connect_url", return_value="https://x.test/c"),                 mock.patch.object(st, "caption"), mock.patch.object(st, "warning") as warn,                 mock.patch.object(st, "success") as ok, mock.patch.object(st, "link_button") as link:
+            common._calendar_chip(user)
+        warn.assert_called_once()
+        ok.assert_not_called()
+        self.assertEqual(link.call_args.args[1], "https://x.test/c")
+        with mock.patch.object(common.service, "calendar_connected", return_value=True),                 mock.patch.object(st, "caption"), mock.patch.object(st, "warning") as warn,                 mock.patch.object(st, "success") as ok, mock.patch.object(st, "link_button") as link:
+            common._calendar_chip(user)
+        ok.assert_called_once()
+        warn.assert_not_called()
+        link.assert_not_called()
 
     def test_transcript_tab_shows_conversation_grouped_into_speaker_turns(self):
         mid = self.meeting("transcript_review")            # สมชาย 1 ประโยค แล้ว Alice 1 ประโยค = 2 ช่วงพูด

@@ -69,7 +69,7 @@ class CalendarReconnectNeeded(RuntimeError):
     """Google ไม่ยอมรับ token เดิมแล้ว (หมดอายุ/ถูกเพิกถอน) — ล้าง token ทิ้ง ผู้ใช้ต้องเชื่อมต่อใหม่"""
 
 
-RECONNECT_MESSAGE = ("สิทธิ์ Google Calendar หมดอายุหรือถูกเพิกถอน — กดปุ่ม “เชื่อมต่อ Google Calendar” ที่แท็บ ⑤ เพื่อเชื่อมต่อใหม่ "
+RECONNECT_MESSAGE = ("สิทธิ์ Google Calendar หมดอายุหรือถูกเพิกถอน — กดปุ่ม “เชื่อมต่อ Google Calendar” ที่แถบด้านซ้ายเพื่อเชื่อมต่อใหม่ "
                      "แล้วกด “ส่งงานที่ยังไม่ส่ง” อีกครั้ง")
 
 

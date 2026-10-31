@@ -7,12 +7,10 @@ SA: ผู้ใช้ล็อกอินด้วยบัญชี Google �
 มีป้ายเตือนแสดงตลอด) ห้ามตั้งค่านี้ตอนใช้งานจริง
 """
 
-import json
 import os
 
 import streamlit as st
 
-from bot import botclient
 import db
 import service
 from ui import common
@@ -91,22 +89,6 @@ def render_login():
         return
     _, middle, _ = st.columns([1, 1, 1])                                           # ปุ่มอยู่กึ่งกลางแนวนอน
     middle.button("เข้าสู่ระบบด้วย Google", type="primary", on_click=st.login, width="stretch")
-
-
-def connect_calendar_on_first_login(user: dict):
-    """ล็อกอินแล้วยังไม่เชื่อม Google Calendar: พาไปหน้าอนุญาตของ Google ต่อทันที (ไม่มีหน้าคั่น) กดอนุญาตหนึ่งครั้ง
-    แล้ว Google ส่งกลับมาหน้าเดิม ทำอัตโนมัติ "ครั้งเดียวต่อเบราว์เซอร์ต่อผู้ใช้" (จำไว้ใน localStorage) กันวนซ้ำถ้าผู้ใช้กดปฏิเสธ
-    — ปฏิเสธ/หมดอายุแล้วเชื่อมใหม่ได้ที่แท็บ ⑤ ข้ามในโหมดทดสอบ (ไม่มีบัญชี Google จริง)
-    ใช้ JavaScript เปลี่ยนหน้า เพราะ Streamlit ไม่มีคำสั่ง redirect (ทดสอบแล้วว่า components.html / meta refresh ไม่ทำงาน)"""
-    if is_dev() or service.calendar_connected(user):
-        return
-    url = botclient.calendar_connect_url(user, botclient.UI_URL)
-    key = f"ms_cal_prompted_{user['user_id']}"
-    st.html(
-        "<script>try { const k = " + json.dumps(key) + "; if (!localStorage.getItem(k)) { localStorage.setItem(k, '1'); "
-        "window.location.href = " + json.dumps(url) + "; } } catch (e) {}</script>",
-        unsafe_allow_javascript=True,
-    )
 
 
 def require_login() -> dict:
