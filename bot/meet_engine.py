@@ -266,6 +266,10 @@ PEOPLE_BUTTON_FALLBACK = (
     'button[aria-label^="บุคคล"], button[aria-label^="ผู้คน"], button[aria-label^="ผู้เข้าร่วม"], '
     'button[aria-label^="People" i], button[aria-label^="Show everyone" i], button[aria-label^="Participants" i]'
 )
+# ปุ่มเข้าห้องในหน้ารอก่อนเข้า: ขอเข้าร่วม (ต้องรอ host) / เข้าร่วมตอนนี้ (เข้าได้เลย) / เปลี่ยนที่นี่ (บัญชีเดียวกันยังอยู่ในห้องจากอีกหน้าต่าง
+# Meet ให้เลือก "เปลี่ยนที่นี่" หรือ "เข้าร่วมที่นี่ด้วย" — เลือกอย่างแรก เพราะอย่างหลังจะมีบอทซ้อนสองตัวในห้องเดียว)
+SWITCH_BUTTON_RE = re.compile(r"เปลี่ยนที่นี่|switch here", re.I)
+JOIN_BUTTON_RE = re.compile(r"ขอเข้าร่วม|เข้าร่วมตอนนี้|เข้าร่วมเลย|ask to join|join now|เปลี่ยนที่นี่|switch here", re.I)
 PARTICIPANT_SCAN_S = int(os.environ.get("BOT_PARTICIPANT_SCAN_S", "60"))   # อ่านรายชื่อคนในห้องทุกกี่วินาที (0 = ปิด)
 PEOPLE_OPEN_ATTEMPTS = 2   # กดปุ่มผู้คนเพื่อเปิดแผงได้ติดกันกี่ครั้งก่อนยอมแพ้ (ยอมแพ้ที่รอบคู่ = แผงกลับมาปิดเหมือนเดิม)
 
@@ -646,16 +650,16 @@ class MeetCaptionEngine:
                     await page.keyboard.press("Control+d")
                     await page.keyboard.press("Control+e")
 
-                    join_name = re.compile(
-                        r"ขอเข้าร่วม|เข้าร่วมตอนนี้|เข้าร่วมเลย|ask to join|join now", re.I
-                    )
                     try:
-                        btn = page.get_by_role("button", name=join_name).first
+                        btn = page.get_by_role("button", name=JOIN_BUTTON_RE).first
                         await self._guard(btn.wait_for(state="visible", timeout=30000))
                         label = ((await btn.get_attribute("aria-label")) or (await btn.inner_text()) or "").strip()
                         await btn.click()
                         if re.search(r"ขอเข้าร่วม|ask to join", label, re.I):
                             self._emit(type="status", text="ส่งคำขอเข้าร่วมแล้ว — รอหัวหน้าห้องกดยอมรับ…")
+                        elif SWITCH_BUTTON_RE.search(label):
+                            # บัญชีบอทยังค้างอยู่ในห้องจากหน้าต่างเดิม (เช่นบอทหลุดแล้วเข้าใหม่) — ย้ายมาที่หน้าต่างนี้ ไม่ต้องรอ host
+                            self._emit(type="status", text="กดเข้าร่วมแล้ว (เปลี่ยนที่จากหน้าต่างเดิม ไม่ต้องรอ host) — กำลังเข้าห้อง…")
                         else:
                             # ปุ่ม "เข้าร่วมตอนนี้" = เข้าได้เลย (เช่น เคยได้รับอนุญาตแล้ว) ไม่ต้องรอ host
                             self._emit(type="status", text="กดเข้าร่วมแล้ว (ไม่ต้องรอ host) — กำลังเข้าห้อง…")

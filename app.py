@@ -46,6 +46,7 @@ _joined_at: float | None = None   # เวลา (monotonic) ที่บอท�
 _seq_no = 0
 _segment_by_row: OrderedDict[int, tuple] = OrderedDict()   # id แถวคำบรรยาย (จาก JS) -> (segment_id ล่าสุดใน DB, offset)
                                                           # กันไม่ให้คนพูดยาวคนเดียวถูกบันทึกเป็นหลายแถวซ้ำ ๆ
+_gone_rows: set[int] = set()                              # แถวที่หลุดจากกล่องสดแล้ว (เก่าเกิน _LIVE_ROWS_MAX) — Meet ส่งซ้ำก็ไม่เอากลับมาโชว์
 _live_rows: OrderedDict[int, dict] = OrderedDict()       # คำบรรยายล่าสุด (รวมที่ยังไม่ final) ให้หน้าเว็บแสดงสด
 _status_log: deque = deque(maxlen=_STATUS_MAX)
 # ข้อความสถานะของเอนจินที่ออกก็ต่อเมื่อเปิดคำบรรยายได้จริง (ซึ่งทำได้เฉพาะตอนอยู่ในห้องแล้ว ไม่ใช่ตอนยังรอ host กดยอมรับ)
@@ -171,12 +172,18 @@ def _handle_event(ev: dict):
         row_id = ev.get("id")
         if _joined_at is None:
             _joined_at = time.monotonic()      # มีคำบรรยายเข้ามา = อยู่ในห้องแน่ (กรณีผู้ใช้เปิด CC เองแล้วบอทเปิดไม่ได้)
+        if row_id in _gone_rows:
+            # แถวเก่าที่หลุดจากกล่องสดไปแล้ว Meet/ตัวจับส่งซ้ำ (เช่นตอนจัดหน้าคำบรรยายใหม่ ปิดจบทุกแถวที่ยังค้างในหน้า) — ถ้าไม่กันไว้
+            # จะโผล่เป็นแถวใหม่ท้ายกล่องพร้อมเวลาปัจจุบัน; การบันทึกลง DB ยังทำตามปกติ (แถวเดิม = อัปเดต ไม่ insert ซ้ำ)
+            if ev.get("final") and _db_ready and _current_meeting_id is not None and _save_queue is not None:
+                _save_queue.put_nowait((_current_meeting_id, row_id, name, text))
+            return
         first_seen = (_live_rows.get(row_id) or {}).get("t") or time.strftime("%H:%M:%S")   # เวลาที่เริ่มพูด (แถวเดิมที่ถูกแก้ข้อความคงเวลาแรกไว้)
         # แถวใหม่ต่อท้าย แถวเดิมที่ถูกส่งซ้ำ/แก้ข้อความอยู่ที่เดิม (เรียงตามเวลาที่เริ่มพูด) — ไม่ย้ายไปท้ายสุด
         # ไม่งั้นแถวเก่าที่ Meet ส่งซ้ำจะโผล่ขึ้นมาอยู่บนสุดของกล่องสดทั้งที่พูดไปนานแล้ว
         _live_rows[row_id] = {"id": row_id, "name": name, "text": text, "final": bool(ev.get("final")), "t": first_seen}
         while len(_live_rows) > _LIVE_ROWS_MAX:
-            _live_rows.popitem(last=False)
+            _gone_rows.add(_live_rows.popitem(last=False)[0])
         if ev.get("final") and _db_ready and _current_meeting_id is not None and _save_queue is not None:
             _save_queue.put_nowait((_current_meeting_id, row_id, name, text))
 
@@ -279,6 +286,7 @@ async def bot_start(body: StartIn, user: dict = Depends(identity)) -> dict:
     _seq_no = await asyncio.to_thread(db.max_sequence_no, body.meeting_id)   # บันทึกต่อ: ลำดับไม่ชนของเดิม
     _segment_by_row.clear()
     _live_rows.clear()
+    _gone_rows.clear()
     _status_log.clear()
     _last_error = None
     _joined_at = None

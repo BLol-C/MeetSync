@@ -280,6 +280,23 @@ class BotServiceTests(TempDbCase):
         self.assertEqual(rows[0]["text"], "แถวแรก แก้ข้อความแล้ว")                  # แต่ข้อความอัปเดต
         self.client.post("/bot/stop", headers=self.h(self.owner))
 
+    def test_old_rows_resent_after_leaving_the_live_box_do_not_come_back(self):
+        # บั๊กที่เจอจริง (ประชุม "ทดสอบให้ อ ศศิน"): ทุกนาทีแถวเก่าที่หลุดจากกล่องสดไปแล้วโผล่กลับมาท้ายกล่องพร้อมเวลาปัจจุบัน
+        mid = self.meeting()
+        FakeEngine.script = [cap(1, "Alice", "แถวหนึ่ง")]
+        with mock.patch.object(botapp, "_LIVE_ROWS_MAX", 3):
+            self.start(mid)
+            self.assertTrue(wait_for(lambda: len(self.state()["rows"]) == 1))
+            for i in (2, 3, 4, 5):
+                botapp._handle_event(cap(i, "Bob", f"แถว {i}"))
+            self.assertEqual([r["id"] for r in self.state()["rows"]], [3, 4, 5])
+            botapp._handle_event(cap(1, "Alice", "แถวหนึ่ง"))                          # ถูกส่งซ้ำ
+            botapp._handle_event(cap(2, "Bob", "แถว 2"))
+            self.assertEqual([r["id"] for r in self.state()["rows"]], [3, 4, 5])      # ไม่กลับมา
+            botapp._handle_event(cap(6, "Bob", "แถวใหม่จริง"))
+            self.assertEqual([r["id"] for r in self.state()["rows"]], [4, 5, 6])      # แถวใหม่จริงยังเข้าตามปกติ
+        self.client.post("/bot/stop", headers=self.h(self.owner))
+
     def test_a_caption_arriving_also_proves_the_bot_is_in_the_room(self):
         mid = self.meeting()
         FakeEngine.script = [{"type": "status", "text": "ส่งคำขอเข้าร่วมแล้ว — รอหัวหน้าห้องกดยอมรับ…"}]
@@ -336,6 +353,29 @@ class BotServiceTests(TempDbCase):
             self.assertEqual(self.client.get("/auth/google/callback", params={"code": "abc", "state": "forged"}).status_code, 400)
             self.assertEqual(self.client.get("/auth/google/callback", params={"state": good}).status_code, 400)   # ไม่มี code
         self.assertEqual(saved, [("abc", self.owner["user_id"]), ("abc", self.owner["user_id"])])
+
+
+class HealthProbeTests(unittest.TestCase):
+    """แถบด้านซ้ายบอกว่า "บริการบอทไม่ได้เปิดอยู่" ทั้งที่บอทรันอยู่: เพราะตรวจสถานะรอแค่ 3 วินาที แล้วตีความว่าตอบช้า = ปิดอยู่"""
+
+    def test_a_slow_service_is_busy_not_down(self):
+        import requests
+        with mock.patch.object(botclient.requests, "get", side_effect=requests.ReadTimeout()) as get:
+            got = botclient.health()
+        self.assertTrue(got["busy"])
+        self.assertEqual(get.call_count, 2)                                        # รอ 3 วินาที แล้วลองรออีกรอบให้นานขึ้น
+
+    def test_a_service_that_answers_on_the_retry_is_reported_normally(self):
+        import requests
+        ok = mock.Mock(json=lambda: {"ok": True, "db": True, "running": True})
+        with mock.patch.object(botclient.requests, "get", side_effect=[requests.ReadTimeout(), ok]):
+            self.assertEqual(botclient.health(), {"ok": True, "db": True, "running": True})
+
+    def test_nothing_listening_means_down(self):
+        import requests
+        with mock.patch.object(botclient.requests, "get", side_effect=requests.ConnectionError()) as get:
+            self.assertIsNone(botclient.health())
+        self.assertEqual(get.call_count, 1)                                        # ปฏิเสธการเชื่อมต่อทันที ไม่ต้องรอซ้ำ
 
 
 class TokenTests(unittest.TestCase):
