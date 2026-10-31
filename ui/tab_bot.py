@@ -104,7 +104,7 @@ def _live_panel(user: dict, mid: int):
             st.warning("มีชื่อในห้องที่ไม่อยู่ในรายชื่อ: " + ", ".join(outsiders)
                        + " — ถ้าไม่ได้เชิญ เชิญออกจากห้อง Meet ได้ (หรือเป็นชื่อที่สะกดต่างจากรายชื่อ) แล้วยืนยันที่แท็บ ③ หลังหยุดบอท")
         last = state["status"][-1]["text"] if state["status"] else ""
-        if last.startswith("⚠️"):       # ปัญหาที่บอทแจ้งล่าสุดยังต้องเห็น (เช่น เปิด CC ไม่ได้ อ่านรายชื่อในห้องไม่ได้)
+        if last.startswith("⚠️") and bot_phase(state) in ("listening", "no_cc"):   # ตอนกำลังเข้าห้อง/รอ host ยังไม่ใช่ปัญหา ไม่ต้องเตือน
             st.warning(last)
         if state["error"]:
             st.error(state["error"])

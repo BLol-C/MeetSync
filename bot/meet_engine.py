@@ -411,8 +411,8 @@ class MeetCaptionEngine:
                 elif attempt >= 2:
                     # ไม่เจอปุ่มเลย (เช่น ซ่อนในเมนู ⋮) — ลอง shortcut; ถ้าที่จริงเปิดอยู่แล้วรอบถัดไปจะเห็นและกดกลับให้
                     await page.keyboard.press("c")
-            except Exception as e:  # noqa: BLE001
-                self._emit(type="status", text=f"⚠️ กดเปิดคำบรรยายไม่สำเร็จ (รอบ {attempt}): {e!r}")
+            except Exception:  # noqa: BLE001 — กดพลาดรอบนี้ไม่ต้องแจ้ง: มีรอบถัดไป และผลสุดท้ายรายงานจากการตรวจหน้าจอ
+                pass
             await page.wait_for_timeout(1500)
         state, _ = await self._caption_state(page)
         return state == "on"
