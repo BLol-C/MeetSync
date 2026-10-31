@@ -14,6 +14,7 @@ Token เก็บในตาราง calendar_tokens แยกตามผู
 import json
 import os
 
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -64,6 +65,14 @@ def is_connected(user_id: int) -> bool:
     return db.get_calendar_token(user_id) is not None
 
 
+class CalendarReconnectNeeded(RuntimeError):
+    """Google ไม่ยอมรับ token เดิมแล้ว (หมดอายุ/ถูกเพิกถอน) — ล้าง token ทิ้ง ผู้ใช้ต้องเชื่อมต่อใหม่"""
+
+
+RECONNECT_MESSAGE = ("สิทธิ์ Google Calendar หมดอายุหรือถูกเพิกถอน — กดปุ่ม “เชื่อมต่อ Google Calendar” ที่แถบด้านซ้ายเพื่อเชื่อมต่อใหม่ "
+                     "แล้วกด “ส่งงานที่ยังไม่ส่ง” อีกครั้ง")
+
+
 def get_credentials(user_id: int) -> Credentials | None:
     """คืน credentials ที่ใช้งานได้ (รีเฟรชให้ถ้าหมดอายุ) หรือ None ถ้าผู้ใช้คนนี้ยังไม่เชื่อมต่อ"""
     token = db.get_calendar_token(user_id)
@@ -71,6 +80,10 @@ def get_credentials(user_id: int) -> Credentials | None:
         return None
     creds = Credentials.from_authorized_user_info(json.loads(token), SCOPES)
     if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+        try:
+            creds.refresh(Request())
+        except RefreshError as e:             # invalid_grant: Token has been expired or revoked
+            db.clear_calendar_token(user_id)    # ไม่ทิ้ง token เสียไว้ ไม่งั้นระบบคิดว่ายังเชื่อมอยู่และปุ่มเชื่อมต่อไม่ขึ้น
+            raise CalendarReconnectNeeded(RECONNECT_MESSAGE) from e
         db.save_calendar_token(user_id, creds.to_json())
     return creds

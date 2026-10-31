@@ -92,7 +92,8 @@ class UiTests(TempDbCase):
         self.assertTrue(section_boxes)                                                    # ทุกเรื่องในรายงานเลือกวาระได้
         self.assertEqual(section_boxes[0].value, "วาระ 4.2 · เรื่องพิจารณาใหม่")           # ที่ AI สรุปเริ่มที่ 4.2
         previous_box = next(x for x in at.selectbox if x.key == f"prev_{mid}")
-        self.assertIn(f"(#{prev})", " ".join(previous_box.options))                        # เสนอเฉพาะการประชุมที่อนุมัติแล้ว
+        self.assertTrue(any("ประชุมทดสอบหน้าเว็บ" in o for o in previous_box.options[1:]))   # เสนอเฉพาะการประชุมที่อนุมัติแล้ว
+        self.assertFalse(any("(#" in o for o in previous_box.options))                     # ไม่มีเลข # ต่อท้าย (ใส่เฉพาะตอนชื่อซ้ำ)
         self.assertEqual(previous_box.value, "— ไม่มี / ไม่ใช้ข้อมูลครั้งก่อน —")
         new = self.app(view="new")
         new_box = next(x for x in new.selectbox if x.key == "new_previous_meeting")
@@ -211,15 +212,22 @@ class UiTests(TempDbCase):
         self.assertEqual(tab_bot.bot_state_text({"rows": [], "status": []}), "บอทกำลังเข้าห้อง")                  # เพิ่งสั่งเริ่ม ยังไม่มีสถานะ
         after_admit = {"rows": [], "status": waiting["status"] + [line("กดเข้าร่วมแล้ว (ไม่ต้องรอ host) — กำลังเข้าห้อง…")]}
         self.assertEqual(tab_bot.bot_state_text(after_admit), "บอทกำลังเข้าห้อง")                                  # ได้รับอนุญาตแล้ว ไม่ใช่รออีก
-        joined = {"rows": [], "status": waiting["status"] + [line("✅ เข้าห้องแล้วและเปิดคำบรรยายแล้ว (ตรวจยืนยันจากหน้าจอ)")]}
-        self.assertEqual(tab_bot.bot_state_text(joined), "บอทกำลังฟังอยู่")
-        self.assertEqual(tab_bot.bot_state_text({"rows": [{"name": "A"}], "status": []}), "บอทกำลังฟังอยู่")
-        self.assertEqual(tab_bot.bot_state_text({"rows": [], "status": [], "in_room_seconds": 5}), "บอทกำลังฟังอยู่")   # สถานะเก่าหลุดจากบันทึกแล้วก็ยังรู้ว่าอยู่ในห้อง
-        no_cc = {"rows": [], "status": [line("กำลังตรวจว่าเข้าห้องได้แล้วและเปิดคำบรรยาย…"),
-                                         line("⚠️ เปิดคำบรรยายไม่สำเร็จ — ยังไม่ได้ฟังอะไร")], "in_room_seconds": 9}
-        self.assertIn("ยังฟังไม่ได้", tab_bot.bot_state_text(no_cc))
+        # เห็นปุ่มวางสายแล้วแต่ยังอยู่หน้ารอ host กดยอมรับ (เปิดคำบรรยายไม่ได้ เอนจินแจ้ง ⏳) = ยังรอเข้าห้อง ไม่ใช่ฟังอยู่
+        in_lobby = {"rows": [], "status": waiting["status"] + [line("กำลังตรวจว่าเข้าห้องได้แล้วและเปิดคำบรรยาย…"),
+                                                              line("⏳ ยังไม่ได้เข้าห้อง/ยังเปิดคำบรรยายไม่ได้ — ถ้า host ยังไม่กดยอมรับบอท ให้กดยอมรับ")]}
+        self.assertEqual(tab_bot.bot_state_text(in_lobby), "บอทกำลังรอเข้าห้อง")
+        joined = {"rows": [], "status": in_lobby["status"] + [line("✅ เข้าห้องแล้วและเปิดคำบรรยายแล้ว (ตรวจยืนยันจากหน้าจอ)")]}
+        self.assertEqual(tab_bot.bot_state_text(joined), "บอทกำลังฟังอยู่")                                      # ได้รับอนุญาตและเปิด CC ได้จริง
+        self.assertEqual(tab_bot.bot_state_text({"rows": [{"name": "A"}], "status": []}), "บอทกำลังฟังอยู่")      # มีคำบรรยายเข้ามา = อยู่ในห้องแน่
+        no_cc = {"rows": [], "status": in_lobby["status"] + [line("⚠️ เปิดคำบรรยายไม่สำเร็จ — ยังไม่ได้ฟังอะไร")]}
+        self.assertEqual(tab_bot.bot_state_text(no_cc), "บอทยังเปิดคำบรรยายไม่ได้")
         self.assertEqual(tab_bot.bot_state_text({**no_cc, "status": no_cc["status"] + [line("✅ เปิดคำบรรยายแล้ว (ตรวจยืนยันจากหน้าจอ)")]}),
                          "บอทกำลังฟังอยู่")                                                                         # เปิดได้ทีหลังแล้ว
+        listening_then_lost = {"rows": [], "status": joined["status"] + [line("⚠️ ยังเปิดคำบรรยายไม่สำเร็จ — จะลองใหม่รอบหน้า")]}
+        self.assertEqual(tab_bot.bot_state_text(listening_then_lost), "บอทยังเปิดคำบรรยายไม่ได้")
+        # คำอธิบายในกล่องว่างต่างกันตามสถานะ และตอนรอ host ต้องบอกให้ชัดว่ารอกดยอมรับ
+        self.assertIn("กด “ยอมรับ”", tab_bot.EMPTY_BOX_TEXT["waiting"])
+        self.assertEqual(set(tab_bot.EMPTY_BOX_TEXT), set(tab_bot.BOT_STATE_TEXT))
         self.assertEqual([tab_bot.duration_text(s) for s in (0, 20, 60, 3599, 3905, 7261)],
                          ["0 ชั่วโมง 0 นาที 0 วินาที", "0 ชั่วโมง 0 นาที 20 วินาที", "0 ชั่วโมง 1 นาที 0 วินาที",
                           "0 ชั่วโมง 59 นาที 59 วินาที", "1 ชั่วโมง 5 นาที 5 วินาที", "2 ชั่วโมง 1 นาที 1 วินาที"])
@@ -370,6 +378,22 @@ class UiTests(TempDbCase):
         next(t for t in at.text_input if t.key == f"title_{mid}").set_value("ชื่อใหม่ของประชุม").run()
         next(b for b in at.button if b.key == f"title_save_{mid}").click().run()
         self.assertEqual(db.get_meeting(mid)["title"], "ชื่อใหม่ของประชุม")
+
+    def test_sidebar_shows_calendar_status_and_connect_button_only_when_not_connected(self):
+        from unittest import mock
+        import streamlit as st
+        from ui import common
+        user = {"user_id": 5, "email": "a@x.com"}
+        with mock.patch.object(common.service, "calendar_connected", return_value=False),                 mock.patch.object(common.botclient, "calendar_connect_url", return_value="https://x.test/c"),                 mock.patch.object(st, "caption"), mock.patch.object(st, "warning") as warn,                 mock.patch.object(st, "success") as ok, mock.patch.object(st, "link_button") as link:
+            common._calendar_chip(user)
+        warn.assert_called_once()
+        ok.assert_not_called()
+        self.assertEqual(link.call_args.args[1], "https://x.test/c")
+        with mock.patch.object(common.service, "calendar_connected", return_value=True),                 mock.patch.object(st, "caption"), mock.patch.object(st, "warning") as warn,                 mock.patch.object(st, "success") as ok, mock.patch.object(st, "link_button") as link:
+            common._calendar_chip(user)
+        ok.assert_called_once()
+        warn.assert_not_called()
+        link.assert_not_called()
 
     def test_transcript_tab_shows_conversation_grouped_into_speaker_turns(self):
         mid = self.meeting("transcript_review")            # สมชาย 1 ประโยค แล้ว Alice 1 ประโยค = 2 ช่วงพูด

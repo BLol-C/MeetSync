@@ -9,7 +9,6 @@ import os
 import pandas as pd
 import streamlit as st
 
-from bot import botclient
 import service
 from service import ServiceError
 from ui import common, tab_report
@@ -118,9 +117,6 @@ def render(user: dict, detail: dict):
     connected = service.calendar_connected(user)
     items = content["action_items"]
 
-    if not connected:
-        st.caption("ยังไม่ได้เชื่อมต่อ Google Calendar ของบัญชีนี้ (ขอสิทธิ์สร้างนัดหมายอย่างเดียว แยกจากการล็อกอิน) — อนุมัติรายงานได้ แต่จะยังไม่ส่งนัด")
-        st.link_button("เชื่อมต่อ Google Calendar", botclient.calendar_connect_url(user, f"{botclient.UI_URL}/?m={mid}"))
     _show_sync_result(mid)
     if not approved:
         for w in content["warnings"]:

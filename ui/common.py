@@ -87,7 +87,10 @@ def previous_meeting_select(user: dict, *, key: str, current_id: int | None = No
     labels: dict[str, int | None] = {none_label: None}
     for m in service.previous_meeting_choices(user, exclude_id):
         no = f" · ครั้งที่ {m['meeting_no']}" if m.get("meeting_no") else ""
-        labels[f"{m['title'] or '(ไม่ได้ตั้งชื่อ)'}{no} · {thai_date(m['started_at'])} (#{m['meeting_id']})"] = m["meeting_id"]
+        label = f"{m['title'] or '(ไม่ได้ตั้งชื่อ)'}{no} · {thai_date(m['started_at'])}"
+        if label in labels:                       # ชื่อ/ครั้งที่/วันที่ซ้ำกันเท่านั้นถึงใส่เลขกำกับ ไม่งั้นรายการจะทับกัน
+            label += f" (#{m['meeting_id']})"
+        labels[label] = m["meeting_id"]
     ids = list(labels.values())
     wanted = current_id if current_id is not None and current_id in ids else None
     choice = labels[st.selectbox(
@@ -150,6 +153,9 @@ def render_sidebar(user: dict, dev: bool):
             go("new")
         st.divider()
         _bot_chip(user)
+        if not dev:
+            st.divider()
+            _calendar_chip(user)
 
 
 def _bot_chip(user: dict):
@@ -174,6 +180,17 @@ def _bot_chip(user: dict):
         st.warning("🟠 บอทกำลังบันทึกการประชุมของผู้อื่น")
     else:
         st.success("🟢 บอทว่าง")
+
+
+def _calendar_chip(user: dict):
+    st.caption("Google Calendar")
+    if service.calendar_connected(user):
+        st.success("🟢 เชื่อมแล้ว")
+        return
+    st.warning("🟠 ยังไม่เชื่อม")
+    mid = st.query_params.get("m")
+    back = f"{botclient.UI_URL}/?m={mid}" if mid else botclient.UI_URL
+    st.link_button("เชื่อมต่อ Google Calendar", botclient.calendar_connect_url(user, back), width="stretch")
 
 
 def thai_date(d):

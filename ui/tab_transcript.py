@@ -155,8 +155,6 @@ def render(user: dict, detail: dict):
     # มุมมองอ่านง่าย: รวมประโยคต่อเนื่องของคนเดียวกันเป็นช่วงพูด (ในฐานข้อมูลยังเป็น 1 ประโยค = 1 แถว)
     turns = service.group_turns(segments)
     st.subheader("บทสนทนา")
-    st.caption(f"ประโยคต่อเนื่องของคนเดียวกัน (ห่างกันไม่เกิน {service.TURN_GAP_S} วินาที) รวมเป็นช่วงพูดเดียวเพื่อให้อ่านง่าย · "
-               "✎ = มีประโยคที่ถูกแก้ · แก้ไขได้ที่ตารางรายประโยคด้านล่าง")
     # กล่องสูงตามเนื้อหา (ประมาณ) แต่ไม่เกิน CONVERSATION_MAX_H — ยาวกว่านั้นเลื่อนอ่านภายในกล่อง
     lines = sum(2 + len(t["text"]) // 80 for t in turns)
     with st.container(height=min(CONVERSATION_MAX_H, max(120, 70 + lines * 26)), border=True):
@@ -204,7 +202,7 @@ def render(user: dict, detail: dict):
         if left.button("💾 บันทึกการแก้ไข", key=f"save_segs_{mid}"):
             save_edits()
             st.rerun()
-        if mid_col.button("✓ ยืนยัน transcript (ปลดล็อกให้ AI ร่างรายงาน)", key=f"verify_{mid}", type="primary",
+        if mid_col.button("ยืนยัน transcript", key=f"verify_{mid}", type="primary",
                           disabled=bool(unresolved), help=f"ยังยืนยันผู้เข้าร่วมไม่ครบ ({unresolved} รายการ)" if unresolved else None):
             if save_edits():   # ยืนยันสิ่งที่เห็นอยู่ในตารางตอนนี้ — บันทึกที่แก้ค้างไว้ก่อนเสมอ ไม่ทิ้งการแก้ไขโดยไม่รู้ตัว
                 try:

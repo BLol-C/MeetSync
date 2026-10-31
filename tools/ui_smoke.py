@@ -81,8 +81,7 @@ async def main(out: pathlib.Path):
         # บริการบอท (เอนจินปลอมส่งคำบรรยายตามสคริปต์)
         botapp.MeetCaptionEngine = FakeEngine
         FakeEngine.script = [
-            {"type": "status", "text": "กำลังตรวจว่าเข้าห้องได้แล้วและเปิดคำบรรยาย…"},     # ข้อความจริงของเอนจิน ทำให้ตัวนับเวลาเริ่ม
-            {"type": "status", "text": "เข้าห้องแล้ว — กำลังฟังคำบรรยาย"},
+            {"type": "status", "text": "✅ เข้าห้องแล้วและเปิดคำบรรยายแล้ว (ตรวจยืนยันจากหน้าจอ)"},     # ข้อความจริงของเอนจินตอนเปิดคำบรรยายได้ ทำให้ตัวนับเวลาเริ่ม
             cap(1, "สมชาย ใจดี (You)", "วันนี้เรามีเรื่องงบประมาณ ผมเสนอให้อนุมัติงบสองหมื่นบาท"),
             cap(2, "Alice", "เห็นด้วยค่ะ ดิฉันจะส่งรายงานความก้าวหน้าวันศุกร์หน้า"),
             cap(3, "46 Bob Smith", "ผมคือ Bob ครับ ขอเข้าร่วมด้วย"),
@@ -167,15 +166,34 @@ async def main(out: pathlib.Path):
             await page.reload()
             check(await has_text("ผู้เข้าร่วมและบทบาท"), "แท็บ ① แสดงตารางผู้เข้าร่วม")
             await shot("3-meeting-setup")
+            # (ภาพเพิ่มเพื่อเก็บหน้าจอทุกแบบ ไม่มีผลกับการตรวจ)
+            try:
+                await page.get_by_role("button", name=re.compile("เปลี่ยนชื่อ")).first.click()
+                await page.get_by_role("button", name="บันทึกชื่อ").wait_for(timeout=5000)
+                await shot("3c-rename-popover")
+                await page.keyboard.press("Escape")
+            except Exception:  # noqa: BLE001
+                pass
 
             # ── 2. บอท ──
             print("2) เริ่มบอทและคำบรรยายสด")
             await page.get_by_role("tab", name=re.compile("② บอท")).click()
+            await shot("3b-bot-idle")
             await click_button(re.compile("เริ่มบอทเข้าห้องประชุม"))
-            check(await has_text("บอทกำลังฟังอยู่", 20000), "สั่งเริ่มแล้วแผงสดขึ้นสถานะ บอทกำลังฟังอยู่")
+            check(await has_text("อยู่ในห้องมาแล้ว", 20000), "สั่งเริ่มแล้วแผงสดแสดงตัวนับเวลาที่อยู่ในห้อง")
+            check(not await page.get_by_text("บอทกำลังฟังอยู่").count(), "ตอนฟังอยู่ปกติ ไม่แสดงข้อความ “บอทกำลังฟังอยู่”")
             check(await has_text("วันนี้เรามีเรื่องงบประมาณ", 15000), "คำบรรยายสดโผล่ในกล่องคำบรรยาย (รีเฟรชเฉพาะกล่อง)")
             check(await has_text("อยู่ในห้องมาแล้ว 0 ชั่วโมง", 10000), "แผงสดแสดงเวลาที่อยู่ในห้อง (… ชั่วโมง … นาที … วินาที)")
             await shot("4-bot-live")
+            # (ภาพเพิ่มเพื่อเก็บหน้าจอทุกแบบ ไม่มีผลกับการตรวจ)
+            try:
+                await page.get_by_role("tab", name=re.compile("① ข้อมูล")).click()
+                await has_text("ล็อก", 8000)
+                await shot("4b-setup-locked-while-recording")
+                await page.get_by_role("tab", name=re.compile("② บอท")).click()
+                await settle()
+            except Exception:  # noqa: BLE001
+                pass
             await click_button(re.compile("หยุดบอท"))
             check(await has_text("ขั้นที่ 3 จาก 5", 20000), "หยุดบอทแล้วระบบพาไปขั้นตรวจทาน transcript")
             check(db.get_meeting(mid)["status"] == "transcript_review", "สถานะการประชุม = transcript_review")
@@ -194,6 +212,7 @@ async def main(out: pathlib.Path):
             people = {p["display_name"]: p for p in db.list_speakers(mid)}
             check("46 Bob Smith" not in people and people["Bob"]["segment_count"] == 1, "ข้อความย้ายไปอยู่กับ Bob ไม่เหลือชื่อซ้ำ")
             await page.get_by_role("tab", name=re.compile("③ Transcript")).click()
+            await shot("5b-transcript-all-answered")
             await click_button(re.compile("ยืนยัน transcript"))
             check(await has_text("ขั้นที่ 4 จาก 5", 20000), "ยืนยันแล้วพาไปขั้นให้ AI ร่างรายงาน")
             check(db.get_meeting(mid)["status"] == "transcript_verified", "สถานะ = transcript_verified")
@@ -215,6 +234,7 @@ async def main(out: pathlib.Path):
             check(db.get_report(mid)["content"]["agenda"][0]["title"] == "งบประมาณโครงการ (แก้โดยคน)", "ข้อความที่แก้ถูกบันทึกลงฐานข้อมูล")
             check(db.get_report(mid)["ai_snapshot"]["agenda"][0]["title"] == "งบประมาณ", "ฉบับที่ AI ร่างเดิมยังเก็บไว้เทียบ")
             await page.get_by_role("tab", name=re.compile("⑤ Calendar")).click()
+            await shot("6b-calendar-before-approval")
             await click_button(re.compile("อนุมัติรายงานและส่งเข้า Calendar…"))
             await page.get_by_text("ยืนยันการอนุมัติรายงานและส่งเข้า Calendar").wait_for()
             await shot("7-approve-dialog")
@@ -229,18 +249,35 @@ async def main(out: pathlib.Path):
             await shot("8-calendar-approved")
             await page.get_by_role("tab", name=re.compile("④ รายงาน")).click()
             check(await has_text("รายงานถูกล็อก"), "แสดงว่ารายงานถูกล็อก")
+            await shot("8b-report-locked")
             check(await page.get_by_role("textbox", name="เรื่องที่ 1").is_disabled(), "ช่องแก้ไขรายงานถูกล็อกหลังอนุมัติ")
             await page.get_by_role("tab", name=re.compile("⑤ Calendar")).click()
             async with page.expect_download() as dl:
                 await page.get_by_role("button", name=re.compile("ดาวน์โหลด PDF ฉบับเต็ม")).click()
             path = await (await dl.value).path()
             check(pathlib.Path(path).read_bytes().startswith(b"%PDF"), "ดาวน์โหลด PDF ฉบับเต็มได้ที่แท็บ ⑤ (ไม่มี “ฉบับร่าง”)")
+            # (ภาพเพิ่มเพื่อเก็บหน้าจอทุกแบบ ไม่มีผลกับการตรวจ)
+            try:
+                await page.get_by_role("button", name=re.compile("ยกเลิกการอนุมัติเพื่อแก้")).first.click()
+                await page.get_by_role("dialog").wait_for(timeout=8000)
+                await shot("8c-reopen-dialog")
+                await page.keyboard.press("Escape")
+            except Exception:  # noqa: BLE001
+                pass
 
             # ── 5. กลับหน้ารายการ ──
             print("5) หน้ารายการ")
             await page.get_by_role("button", name=re.compile("รายการประชุม")).first.click()
             check(await has_text("อนุมัติแล้ว"), "หน้ารายการแสดงสถานะ “อนุมัติแล้ว”")
             await shot("9-home")
+            # (ภาพเพิ่มเพื่อเก็บหน้าจอทุกแบบ ไม่มีผลกับการตรวจ)
+            try:
+                await page.get_by_role("button", name="🗑").first.click()
+                await page.get_by_role("dialog").wait_for(timeout=8000)
+                await shot("9b-delete-dialog")
+                await page.keyboard.press("Escape")
+            except Exception:  # noqa: BLE001
+                pass
             await browser.close()
             check(not errors, "ไม่มี JavaScript error ในเบราว์เซอร์" + (f": {errors[:3]}" if errors else ""))
     finally:

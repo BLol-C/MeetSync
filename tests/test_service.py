@@ -825,6 +825,18 @@ class ServiceTests(TempDbCase):
         self.assertEqual((merged["seen_in_room"], merged["attendance"], merged["meet_alias"]), (1, "present", "Natkamon YAKHUMPHAI"))   # หลักฐานติดตามไปด้วย
         self.assertEqual(service.outsider_names(self.owner, mid), ["BOZZISX"])
 
+    def test_meet_links_with_the_meet_path_prefix_and_query_are_accepted_and_match_duplicates(self):
+        for ok in ("https://meet.google.com/fso-mkjk-iaf", "https://meet.google.com/meet/fso-mkjk-iaf?authuser=1",
+                   "https://meet.google.com/FSO-mkjk-iaf?authuser=0"):
+            self.assertEqual(service.check_meet_url(ok), ok)
+        for bad in ("https://meet.google.com/", "https://meet.google.com/meet/fsomkjkiaf", "http://meet.google.com/fso-mkjk-iaf",
+                    "https://example.com/fso-mkjk-iaf", "https://meet.google.com/other/fso-mkjk-iaf"):
+            with self.assertRaises(ServiceError):
+                service.check_meet_url(bad)
+        mid = self.new_meeting(meet_url="https://meet.google.com/meet/fso-mkjk-iaf?authuser=1")
+        found = service.meetings_with_url(self.owner, "https://meet.google.com/fso-mkjk-iaf")
+        self.assertEqual([m["meeting_id"] for m in found], [mid])                        # เตือนซ้ำได้แม้เขียนต่างรูปแบบ
+
     def test_matching_uses_the_english_name_only_when_one_is_filled(self):
         mid = service.create_meeting(self.owner, meet_url=URL, title="จับคู่ภาษาอังกฤษ", people=[
             {"display_name": "Thanachai", "meet_alias": "Thanachai SRITHONG", "role": "chair", "attendance": "invited"},
@@ -1004,6 +1016,23 @@ class ServiceTests(TempDbCase):
         with p1, p2:                                                                         # เชื่อมต่อแล้วกดส่งซ้ำ
             self.assertEqual([r["ok"] for r in service.sync_calendar(self.owner, mid)], [True])
         self.assertEqual(len(fake.inserted), 1)
+
+    def test_a_revoked_calendar_token_is_cleared_and_the_user_is_told_to_reconnect(self):
+        from google.auth.exceptions import RefreshError
+        from google.oauth2.credentials import Credentials
+        from integrations import calendar_auth
+        uid = self.owner["user_id"]
+        db.save_calendar_token(uid, json.dumps({"token": "old", "refresh_token": "r", "client_id": "c", "client_secret": "s",
+                                                "token_uri": "https://oauth2.googleapis.com/token",
+                                                "expiry": "2020-01-01T00:00:00Z"}))
+        self.assertTrue(service.calendar_connected(self.owner))
+        err = RefreshError("invalid_grant: Token has been expired or revoked.", {"error": "invalid_grant"})
+        with mock.patch.object(Credentials, "refresh", side_effect=err):
+            with self.assertRaises(calendar_auth.CalendarReconnectNeeded) as cm:
+                calendar_auth.get_credentials(uid)
+        self.assertIn("เชื่อมต่อใหม่", str(cm.exception))
+        self.assertFalse(service.calendar_connected(self.owner))            # ล้างแล้ว -> หน้าจอขึ้นปุ่มเชื่อมต่อให้ ไม่ติดวน
+        self.assertIsNone(db.get_calendar_token(uid))
 
     def test_reopen_deletes_sent_events_and_clears_marks_then_approval_sends_again(self):
         mid = self.draft()

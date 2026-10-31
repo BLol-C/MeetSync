@@ -22,7 +22,8 @@ MEET_PROFILE = ".meet_profile"
 BOT_WINDOW = os.environ.get("BOT_WINDOW", "hidden").strip().lower()
 HIDDEN_POS = (-2400, -2400)
 
-MEET_URL_RE = re.compile(r"^https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}(\?.*)?$", re.I)
+# รับทั้ง https://meet.google.com/abc-defg-hij และแบบที่ Google ขึ้นต้นด้วย /meet/ (https://meet.google.com/meet/abc-defg-hij) พร้อมพารามิเตอร์ท้ายลิงก์ เช่น ?authuser=1
+MEET_URL_RE = re.compile(r"^https://meet\.google\.com/(meet/)?[a-z]{3}-[a-z]{4}-[a-z]{3}(\?.*)?$", re.I)
 
 
 JS_CAPTION_WATCHER = r"""
@@ -269,6 +270,7 @@ PARTICIPANT_SCAN_S = int(os.environ.get("BOT_PARTICIPANT_SCAN_S", "60"))   # อ
 PEOPLE_OPEN_ATTEMPTS = 2   # กดปุ่มผู้คนเพื่อเปิดแผงได้ติดกันกี่ครั้งก่อนยอมแพ้ (ยอมแพ้ที่รอบคู่ = แผงกลับมาปิดเหมือนเดิม)
 
 
+FINAL_SCAN_TIMEOUT_S = 4     # สแกนรายชื่อรอบสุดท้ายตอนหยุดบอท รอได้นานสุดเท่านี้
 WATCHDOG_INTERVAL_S = 15     # ตรวจสุขภาพบอททุกกี่วินาที
 LEFT_ROOM_STRIKES = 3        # ไม่เจอปุ่มวางสายติดกันกี่รอบ ถึงถือว่าประชุมจบ/หลุดห้อง (3 x 15 = 45 วิ)
 EVAL_FAIL_STRIKES = 5        # สั่ง JS ในหน้าไม่ได้ติดกันกี่รอบ ถึงถือว่าหน้าตาย
@@ -409,8 +411,8 @@ class MeetCaptionEngine:
                 elif attempt >= 2:
                     # ไม่เจอปุ่มเลย (เช่น ซ่อนในเมนู ⋮) — ลอง shortcut; ถ้าที่จริงเปิดอยู่แล้วรอบถัดไปจะเห็นและกดกลับให้
                     await page.keyboard.press("c")
-            except Exception as e:  # noqa: BLE001
-                self._emit(type="status", text=f"⚠️ กดเปิดคำบรรยายไม่สำเร็จ (รอบ {attempt}): {e!r}")
+            except Exception:  # noqa: BLE001 — กดพลาดรอบนี้ไม่ต้องแจ้ง: มีรอบถัดไป และผลสุดท้ายรายงานจากการตรวจหน้าจอ
+                pass
             await page.wait_for_timeout(1500)
         state, _ = await self._caption_state(page)
         return state == "on"
@@ -483,6 +485,15 @@ class MeetCaptionEngine:
             self._emit(type="status", text="⚠️ อ่านรายชื่อผู้เข้าร่วมในห้องไม่ได้ (ไม่พบแผงผู้คนของ Meet) — "
                                            "คนที่มาฟังเฉยๆ ต้องตั้ง \"เข้าร่วม\" เองที่แท็บ ①" + seen)
 
+    async def _final_scan(self, page):
+        """อ่านรายชื่อคนในห้องอีกรอบตอนสั่งหยุดบอท (ก่อนปิดเบราว์เซอร์) — จับคนที่เข้าห้องหลังรอบสแกนล่าสุด
+        ต้องเสร็จภายในไม่กี่วินาที (ปุ่มหยุดรอเอนจินแค่ ~5 วินาทีก่อนบังคับปิด) พลาดอย่างไรก็ไม่กระทบการหยุด"""
+        try:
+            await asyncio.wait_for(self._scan_participants(page), timeout=FINAL_SCAN_TIMEOUT_S)
+        except BaseException as e:  # noqa: BLE001 — รวม CancelledError/timeout: การสแกนสุดท้ายห้ามขวางการหยุด
+            if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                raise
+
     async def _monitor(self, page, context, joined):
         """เฝ้าสุขภาพบอทตลอดการประชุม — คืนค่าไม่ได้ ออกได้ทาง _Stopped (สั่งหยุด) หรือ _EngineLost เท่านั้น
 
@@ -504,7 +515,10 @@ class MeetCaptionEngine:
 
         gone = 0
         eval_fail = 0
-        last_reenable = last_silence_warn = last_scan = started
+        last_reenable = last_silence_warn = started
+        # อ่านรายชื่อคนในห้องรอบแรกทันทีที่เข้าห้อง (รอบถัดไปทุก PARTICIPANT_SCAN_S) — ถ้ารอรอบแรกอีก 60 วินาที ประชุมสั้นๆ
+        # หรือคนที่เข้าห้องแล้วเงียบจะไม่เคยถูกอ่านเลย และต้องให้ผู้ใช้ตั้งสถานะเองทั้งที่บอทอ่านได้
+        last_scan = started - PARTICIPANT_SCAN_S
 
         while True:
             try:
@@ -668,7 +682,11 @@ class MeetCaptionEngine:
                             text="⚠️ เปิดคำบรรยายไม่สำเร็จ — ยังไม่ได้ฟังอะไร เปิด CC เองในหน้าต่าง Chrome ของบอท (ปุ่ม CC ด้านล่าง)",
                         )
 
-                    await self._monitor(page, context, joined)
+                    try:
+                        await self._monitor(page, context, joined)
+                    except _Stopped:
+                        await self._final_scan(page)
+                        raise
                 finally:
                     try:
                         await asyncio.wait_for(context.close(), timeout=10)

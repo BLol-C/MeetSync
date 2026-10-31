@@ -34,25 +34,47 @@ def duration_text(seconds: int) -> str:
     return f"{seconds // 3600} ชั่วโมง {seconds % 3600 // 60} นาที {seconds % 60} วินาที"
 
 
-def bot_state_text(state: dict) -> str:
-    """สถานะบอทสั้นๆ บรรทัดเดียว: กำลังเข้าห้อง / กำลังรอเข้าห้อง (รอผู้จัดกดอนุญาต) / กำลังฟังอยู่
-    (ไม่แสดงข้อความดิบจากบันทึกของบอท — คำเตือนจริงแสดงแยกในกล่องเหลือง)"""
+BOT_STATE_TEXT = {
+    "entering": "บอทกำลังเข้าห้อง",
+    "waiting": "บอทกำลังรอเข้าห้อง",
+    "listening": "บอทกำลังฟังอยู่",
+    "no_cc": "บอทยังเปิดคำบรรยายไม่ได้",
+}
+# คำอธิบายในกล่องคำบรรยายตอนยังไม่มีข้อความ (ต่างกันตามสถานะ)
+EMPTY_BOX_TEXT = {
+    "entering": "บอทกำลังเปิดเบราว์เซอร์และเข้าห้อง Google Meet…",
+    "waiting": "บอทส่งคำขอเข้าห้องแล้ว — รอผู้จัดการประชุมกด “ยอมรับ” ให้บอทเข้าห้องใน Google Meet",
+    "listening": "บอทอยู่ในห้องแล้ว — ยังไม่มีคำบรรยาย (อาจยังไม่มีใครพูด)",
+    "no_cc": "ถ้าผู้จัดการประชุมยังไม่ได้กด “ยอมรับ” ให้บอทเข้าห้อง ให้กดยอมรับ — หรือเปิด CC เองในหน้าต่าง Chrome ของบอท",
+}
+_CC_OK = ("✅ เข้าห้องแล้วและเปิดคำบรรยายแล้ว", "✅ เปิดคำบรรยายแล้ว", "กำลังฟังคำบรรยายแบบเรียลไทม์")
+
+
+def bot_phase(state: dict) -> str:
+    """สถานะบอท 4 แบบ: entering (กำลังเข้าห้อง) / waiting (ส่งคำขอแล้ว รอ host กดยอมรับ) / listening (อยู่ในห้องและเปิดคำบรรยายแล้ว)
+    / no_cc (เปิดคำบรรยายไม่ได้) — "อยู่ในห้องแล้ว" ต้องมีหลักฐานจริง (เปิดคำบรรยายได้ หรือมีคำบรรยายเข้ามา)
+    ไม่ใช่แค่เห็นปุ่มวางสายซึ่งหน้ารอเข้าห้องก็มี"""
     texts = [line["text"] for line in state["status"]]
-    joined = (state.get("in_room_seconds") is not None or bool(state["rows"])
-              or any("✅" in t or "กำลังฟังคำบรรยาย" in t for t in texts))
-    if joined:
-        for t in reversed(texts):                 # เข้าห้องแล้วแต่เปิดคำบรรยายไม่ได้ = ยังไม่ได้ฟังจริง
-            if "ยังเปิดคำบรรยายไม่สำเร็จ" in t or t.startswith("⚠️ เปิดคำบรรยายไม่สำเร็จ"):
-                return "บอทอยู่ในห้องแล้ว แต่ยังฟังไม่ได้ (เปิดคำบรรยายไม่สำเร็จ)"
-            if "เปิดคำบรรยายแล้ว" in t or "กำลังฟังคำบรรยาย" in t:
+    if bool(state["rows"]) or any(t.startswith(_CC_OK) for t in texts):
+        for t in reversed(texts):                 # ล่าสุดเปิดคำบรรยายไม่สำเร็จ = ยังไม่ได้ฟังจริง
+            if t.startswith(_CC_OK):
                 break
-        return "บอทกำลังฟังอยู่"
+            if "ยังเปิดคำบรรยายไม่สำเร็จ" in t or t.startswith("⚠️ เปิดคำบรรยายไม่สำเร็จ"):
+                return "no_cc"
+        return "listening"
     for t in reversed(texts):
-        if "ส่งคำขอเข้าร่วมแล้ว" in t:
-            return "บอทกำลังรอเข้าห้อง"
-        if "กดเข้าร่วมแล้ว" in t or "กำลังตรวจว่าเข้าห้อง" in t:
+        if t.startswith("⚠️ เปิดคำบรรยายไม่สำเร็จ"):
+            return "no_cc"                        # รอแล้วเปิดคำบรรยายไม่ได้ (ยังไม่ได้รับอนุญาต หรือเปิดไม่ติด)
+        if "ส่งคำขอเข้าร่วมแล้ว" in t or "ยังไม่ได้เข้าห้อง" in t:
+            return "waiting"
+        if "กดเข้าร่วมแล้ว" in t:
             break
-    return "บอทกำลังเข้าห้อง"
+    return "entering"
+
+
+def bot_state_text(state: dict) -> str:
+    """สถานะบอทสั้นๆ บรรทัดเดียว (ไม่แสดงข้อความดิบจากบันทึกของบอท — คำเตือนจริงแสดงแยกในกล่องเหลือง)"""
+    return BOT_STATE_TEXT[bot_phase(state)]
 
 
 def _live_panel(user: dict, mid: int):
@@ -72,7 +94,8 @@ def _live_panel(user: dict, mid: int):
                 st.rerun()
             return
         left, right = st.columns([3, 2], vertical_alignment="center")
-        left.markdown(f"**{bot_state_text(state)}**")
+        if bot_phase(state) != "listening":              # ฟังอยู่ปกติ = ไม่ต้องบอก (มีตัวนับเวลาและคำบรรยายสดให้เห็นอยู่แล้ว) แสดงเฉพาะสถานะอื่น
+            left.markdown(f"**{bot_state_text(state)}**")
         if state.get("in_room_seconds") is not None:
             right.markdown(f"<div style='text-align:right'><b>อยู่ในห้องมาแล้ว {duration_text(state['in_room_seconds'])}</b></div>",
                            unsafe_allow_html=True)
@@ -81,14 +104,14 @@ def _live_panel(user: dict, mid: int):
             st.warning("มีชื่อในห้องที่ไม่อยู่ในรายชื่อ: " + ", ".join(outsiders)
                        + " — ถ้าไม่ได้เชิญ เชิญออกจากห้อง Meet ได้ (หรือเป็นชื่อที่สะกดต่างจากรายชื่อ) แล้วยืนยันที่แท็บ ③ หลังหยุดบอท")
         last = state["status"][-1]["text"] if state["status"] else ""
-        if last.startswith("⚠️"):       # ปัญหาที่บอทแจ้งล่าสุดยังต้องเห็น (เช่น เปิด CC ไม่ได้ อ่านรายชื่อในห้องไม่ได้)
+        if last.startswith("⚠️") and bot_phase(state) in ("listening", "no_cc"):   # ตอนกำลังเข้าห้อง/รอ host ยังไม่ใช่ปัญหา ไม่ต้องเตือน
             st.warning(last)
         if state["error"]:
             st.error(state["error"])
         rows = state["rows"][-60:][::-1]      # ล่าสุดอยู่บนสุด ไม่ต้องเลื่อนตาม
         with st.container(height=420, border=True):
             if not rows:
-                st.caption("ยังไม่มีคำบรรยาย — รอบอทเข้าห้องและเปิด CC (ถ้าอยู่ในห้องรอ ให้ผู้จัดกดอนุญาตให้บอทเข้า)")
+                st.caption(EMPTY_BOX_TEXT[bot_phase(state)])
             for r in rows:
                 name, text = common.md_escape(r["name"]), common.md_escape(r["text"])
                 who = f"{r['t']} · {name}" if r.get("t") else name         # เวลาที่พูด · ผู้พูด (รูปแบบเดียวกับแท็บ ③)

@@ -127,10 +127,13 @@ def list_meetings(user: dict) -> list[dict]:
 
 def meetings_with_url(user: dict, meet_url: str) -> list[dict]:
     """การประชุมของผู้ใช้ที่ใช้ลิงก์ Meet เดียวกัน (ไว้เตือนก่อนสร้างซ้ำ) — เทียบโดยตัดพารามิเตอร์ท้ายลิงก์"""
-    base = (meet_url or "").strip().split("?")[0].lower()
+    def key(u: str) -> str:
+        return (u or "").strip().split("?")[0].lower().replace("meet.google.com/meet/", "meet.google.com/")   # ไม่สนส่วน /meet/ และพารามิเตอร์
+
+    base = key(meet_url)
     if not base:
         return []
-    return [m for m in list_meetings(user) if (m["meet_url"] or "").split("?")[0].lower() == base]
+    return [m for m in list_meetings(user) if key(m["meet_url"]) == base]
 
 
 def outsider_names(user: dict, meeting_id: int) -> list[str]:
