@@ -92,7 +92,8 @@ class UiTests(TempDbCase):
         self.assertTrue(section_boxes)                                                    # ทุกเรื่องในรายงานเลือกวาระได้
         self.assertEqual(section_boxes[0].value, "วาระ 4.2 · เรื่องพิจารณาใหม่")           # ที่ AI สรุปเริ่มที่ 4.2
         previous_box = next(x for x in at.selectbox if x.key == f"prev_{mid}")
-        self.assertIn(f"(#{prev})", " ".join(previous_box.options))                        # เสนอเฉพาะการประชุมที่อนุมัติแล้ว
+        self.assertTrue(any("ประชุมทดสอบหน้าเว็บ" in o for o in previous_box.options[1:]))   # เสนอเฉพาะการประชุมที่อนุมัติแล้ว
+        self.assertFalse(any("(#" in o for o in previous_box.options))                     # ไม่มีเลข # ต่อท้าย (ใส่เฉพาะตอนชื่อซ้ำ)
         self.assertEqual(previous_box.value, "— ไม่มี / ไม่ใช้ข้อมูลครั้งก่อน —")
         new = self.app(view="new")
         new_box = next(x for x in new.selectbox if x.key == "new_previous_meeting")
