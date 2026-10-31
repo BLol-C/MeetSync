@@ -22,7 +22,8 @@ MEET_PROFILE = ".meet_profile"
 BOT_WINDOW = os.environ.get("BOT_WINDOW", "hidden").strip().lower()
 HIDDEN_POS = (-2400, -2400)
 
-MEET_URL_RE = re.compile(r"^https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}(\?.*)?$", re.I)
+# รับทั้ง https://meet.google.com/abc-defg-hij และแบบที่ Google ขึ้นต้นด้วย /meet/ (https://meet.google.com/meet/abc-defg-hij) พร้อมพารามิเตอร์ท้ายลิงก์ เช่น ?authuser=1
+MEET_URL_RE = re.compile(r"^https://meet\.google\.com/(meet/)?[a-z]{3}-[a-z]{4}-[a-z]{3}(\?.*)?$", re.I)
 
 
 JS_CAPTION_WATCHER = r"""

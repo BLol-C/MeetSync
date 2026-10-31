@@ -825,6 +825,18 @@ class ServiceTests(TempDbCase):
         self.assertEqual((merged["seen_in_room"], merged["attendance"], merged["meet_alias"]), (1, "present", "Natkamon YAKHUMPHAI"))   # หลักฐานติดตามไปด้วย
         self.assertEqual(service.outsider_names(self.owner, mid), ["BOZZISX"])
 
+    def test_meet_links_with_the_meet_path_prefix_and_query_are_accepted_and_match_duplicates(self):
+        for ok in ("https://meet.google.com/fso-mkjk-iaf", "https://meet.google.com/meet/fso-mkjk-iaf?authuser=1",
+                   "https://meet.google.com/FSO-mkjk-iaf?authuser=0"):
+            self.assertEqual(service.check_meet_url(ok), ok)
+        for bad in ("https://meet.google.com/", "https://meet.google.com/meet/fsomkjkiaf", "http://meet.google.com/fso-mkjk-iaf",
+                    "https://example.com/fso-mkjk-iaf", "https://meet.google.com/other/fso-mkjk-iaf"):
+            with self.assertRaises(ServiceError):
+                service.check_meet_url(bad)
+        mid = self.new_meeting(meet_url="https://meet.google.com/meet/fso-mkjk-iaf?authuser=1")
+        found = service.meetings_with_url(self.owner, "https://meet.google.com/fso-mkjk-iaf")
+        self.assertEqual([m["meeting_id"] for m in found], [mid])                        # เตือนซ้ำได้แม้เขียนต่างรูปแบบ
+
     def test_matching_uses_the_english_name_only_when_one_is_filled(self):
         mid = service.create_meeting(self.owner, meet_url=URL, title="จับคู่ภาษาอังกฤษ", people=[
             {"display_name": "Thanachai", "meet_alias": "Thanachai SRITHONG", "role": "chair", "attendance": "invited"},
