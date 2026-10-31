@@ -111,7 +111,11 @@ def state(user: dict) -> dict:
 
 def health() -> dict | None:
     """สถานะบริการบอท หรือ None ถ้าไม่ได้เปิดอยู่ (ไม่ต้องใช้ผู้ใช้/โทเคน)"""
-    try:
-        return requests.get(BOT_API_URL + "/health", timeout=3).json()
-    except (requests.RequestException, ValueError):
-        return None
+    for timeout in (3, TIMEOUT):
+        try:
+            return requests.get(BOT_API_URL + "/health", timeout=timeout).json()
+        except requests.ReadTimeout:
+            continue           # เชื่อมต่อได้แต่ตอบช้า = บริการยังเปิดอยู่แค่กำลังยุ่ง (เช่นรับคำบรรยายเยอะ) ลองรอนานขึ้นอีกรอบ
+        except (requests.RequestException, ValueError):
+            return None        # ต่อไม่ติดเลย (ไม่มีใครรับที่พอร์ต) = ไม่ได้เปิดอยู่จริง
+    return {"ok": True, "db": True, "running": None, "busy": True}   # ยังตอบช้าอยู่ — อย่าบอกว่าไม่ได้เปิด ให้ไปถามสถานะต่อเอง
