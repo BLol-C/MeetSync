@@ -84,6 +84,50 @@ class UiTests(TempDbCase):
             service.approve_report(self.user, mid, confirm_warnings=True)
         return mid
 
+    def test_report_tab_shows_edit_history_and_which_draft_is_in_use(self):
+        mid = self.meeting("draft")
+        at = self.app(m=mid)
+        self.assertEqual([e.label for e in at.expander if "ประวัติการแก้ไข" in e.label],
+                         ["ประวัติการแก้ไข · ใช้ร่างฉบับที่ 1 (จากทั้งหมด 1 ฉบับ)"])    # มีแค่ AI ร่าง
+        content = service.get_report_view(self.user, mid)["report"]["content"]
+        service.save_report_draft(self.user, mid, {**content, "summary": "สรุปที่คนแก้ใหม่ทั้งหมด"})
+        at = self.app(m=mid)
+        self.assertEqual([e.label for e in at.expander if "ประวัติการแก้ไข" in e.label],
+                         ["ประวัติการแก้ไข · ใช้ร่างฉบับที่ 2 (จากทั้งหมด 2 ฉบับ)"])
+        box = next(x for x in at.selectbox if x.key == f"hist_{mid}_2_2")
+        self.assertEqual(box.label, "ดูย้อนหลัง")                                         # ช่องเดียว ไม่มี รุ่นเก่า/รุ่นใหม่
+        self.assertEqual(box.value, 2)                                                   # เริ่มที่ฉบับที่ใช้อยู่ = แสดงว่าครั้งล่าสุดแก้อะไร
+        self.assertIn("ใช้อยู่", box.options[box.index])                                   # บอกว่าฉบับไหนใช้อยู่
+        self.assertIn("คนแก้ไข", box.options[box.index])
+        self.assertFalse(any("รุ่น" in o or "โดย" in o for o in box.options))           # ใช้คำว่า ร่างฉบับที่ และไม่แสดงชื่อคนแก้
+        self.assertFalse(any(x.label in ("รุ่นเก่า", "รุ่นใหม่") for x in at.selectbox))
+        shown = " ".join(v for e in at.expander for v in texts(e.markdown))
+        self.assertIn(":red[~~", shown)                                                  # ส่วนที่ถูกแก้ออกเป็นสีแดงขีดฆ่า
+        self.assertIn("สรุปภาพรวม", shown)
+        box.set_value(1).run()                                                           # เลือกร่างฉบับแรกสุด = เห็นเนื้อหาทั้งฉบับของ AI ร่าง
+        first = " ".join(v for e in at.expander for v in texts(e.markdown))
+        self.assertIn("สาระสำคัญ", first)
+        self.assertNotIn(":red[~~", first)
+
+    def test_use_button_only_for_other_drafts_of_an_editable_report(self):
+        mid = self.meeting("draft")
+        content = service.get_report_view(self.user, mid)["report"]["content"]
+        service.save_report_draft(self.user, mid, {**content, "summary": "สรุปที่คนแก้ใหม่ทั้งหมด"})
+        at = self.app(m=mid)
+        self.assertFalse([b for b in at.button if b.key == f"use_{mid}"])                 # เริ่มที่ฉบับที่ใช้อยู่ ไม่ต้องเลือกใช้
+        next(x for x in at.selectbox if x.key == f"hist_{mid}_2_2").set_value(1).run()
+        self.assertEqual([b.label for b in at.button if b.key == f"use_{mid}"], ["ใช้ร่างฉบับที่ 1"])
+
+    def test_approved_report_has_no_use_button(self):
+        mid = self.meeting("approved")
+        at = self.app(m=mid)
+        self.assertFalse([b for b in at.button if b.key == f"use_{mid}"])
+
+    def test_approved_report_still_shows_its_history(self):
+        mid = self.meeting("approved")
+        at = self.app(m=mid)
+        self.assertTrue(any("ประวัติการแก้ไข" in e.label for e in at.expander))
+
     def test_draft_report_has_a_section_selector_per_agenda_item_and_setup_offers_previous_meetings(self):
         prev = self.meeting("approved")
         mid = self.meeting("draft")
@@ -469,6 +513,61 @@ class UiTests(TempDbCase):
         self.assertEqual(len(approve), 1)                                      # ปุ่มอนุมัติอยู่แท็บ ⑤ แท็บเดียว ไม่ซ้ำที่ ④
         self.assertIn("ส่งเข้า Calendar", approve[0].label)
 
+    def sent_meeting(self):
+        """ประชุมที่อนุมัติแล้วและมีงานหนึ่งที่ส่งนัดเข้า Calendar ไปแล้ว (ไม่ต่อ Google จริง)"""
+        mid = self.meeting("approved")
+        item = db.get_report(mid)["content"]["action_items"][0]
+        db.mark_action_item_synced(item["action_item_id"], "evt1", "https://calendar.google.com/event?eid=evt1")
+        return mid, item
+
+    def changed_result(self, item):
+        return [{"action_item_id": item["action_item_id"], "description": item["description"], "status": "changed",
+                 "mine": {"description": item["description"], "due_date": "2026-10-09", "due_date_end": None,
+                          "due_time": "13:00", "due_time_end": None},
+                 "remote": {"description": "ชื่อใหม่ที่แก้ใน Calendar", "due_date": "2026-11-02", "due_date_end": "2026-11-04",
+                            "due_time": "12:00", "due_time_end": "12:50"}}]
+
+    def test_calendar_tab_checks_google_when_opened_and_offers_to_update_on_a_change(self):
+        mid, item = self.sent_meeting()
+        with mock.patch.object(service, "check_calendar_changes", return_value=self.changed_result(item)) as check:
+            at = self.app(m=mid)
+        check.assert_called_once()                                                        # เปิดหน้าแล้วตรวจให้เอง
+        self.assertTrue(any("พบการเปลี่ยนแปลงใน Google Calendar 1 รายการ" in v for v in texts(at.warning)))
+        self.assertEqual([b.label for b in at.button if b.key == f"cal_apply_{mid}"], ["อัปเดต MeetSync ตาม Google Calendar"])
+        table = next(d.value for d in at.dataframe if "ชื่อใน Google Calendar" in d.value.columns)
+        self.assertEqual(table.iloc[0]["กำหนดใน MeetSync"], "2026-10-09 · 13:00")            # เทียบค่าใน MeetSync กับใน Google ทั้งชื่อและเวลา
+        self.assertEqual(table.iloc[0]["กำหนดใน Google Calendar"], "2026-11-02 ถึง 2026-11-04 · 12:00-12:50")
+        self.assertEqual(table.iloc[0]["ชื่อใน Google Calendar"], "ชื่อใหม่ที่แก้ใน Calendar")
+        self.assertEqual(table.iloc[0]["ชื่อใน MeetSync"], item["description"])
+        with mock.patch.object(service, "apply_calendar_changes", return_value={"updated": 1, "cleared": 0}) as apply:
+            next(b for b in at.button if b.key == f"cal_apply_{mid}").click().run()
+        apply.assert_called_once()                                                        # ไม่แก้เองจนกว่าจะกดยืนยัน
+
+    def test_calendar_check_is_not_repeated_within_a_minute_unless_asked(self):
+        mid, item = self.sent_meeting()
+        with mock.patch.object(service, "check_calendar_changes", return_value=[]) as check:
+            at = self.app(m=mid)
+            at.run()
+            self.assertEqual(check.call_count, 1)                                         # เปิดซ้ำภายใน 1 นาที = ไม่ถาม Google ซ้ำ
+            next(b for b in at.button if b.key == f"cal_check_btn_{mid}").click().run()
+            self.assertEqual(check.call_count, 2)                                         # กดปุ่มตรวจเอง = ตรวจเสมอ
+
+    def test_calendar_check_failure_is_shown_without_breaking_the_tab(self):
+        mid, item = self.sent_meeting()
+        err = service.ServiceError("ยังไม่ได้เชื่อมต่อ Google Calendar", "unavailable")
+        with mock.patch.object(service, "check_calendar_changes", side_effect=err):
+            at = self.app(m=mid)
+        self.assertTrue(any("ยังไม่ได้เชื่อมต่อ Google Calendar" in v for v in texts(at.warning)))
+        self.assertTrue([b for b in at.button if b.key == f"approve_{mid}"] == [])        # อนุมัติแล้ว ไม่มีปุ่มอนุมัติ แต่หน้ายังขึ้นปกติ
+
+    def test_calendar_check_panel_is_hidden_when_nothing_was_sent_or_report_is_a_draft(self):
+        mid = self.meeting("approved")                                                    # อนุมัติแล้วแต่ยังไม่ได้ส่งนัด
+        with mock.patch.object(service, "check_calendar_changes") as check:
+            at = self.app(m=mid)
+            draft = self.app(m=self.meeting("draft"))
+        check.assert_not_called()
+        self.assertFalse([b for b in list(at.button) + list(draft.button) if (b.key or "").startswith("cal_check_btn_")])
+
     def test_unsaved_edits_are_flagged_and_block_approval_until_saved(self):
         mid = self.meeting("draft")
         at = self.app(m=mid)
@@ -620,16 +719,19 @@ class TableConversionTests(unittest.TestCase):
         import pandas as pd
 
         from ui import tab_calendar, tab_report
-        items = [{"description": "ส่งรายงาน", "assignee": "Alice", "due_date": "2026-10-09", "due_time": "13:00",
-                  "due_time_end": None, "evidence": ["จะส่ง"], "grounded": True},
-                 {"description": "ไม่มีผู้รับผิดชอบ", "assignee": None, "due_date": None, "due_time": None,
+        items = [{"description": "ส่งรายงาน", "assignee": "Alice", "due_date": "2026-10-09", "due_date_end": "2026-10-11",
+                  "due_time": "13:00", "due_time_end": None, "evidence": ["จะส่ง"], "grounded": True},
+                 {"description": "ไม่มีผู้รับผิดชอบ", "assignee": None, "due_date": None, "due_date_end": None, "due_time": None,
                   "due_time_end": None, "evidence": [], "grounded": None}]
         df = tab_calendar.items_df(items, approved=False)
-        self.assertEqual(df.loc[0, "วันที่"], datetime.date(2026, 10, 9))
+        self.assertEqual(df.loc[0, "วันที่เริ่ม"], datetime.date(2026, 10, 9))
+        self.assertEqual(df.loc[0, "วันที่สิ้นสุด"], datetime.date(2026, 10, 11))
+        self.assertEqual(list(df.columns[3:7]), ["วันที่เริ่ม", "เวลาเริ่ม", "เวลาสิ้นสุด", "วันที่สิ้นสุด"])   # เรียงเหมือนหน้า Google Calendar
         back = tab_report.actions_from_df(df)
-        self.assertEqual([(b["description"], b["assignee"], b["due_date"], b["due_time"], b["due_time_end"], b["evidence"]) for b in back],
-                         [("ส่งรายงาน", "Alice", "2026-10-09", "13:00", None, ["จะส่ง"]),
-                          ("ไม่มีผู้รับผิดชอบ", None, None, None, None, [])])
+        self.assertEqual([(b["description"], b["assignee"], b["due_date"], b["due_date_end"], b["due_time"], b["due_time_end"], b["evidence"])
+                          for b in back],
+                         [("ส่งรายงาน", "Alice", "2026-10-09", "2026-10-11", "13:00", None, ["จะส่ง"]),
+                          ("ไม่มีผู้รับผิดชอบ", None, None, None, None, None, [])])
 
     def test_action_table_values_as_the_browser_returns_them(self):
         """ค่าจากตารางจริง: Timestamp/NaT/NaN/time/สตริงว่าง ต้องไม่ทำให้พังและไม่หลุดเป็นขยะ"""
@@ -639,17 +741,17 @@ class TableConversionTests(unittest.TestCase):
 
         from ui import tab_report
         df = pd.DataFrame([
-            {"_ev": None, "งาน / นัดหมาย": "งานที่เพิ่มใหม่", "ผู้รับผิดชอบ": None, "วันที่": pd.Timestamp("2026-11-02"),
+            {"_ev": None, "งาน / นัดหมาย": "งานที่เพิ่มใหม่", "ผู้รับผิดชอบ": None, "วันที่เริ่ม": pd.Timestamp("2026-11-02"), "วันที่สิ้นสุด": pd.Timestamp("2026-11-04"),
              "เวลาเริ่ม": datetime.time(9, 5), "เวลาสิ้นสุด": pd.NaT, "หลักฐานจาก transcript": None, "Calendar": None},
-            {"_ev": "[]", "งาน / นัดหมาย": "   ", "ผู้รับผิดชอบ": "— ไม่ระบุ —", "วันที่": None, "เวลาเริ่ม": None,
+            {"_ev": "[]", "งาน / นัดหมาย": "   ", "ผู้รับผิดชอบ": "— ไม่ระบุ —", "วันที่เริ่ม": None, "วันที่สิ้นสุด": None, "เวลาเริ่ม": None,
              "เวลาสิ้นสุด": None, "หลักฐานจาก transcript": "", "Calendar": ""},
-            {"_ev": "ไม่ใช่ json", "งาน / นัดหมาย": "evidence พัง", "ผู้รับผิดชอบ": "— ไม่ระบุ —", "วันที่": float("nan"),
+            {"_ev": "ไม่ใช่ json", "งาน / นัดหมาย": "evidence พัง", "ผู้รับผิดชอบ": "— ไม่ระบุ —", "วันที่เริ่ม": float("nan"), "วันที่สิ้นสุด": float("nan"),
              "เวลาเริ่ม": float("nan"), "เวลาสิ้นสุด": float("nan"), "หลักฐานจาก transcript": "", "Calendar": ""},
         ])
         out = tab_report.actions_from_df(df)
         self.assertEqual(len(out), 2)                                   # แถวที่ไม่มีคำอธิบายถูกข้าม
-        self.assertEqual((out[0]["due_date"], out[0]["due_time"], out[0]["due_time_end"], out[0]["assignee"], out[0]["evidence"]),
-                         ("2026-11-02", "09:05", None, None, []))
+        self.assertEqual((out[0]["due_date"], out[0]["due_date_end"], out[0]["due_time"], out[0]["due_time_end"], out[0]["assignee"], out[0]["evidence"]),
+                         ("2026-11-02", "2026-11-04", "09:05", None, None, []))
         self.assertEqual((out[1]["due_date"], out[1]["due_time"], out[1]["evidence"]), (None, None, []))
 
     def test_markdown_escape_neutralises_formatting_and_math(self):

@@ -97,7 +97,6 @@ CREATE TABLE summaries (
     meeting_id         INT NOT NULL UNIQUE,
     executive_summary  TEXT NOT NULL,
     other_matters      TEXT NULL,
-    ai_snapshot        LONGTEXT NULL,
     model_used         VARCHAR(50) NULL,
     prompt_version     VARCHAR(20) NULL,
     generated_at       DATETIME NOT NULL,
@@ -135,6 +134,30 @@ CREATE TABLE action_items (
     FOREIGN KEY (summary_id) REFERENCES summaries(summary_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
+
+# ประวัติรายงาน: เพิ่มแถวอย่างเดียว (ไม่มีโค้ดส่วนไหนแก้หรือลบ ยกเว้นลบตามเมื่อลบการประชุมทั้งก้อน)
+# ทุกครั้งที่ AI ร่าง/คนแก้/อนุมัติ/ยกเลิกอนุมัติ เก็บรายงานทั้งฉบับ ณ ตอนนั้นไว้เป็นรุ่นหนึ่ง ใช้ดูย้อนหลังและเทียบรุ่นได้
+# ตารางวาระ/งานปัจจุบันยังเป็นฉบับล่าสุดเหมือนเดิม (PDF และ Calendar อ่านจากตารางนั้น ไม่ได้อ่านจากตารางนี้)
+_VERSIONS_DDL = """
+CREATE TABLE IF NOT EXISTS summary_versions (
+    version_id INT AUTO_INCREMENT PRIMARY KEY,
+    summary_id INT NOT NULL,
+    version_no INT NOT NULL,
+    kind       VARCHAR(20) NOT NULL,
+    content    LONGTEXT NOT NULL,
+    saved_by   INT NULL,
+    saved_at   DATETIME NOT NULL,
+    UNIQUE KEY uq_summary_version (summary_id, version_no),
+    FOREIGN KEY (summary_id) REFERENCES summaries(summary_id) ON DELETE CASCADE,
+    CONSTRAINT fk_versions_user FOREIGN KEY (saved_by) REFERENCES users(user_id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""
+# ชนิดของรุ่น: ai_draft = AI ร่าง (รวมร่างใหม่) · human_edit = คนบันทึกแก้ · approve = อนุมัติ · reopen = ยกเลิกอนุมัติ
+# · calendar_sync = ปรับชื่อและวัน/เวลาของงานตามที่ผู้ใช้แก้ในนัดบน Google Calendar
+# ฉบับที่ใช้อยู่ตอนนี้ = summaries.current_version_no (ตัวชี้ที่เปลี่ยนได้ ต่างจากตารางรุ่นที่เพิ่มอย่างเดียว) —
+# เลือกฉบับเก่ามาใช้ = ย้ายตัวชี้และเขียนเนื้อหานั้นลงตารางวาระ/งานปัจจุบัน ไม่สร้างรุ่นใหม่
+# baseline = รายงานที่มีมาก่อนเริ่มเก็บประวัติ (ไม่มีฉบับ AI เดิมให้ย้อนสร้าง)
+VERSION_KINDS = ("ai_draft", "human_edit", "approve", "reopen", "baseline", "calendar_sync")
 
 MEETING_STATUSES = ("scheduled", "recording", "transcript_review", "transcript_verified", "draft", "approved")
 _STATUS_TRANSITIONS: dict[str, set[str]] = {
@@ -233,6 +256,14 @@ def init_schema():
                     for statement in _SCHEMA.split(";"):
                         if statement.strip():
                             cur.execute(statement)
+                cur.execute(_VERSIONS_DDL)
+                _ensure_pointer_column(cur)
+                _ensure_task_end_date_column(cur)
+                _backfill_versions(cur)
+                cur.execute("""UPDATE summaries s SET current_version_no =
+                               (SELECT MAX(v.version_no) FROM summary_versions v WHERE v.summary_id = s.summary_id)
+                               WHERE s.current_version_no IS NULL""")
+                _drop_ai_snapshot_column(cur)
         finally:
             with conn.cursor() as cur:
                 cur.execute("SELECT RELEASE_LOCK(%s)", (lock,))
@@ -1041,7 +1072,8 @@ def edit_segment(
 # ─────────────────────────────────────────────────────────────────────────────
 # รายงานการประชุม (summaries + agenda_items + action_items)
 #   เนื้อหาในโปรแกรมเป็น dict {"summary", "agenda": [...], "other_matters", "action_items": [...]}
-#   ในฐานข้อมูลเก็บเป็นแถวตามตาราง ไม่มี JSON ซ้ำซ้อน ยกเว้น ai_snapshot (ภาพถ่ายผลดิบของ AI ไว้เทียบกับฉบับที่คนแก้)
+#   ในฐานข้อมูลเก็บเป็นแถวตามตาราง ไม่มี JSON ซ้ำซ้อน ยกเว้นตารางประวัติ summary_versions (ภาพถ่ายทั้งฉบับทุกครั้งที่บันทึก
+#   ฉบับที่ AI ร่างเดิมก็คือร่างฉบับ ai_draft ในนั้น)
 # ─────────────────────────────────────────────────────────────────────────────
 def _insert_report_rows(cur, summary_id: int, content: dict):
     """เขียนวาระและงานของรายงาน (งานของรายงานที่ยังเป็นฉบับร่างยังไม่เคยส่งเข้า Calendar จึงไม่มีสถานะส่งให้พกต่อ)"""
@@ -1056,11 +1088,162 @@ def _insert_report_rows(cur, summary_id: int, content: dict):
     for it in content.get("action_items") or []:
         cur.execute(
             """INSERT INTO action_items
-               (summary_id, description, assignee, due_date, due_time, due_time_end, evidence)
-               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+               (summary_id, description, assignee, due_date, due_date_end, due_time, due_time_end, evidence)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
             (summary_id, it.get("description") or "", it.get("assignee") or None, it.get("due_date") or None,
-             it.get("due_time") or None, it.get("due_time_end") or None, _dump_list(it.get("evidence"))),
+             it.get("due_date_end") or None, it.get("due_time") or None, it.get("due_time_end") or None,
+             _dump_list(it.get("evidence"))),
         )
+
+
+def _canonical_content(content: dict) -> dict:
+    """เนื้อหารายงานในรูปเดียวกันเสมอ (ชนิดข้อมูลเป็นข้อความ/ลิสต์ล้วน) ไว้เก็บเป็นรุ่นและเทียบว่ามีอะไรเปลี่ยนจริงไหม"""
+    def t(v):
+        return str(v)[:5] if v else None
+
+    return {
+        "summary": content.get("summary") or "",
+        "other_matters": content.get("other_matters") or None,
+        "agenda": [{"section": a.get("section") if a.get("section") in AGENDA_SECTIONS else DEFAULT_AGENDA_SECTION,
+                    "title": a.get("title") or "", "discussion": a.get("discussion") or "",
+                    "resolution": a.get("resolution") or None, "evidence": [str(e) for e in (a.get("evidence") or [])]}
+                   for a in content.get("agenda") or []],
+        "action_items": [{"description": it.get("description") or "", "assignee": it.get("assignee") or None,
+                          "due_date": str(it["due_date"])[:10] if it.get("due_date") else None,
+                          "due_date_end": str(it["due_date_end"])[:10] if it.get("due_date_end") else None,
+                          "due_time": t(it.get("due_time")), "due_time_end": t(it.get("due_time_end")),
+                          "evidence": [str(e) for e in (it.get("evidence") or [])]}
+                         for it in content.get("action_items") or []],
+    }
+
+
+def _drop_ai_snapshot_column(cur):
+    """ฐานข้อมูลที่สร้างก่อนเลิกใช้ ai_snapshot: ลบคอลัมน์นี้ (ฉบับ AI เดิมอยู่ในตารางประวัติแล้ว — _backfill_versions เพิ่งสร้างให้
+    รายงานที่ยังไม่มีรุ่น) ลบเฉพาะเมื่อทุกรายงานมีรุ่นในตารางประวัติแล้วเท่านั้น"""
+    cur.execute("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() "
+                "AND TABLE_NAME = 'summaries' AND COLUMN_NAME = 'ai_snapshot'")
+    if cur.fetchone() is None:
+        return
+    cur.execute("SELECT COUNT(*) AS n FROM summaries s WHERE NOT EXISTS "
+                "(SELECT 1 FROM summary_versions v WHERE v.summary_id = s.summary_id)")
+    if cur.fetchone()["n"] == 0:
+        cur.execute("ALTER TABLE summaries DROP COLUMN ai_snapshot")
+
+
+def _ensure_task_end_date_column(cur):
+    """วันที่สิ้นสุดของงาน/นัดหมาย (action_items.due_date_end) — ว่าง = วันเดียวกับวันเริ่ม"""
+    cur.execute("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() "
+                "AND TABLE_NAME = 'action_items' AND COLUMN_NAME = 'due_date_end'")
+    if cur.fetchone() is None:
+        cur.execute("ALTER TABLE action_items ADD COLUMN due_date_end DATE NULL AFTER due_date")
+
+
+def _ensure_pointer_column(cur):
+    """คอลัมน์ชี้ฉบับที่ใช้อยู่ (ฐานข้อมูลที่สร้างก่อนมีฟีเจอร์นี้ไม่ต้องลบแล้วสร้างใหม่)"""
+    cur.execute("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() "
+                "AND TABLE_NAME = 'summaries' AND COLUMN_NAME = 'current_version_no'")
+    if cur.fetchone() is None:
+        cur.execute("ALTER TABLE summaries ADD COLUMN current_version_no INT NULL")
+
+
+def _record_version(cur, summary_id: int, kind: str, content: dict, user_id: int | None = None,
+                    *, skip_if_same: bool = False, saved_at=None) -> int | None:
+    """เพิ่มรุ่นใหม่ของรายงาน (ต้องเรียกในทรานแซกชันที่ล็อกแถว summaries ไว้แล้ว) คืนเลขรุ่น หรือ None ถ้าข้าม
+    skip_if_same: ถ้าเนื้อหาเหมือนฉบับที่ใช้อยู่ทุกตัวอักษรไม่เพิ่ม (กดบันทึกโดยไม่ได้แก้อะไร)
+    รุ่นที่เพิ่มกลายเป็นฉบับที่ใช้อยู่ทันที เลขรุ่นนับต่อจากรุ่นสูงสุดเสมอ (แก้ต่อจากฉบับเก่าได้รุ่นใหม่ต่อท้าย ไม่ทับรุ่นใด)"""
+    canon = _canonical_content(content)
+    cur.execute("SELECT MAX(version_no) AS m FROM summary_versions WHERE summary_id = %s", (summary_id,))
+    top = cur.fetchone()["m"] or 0
+    if skip_if_same and top:
+        cur.execute(
+            """SELECT v.content FROM summary_versions v JOIN summaries s ON s.summary_id = v.summary_id
+               WHERE v.summary_id = %s AND v.version_no = COALESCE(s.current_version_no, %s)""", (summary_id, top))
+        used = cur.fetchone()
+        if used and json.loads(used["content"]) == canon:
+            return None
+    no = top + 1
+    cur.execute(
+        "INSERT INTO summary_versions (summary_id, version_no, kind, content, saved_by, saved_at) "
+        "VALUES (%s, %s, %s, %s, %s, COALESCE(%s, NOW()))",
+        (summary_id, no, kind, json.dumps(canon, ensure_ascii=False), user_id, saved_at),
+    )
+    cur.execute("UPDATE summaries SET current_version_no = %s WHERE summary_id = %s", (no, summary_id))
+    return no
+
+
+def _current_content(cur, summary_id: int) -> dict:
+    cur.execute("SELECT * FROM summaries WHERE summary_id = %s", (summary_id,))
+    return _report_row_to_dict(cur, cur.fetchone())["content"]
+
+
+def _backfill_versions(cur):
+    """รายงานที่มีอยู่ก่อนเริ่มเก็บประวัติ: สร้างรุ่นย้อนหลังจากสิ่งที่ฐานข้อมูลมี (ฉบับ AI เดิม → ฉบับปัจจุบัน → อนุมัติ)
+    เรียกซ้ำได้ — ทำเฉพาะรายงานที่ยังไม่มีรุ่นเลย"""
+    cur.execute("SELECT s.* FROM summaries s LEFT JOIN summary_versions v ON v.summary_id = s.summary_id "
+                "WHERE v.version_id IS NULL")
+    for row in cur.fetchall():
+        sid = row["summary_id"]
+        current = _current_content(cur, sid)
+        snap = json.loads(row["ai_snapshot"]) if row.get("ai_snapshot") else None
+        if snap:
+            _record_version(cur, sid, "ai_draft", snap, None, saved_at=row["generated_at"])
+            if _canonical_content(snap) != _canonical_content(current):
+                _record_version(cur, sid, "human_edit", current, None, saved_at=row["edited_at"] or row["generated_at"])
+        else:
+            _record_version(cur, sid, "baseline", current, None, saved_at=row["generated_at"])
+        if row["approved_at"] is not None:
+            _record_version(cur, sid, "approve", current, row["approved_by"], saved_at=row["approved_at"])
+
+
+AI_SECTIONS = ("inform", "consider_new")     # หมวดที่ AI เลือกได้ (วาระ 2, 3, 4.1 ระบบเติมจากครั้งก่อน ไม่ใช่ AI)
+
+
+def latest_ai_draft(summary_id: int, ai_only: bool = True) -> dict | None:
+    """ฉบับที่ AI ร่างล่าสุด (ร่างฉบับชนิด ai_draft ที่ใหม่สุด) ไว้เทียบกับฉบับที่คนแก้ — ai_only: ตัดวาระที่ระบบเติมจากครั้งก่อนออก
+    เหลือเฉพาะที่ AI สรุปเอง None ถ้ายังไม่เคยมี"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT content FROM summary_versions WHERE summary_id = %s AND kind = 'ai_draft' "
+                        "ORDER BY version_no DESC LIMIT 1", (summary_id,))
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    content = json.loads(row["content"])
+    if ai_only:
+        content["agenda"] = [a for a in content["agenda"] if a["section"] in AI_SECTIONS]
+    return content
+
+
+def list_report_versions(summary_id: int) -> list[dict]:
+    """รุ่นทั้งหมดของรายงาน (ไม่รวมเนื้อหา) เรียงจากใหม่ไปเก่า"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT v.version_no, v.kind, v.saved_by, v.saved_at, COALESCE(u.name, u.email) AS saved_by_name,
+                          (v.version_no = s.current_version_no) AS is_current
+                   FROM summary_versions v JOIN summaries s ON s.summary_id = v.summary_id
+                        LEFT JOIN users u ON u.user_id = v.saved_by
+                   WHERE v.summary_id = %s ORDER BY v.version_no DESC""", (summary_id,))
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def get_report_version(summary_id: int, version_no: int) -> dict | None:
+    """เนื้อหารายงานของรุ่นที่ระบุ (summary, other_matters, agenda, action_items) หรือ None ถ้าไม่มี"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT content FROM summary_versions WHERE summary_id = %s AND version_no = %s",
+                        (summary_id, version_no))
+            row = cur.fetchone()
+            return json.loads(row["content"]) if row else None
+    finally:
+        conn.close()
 
 
 def _report_row_to_dict(cur, row: dict) -> dict:
@@ -1074,6 +1257,7 @@ def _report_row_to_dict(cur, row: dict) -> dict:
         actions.append({
             "action_item_id": a["action_item_id"], "description": a["description"], "assignee": a["assignee"],
             "due_date": a["due_date"].isoformat() if a["due_date"] else None,
+            "due_date_end": a["due_date_end"].isoformat() if a.get("due_date_end") else None,
             "due_time": _fmt_time(a["due_time"]), "due_time_end": _fmt_time(a["due_time_end"]),
             "evidence": _json_list(a["evidence"]), "google_calendar_event_id": a["google_calendar_event_id"], "google_calendar_link": a.get("google_calendar_link"),
         })
@@ -1083,9 +1267,9 @@ def _report_row_to_dict(cur, row: dict) -> dict:
         "summary_id": sid, "meeting_id": row["meeting_id"],
         "approved": row["approved_at"] is not None, "approved_at": row["approved_at"],
         "approved_by": row["approved_by"], "approved_by_name": approver["n"] if approver else None,
+        "current_version_no": row.get("current_version_no"),
         "model_used": row["model_used"], "prompt_version": row["prompt_version"],
         "generated_at": row["generated_at"], "edited_at": row["edited_at"],
-        "ai_snapshot": json.loads(row["ai_snapshot"]) if row["ai_snapshot"] else None,
         "content": {"summary": row["executive_summary"], "agenda": agenda,
                     "other_matters": row["other_matters"], "action_items": actions},
     }
@@ -1105,22 +1289,21 @@ def get_report(meeting_id: int) -> dict | None:
 
 def save_report(
     meeting_id: int, content: dict, model_used: str | None = None, prompt_version: str | None = None,
-    ai_snapshot: dict | None = None,
+    user_id: int | None = None,
 ) -> dict:
     """บันทึกรายงานที่ AI ร่างใหม่ — ถ้ามีฉบับร่างอยู่แล้วจะถูกแทนที่ในแถวเดิม (สร้างสรุปใหม่ regenerate ตาม SA)
     รายงานที่อนุมัติแล้วเขียนทับไม่ได้ (ต้อง reopen_report ก่อน) คืน {summary_id}
     """
-    snapshot = json.dumps(ai_snapshot if ai_snapshot is not None else content, ensure_ascii=False)
     with _tx() as cur:
         cur.execute("SELECT summary_id, approved_at FROM summaries WHERE meeting_id = %s FOR UPDATE", (meeting_id,))
         last = cur.fetchone()
-        fields = (content.get("summary") or "", content.get("other_matters") or None, snapshot, model_used, prompt_version)
+        fields = (content.get("summary") or "", content.get("other_matters") or None, model_used, prompt_version)
         if last and last["approved_at"] is not None:
             raise ValueError("รายงานอนุมัติแล้ว — ต้องยกเลิกการอนุมัติก่อนจึงจะสร้างใหม่ได้")
         if last:
             sid = last["summary_id"]
             cur.execute(
-                """UPDATE summaries SET executive_summary = %s, other_matters = %s, ai_snapshot = %s,
+                """UPDATE summaries SET executive_summary = %s, other_matters = %s,
                           model_used = %s, prompt_version = %s, generated_at = NOW(), edited_at = NULL
                    WHERE summary_id = %s""",
                 (*fields, sid),
@@ -1130,17 +1313,18 @@ def save_report(
         else:
             cur.execute(
                 """INSERT INTO summaries
-                   (meeting_id, executive_summary, other_matters, ai_snapshot, model_used, prompt_version, generated_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, NOW())""",
+                   (meeting_id, executive_summary, other_matters, model_used, prompt_version, generated_at)
+                   VALUES (%s, %s, %s, %s, %s, NOW())""",
                 (meeting_id, *fields),
             )
             sid = cur.lastrowid
         _insert_report_rows(cur, sid, content)
+        _record_version(cur, sid, "ai_draft", content, user_id)    # ร่างใหม่ = รุ่นใหม่ ไม่ทับรุ่นก่อนหน้า
         return {"summary_id": sid}
 
 
-def update_report_content(summary_id: int, content: dict) -> bool:
-    """บันทึกการแก้ไขของคน — ทำได้เฉพาะฉบับร่าง (อนุมัติแล้วล็อก) ฉบับ AI เดิมใน ai_snapshot ไม่ถูกแตะ"""
+def update_report_content(summary_id: int, content: dict, user_id: int | None = None) -> bool:
+    """บันทึกการแก้ไขของคน — ทำได้เฉพาะฉบับร่าง (อนุมัติแล้วล็อก) ฉบับ AI เดิมอยู่ในตารางประวัติ ไม่ถูกแตะ"""
     with _tx() as cur:
         cur.execute("SELECT approved_at FROM summaries WHERE summary_id = %s FOR UPDATE", (summary_id,))
         row = cur.fetchone()
@@ -1149,6 +1333,33 @@ def update_report_content(summary_id: int, content: dict) -> bool:
         cur.execute(
             "UPDATE summaries SET executive_summary = %s, other_matters = %s, edited_at = NOW() WHERE summary_id = %s",
             (content.get("summary") or "", content.get("other_matters") or None, summary_id),
+        )
+        cur.execute("DELETE FROM agenda_items WHERE summary_id = %s", (summary_id,))
+        cur.execute("DELETE FROM action_items WHERE summary_id = %s", (summary_id,))
+        _insert_report_rows(cur, summary_id, content)
+        _record_version(cur, summary_id, "human_edit", content, user_id, skip_if_same=True)
+        return True
+
+
+def use_report_version(summary_id: int, version_no: int) -> bool | None:
+    """เลือกร่างฉบับเก่ามาเป็นฉบับที่ใช้อยู่: เขียนเนื้อหาของฉบับนั้นลงตารางปัจจุบันและย้ายตัวชี้ ไม่สร้างรุ่นใหม่ ไม่ลบรุ่นใด
+    ทำได้เฉพาะฉบับร่าง คืน True = เปลี่ยนแล้ว, False = ฉบับนั้นใช้อยู่แล้ว, None = ทำไม่ได้ (ไม่มีรุ่นนั้น/อนุมัติแล้ว)"""
+    with _tx() as cur:
+        cur.execute("SELECT approved_at, current_version_no FROM summaries WHERE summary_id = %s FOR UPDATE", (summary_id,))
+        row = cur.fetchone()
+        if not row or row["approved_at"] is not None:
+            return None
+        cur.execute("SELECT content FROM summary_versions WHERE summary_id = %s AND version_no = %s", (summary_id, version_no))
+        picked = cur.fetchone()
+        if not picked:
+            return None
+        if row["current_version_no"] == version_no:
+            return False
+        content = json.loads(picked["content"])
+        cur.execute(
+            "UPDATE summaries SET executive_summary = %s, other_matters = %s, edited_at = NOW(), current_version_no = %s "
+            "WHERE summary_id = %s",
+            (content["summary"], content["other_matters"], version_no, summary_id),
         )
         cur.execute("DELETE FROM agenda_items WHERE summary_id = %s", (summary_id,))
         cur.execute("DELETE FROM action_items WHERE summary_id = %s", (summary_id,))
@@ -1175,10 +1386,11 @@ def approve_report(meeting_id: int, user_id: int | None) -> bool:
             "UPDATE summaries SET approved_by = %s, approved_at = NOW() WHERE summary_id = %s",
             (user_id, row["summary_id"]),
         )
+        _record_version(cur, row["summary_id"], "approve", _current_content(cur, row["summary_id"]), user_id)
         return True
 
 
-def reopen_report(meeting_id: int) -> bool:
+def reopen_report(meeting_id: int, user_id: int | None = None) -> bool:
     """ยกเลิกการอนุมัติเพื่อแก้รายงาน: รายงานกลับเป็นฉบับร่าง (ล้างผู้อนุมัติ/เวลาอนุมัติ) และการประชุมกลับเป็น draft
     เนื้อหาคงเดิม แต่ล้างข้อมูลนัดใน Google Calendar ของทุกงาน (service ลบนัดออกจาก Google ไปแล้วก่อนเรียก) ต้องอนุมัติใหม่หลังแก้
     คืน False ถ้าการประชุมไม่ได้อยู่ในสถานะ approved
@@ -1195,6 +1407,9 @@ def reopen_report(meeting_id: int) -> bool:
                SET a.google_calendar_event_id = NULL, a.google_calendar_link = NULL WHERE s.meeting_id = %s""",
             (meeting_id,),
         )
+        cur.execute("SELECT summary_id FROM summaries WHERE meeting_id = %s", (meeting_id,))
+        sid = cur.fetchone()["summary_id"]
+        _record_version(cur, sid, "reopen", _current_content(cur, sid), user_id)
         return True
 
 
@@ -1229,6 +1444,35 @@ def get_action_item_meeting(action_item_id: int) -> int | None:
             return row["meeting_id"] if row else None
     finally:
         conn.close()
+
+
+def apply_calendar_changes(summary_id: int, schedules: dict[int, dict], cleared: list[int], user_id: int | None = None) -> int:
+    """ปรับงานตามที่ผู้ใช้แก้ใน Google Calendar — ทำได้แม้รายงานอนุมัติแล้ว (เฉพาะชื่อและวัน/เวลาของงาน ส่วนอื่นยังล็อก)
+    schedules = {action_item_id: {due_date, due_date_end, due_time, due_time_end, description?}} แก้ที่แถวเดิม (รหัสนัดและลิงก์ไม่หาย)
+    ไม่มี/ว่าง description = ไม่แตะชื่อเดิม
+    cleared = งานที่นัดถูกลบใน Google แล้ว: ล้างรหัสนัดและลิงก์ ให้ส่งใหม่ได้ (ไม่ลบงาน)
+    เปลี่ยนชื่อหรือวัน/เวลาจริง = เก็บเป็นร่างฉบับใหม่ (calendar_sync) หนึ่งฉบับต่อหนึ่งครั้งที่ซิงก์ คืนจำนวนงานที่แก้"""
+    changed = 0
+    with _tx() as cur:
+        cur.execute("SELECT summary_id FROM summaries WHERE summary_id = %s FOR UPDATE", (summary_id,))
+        if not cur.fetchone():
+            return 0
+        for item_id, s in schedules.items():
+            name = (s.get("description") or "").strip()
+            cur.execute(
+                f"""UPDATE action_items SET due_date = %s, due_date_end = %s, due_time = %s, due_time_end = %s{', description = %s' if name else ''}
+                   WHERE action_item_id = %s AND summary_id = %s""",
+                (s.get("due_date"), s.get("due_date_end"), s.get("due_time"), s.get("due_time_end"), *([name] if name else []),
+                 item_id, summary_id),
+            )
+            changed += cur.rowcount
+        for item_id in cleared:
+            cur.execute(
+                """UPDATE action_items SET google_calendar_event_id = NULL, google_calendar_link = NULL
+                   WHERE action_item_id = %s AND summary_id = %s""", (item_id, summary_id))
+        if changed:
+            _record_version(cur, summary_id, "calendar_sync", _current_content(cur, summary_id), user_id)
+    return changed
 
 
 def mark_action_item_synced(action_item_id: int, event_id: str, link: str | None = None):

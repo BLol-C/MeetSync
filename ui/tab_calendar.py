@@ -5,6 +5,7 @@
 
 import json
 import os
+import time
 
 import pandas as pd
 import streamlit as st
@@ -14,7 +15,7 @@ from service import ServiceError
 from ui import common, tab_report
 from ui.tab_report import NO_ASSIGNEE, _to_date, _to_time
 
-COLS = ["_ev", "งาน / นัดหมาย", "ผู้รับผิดชอบ", "วันที่", "เวลาเริ่ม", "เวลาสิ้นสุด", "สถานะ", "นัดใน Calendar"]
+COLS = ["_ev", "งาน / นัดหมาย", "ผู้รับผิดชอบ", "วันที่เริ่ม", "เวลาเริ่ม", "เวลาสิ้นสุด", "วันที่สิ้นสุด", "สถานะ", "นัดใน Calendar"]
 VISIBLE = COLS[1:]
 TABLE_MAX_H = 420   # px — ตารางสูงสุดเท่านี้ ที่เกินเลื่อนดูภายในตาราง
 
@@ -33,8 +34,8 @@ def items_df(items: list[dict], approved: bool) -> pd.DataFrame:
         [{
             "_ev": json.dumps(it.get("evidence") or [], ensure_ascii=False),
             "งาน / นัดหมาย": it["description"], "ผู้รับผิดชอบ": it.get("assignee") or NO_ASSIGNEE,
-            "วันที่": _to_date(it.get("due_date")), "เวลาเริ่ม": _to_time(it.get("due_time")),
-            "เวลาสิ้นสุด": _to_time(it.get("due_time_end")),
+            "วันที่เริ่ม": _to_date(it.get("due_date")), "เวลาเริ่ม": _to_time(it.get("due_time")),
+            "เวลาสิ้นสุด": _to_time(it.get("due_time_end")), "วันที่สิ้นสุด": _to_date(it.get("due_date_end")),
             "สถานะ": status_text(it, approved), "นัดใน Calendar": it.get("google_calendar_link") or None,
         } for it in items],
         columns=COLS,
@@ -42,7 +43,7 @@ def items_df(items: list[dict], approved: bool) -> pd.DataFrame:
 
 
 def _task_key(items: list[dict]) -> list[tuple]:
-    return [((it["description"] or "").strip(), it.get("assignee") or None, it.get("due_date") or None,
+    return [((it["description"] or "").strip(), it.get("assignee") or None, it.get("due_date") or None, it.get("due_date_end") or None,
              it.get("due_time") or None, it.get("due_time_end") or None) for it in items if (it["description"] or "").strip()]
 
 
@@ -65,6 +66,66 @@ def _show_sync_result(mid: int):
         st.error(f"ส่งไม่สำเร็จ: {common.md_escape(r['description'])} — {r['error']}")
     if not last["sent"] and not last["failed"]:
         st.info("ไม่มีงานให้ส่ง (ไม่มีงานที่ระบุวันที่ หรือส่งครบแล้ว)")
+
+
+CHECK_EVERY_S = 60     # เปิดหน้าซ้ำภายในกี่วินาทีไม่ถามกูเกิลซ้ำ (กดปุ่มตรวจเองได้เสมอ)
+
+
+def _schedule_text(s: dict | None) -> str:
+    """วัน/เวลาของงานเป็นข้อความอ่านง่าย: 2026-11-02 ถึง 2026-11-04 · 12:00-12:50"""
+    if not s or not s.get("due_date"):
+        return "-"
+    day = s["due_date"] + (f" ถึง {s['due_date_end']}" if s.get("due_date_end") else "")
+    if s.get("due_time"):
+        return f"{day} · {s['due_time']}" + (f"-{s['due_time_end']}" if s.get("due_time_end") else "")
+    return day
+
+
+def _calendar_changes(user: dict, mid: int, report: dict):
+    """รายงานที่อนุมัติและส่งนัดแล้ว: เทียบกับนัดจริงใน Google Calendar (ผู้ใช้อาจเลื่อนหรือลบนัดเอง) แล้วให้กดอัปเดต MeetSync ตาม
+    ตรวจให้เองเมื่อเปิดหน้านี้ (ไม่ถี่เกิน CHECK_EVERY_S) หรือกดปุ่มตรวจเอง — ไม่แก้ข้อมูลเองจนกว่าผู้ใช้จะกดยืนยัน"""
+    if not report["approved"] or report["approved_by"] != user["user_id"]:
+        return
+    if not any(it.get("google_calendar_event_id") for it in report["content"]["action_items"]):
+        return
+    key = f"cal_check_{mid}"
+    manual = st.button("🔄 ตรวจการเปลี่ยนแปลงใน Google Calendar", key=f"cal_check_btn_{mid}")
+    state = st.session_state.get(key)
+    if manual or state is None or time.time() - state["at"] >= CHECK_EVERY_S:
+        with st.spinner("กำลังตรวจนัดใน Google Calendar…"):
+            try:
+                state = {"at": time.time(), "results": service.check_calendar_changes(user, mid), "error": None}
+            except service.ServiceError as e:
+                state = {"at": time.time(), "results": [], "error": str(e)}
+        st.session_state[key] = state
+    if state["error"]:
+        st.warning(state["error"])
+        return
+    problems = [r for r in state["results"] if r["status"] == "error"]
+    for r in problems:
+        st.warning(f"{common.md_escape(r['description'])}: {r['error']}")
+    diff = [r for r in state["results"] if r["status"] in ("changed", "deleted")]
+    if not diff:
+        return
+    st.warning(f"พบการเปลี่ยนแปลงใน Google Calendar {len(diff)} รายการ")
+    st.dataframe(
+        pd.DataFrame([{"ชื่อใน MeetSync": r["mine"]["description"],
+                       "ชื่อใน Google Calendar": "นัดถูกลบแล้ว (ล้างลิงก์ ส่งใหม่ได้)" if r["status"] == "deleted" else r["remote"]["description"],
+                       "กำหนดใน MeetSync": _schedule_text(r["mine"]),
+                       "กำหนดใน Google Calendar": "-" if r["status"] == "deleted" else _schedule_text(r["remote"])}
+                      for r in diff]),
+        hide_index=True, width="stretch", height=common.table_height(len(diff), max_px=260))
+    if st.button("อัปเดต MeetSync ตาม Google Calendar", type="primary", key=f"cal_apply_{mid}"):
+        try:
+            out = service.apply_calendar_changes(user, mid)
+        except service.ServiceError as e:
+            st.error(str(e))
+            return
+        st.session_state.pop(key, None)
+        tab_report._bump(mid)
+        common.flash("success", f"อัปเดตตาม Google Calendar แล้ว: แก้ชื่อหรือวัน/เวลา {out['updated']} งาน"
+                                + (f" · นัดถูกลบ {out['cleared']} งาน" if out["cleared"] else ""))
+        st.rerun()
 
 
 def _store_results(mid: int, results: list[dict]):
@@ -118,6 +179,7 @@ def render(user: dict, detail: dict):
     items = content["action_items"]
 
     _show_sync_result(mid)
+    _calendar_changes(user, mid, report)
     if not approved:
         for w in content["warnings"]:
             if w["path"].startswith("action_items"):
@@ -130,13 +192,14 @@ def render(user: dict, detail: dict):
         disabled=True if approved else ["สถานะ", "นัดใน Calendar"], column_order=VISIBLE,
         column_config={
             # ความกว้างเป็นพิกเซล (รวมราว 900 ให้พอดีหน้าจอที่มีแถบด้านข้าง) ให้ทุกคอลัมน์อยู่ในหน้าจอ — เกินกว่านี้ตารางเลื่อนซ้าย-ขวาในตัวเอง
-            "งาน / นัดหมาย": st.column_config.TextColumn("งาน / นัดหมาย", width=250),
-            "ผู้รับผิดชอบ": st.column_config.SelectboxColumn("ผู้รับผิดชอบ", options=names, default=NO_ASSIGNEE, width=120),
-            "วันที่": st.column_config.DateColumn("วันที่", format="YYYY-MM-DD", width=100),
-            "เวลาเริ่ม": st.column_config.TimeColumn("เวลาเริ่ม", format="HH:mm", step=60, width=80),
-            "เวลาสิ้นสุด": st.column_config.TimeColumn("เวลาสิ้นสุด", format="HH:mm", step=60, width=90),
-            "สถานะ": st.column_config.TextColumn("สถานะ", width=150),
-            "นัดใน Calendar": st.column_config.LinkColumn("นัดใน Calendar", display_text="เปิดนัด", width=100),
+            "งาน / นัดหมาย": st.column_config.TextColumn("งาน / นัดหมาย", width=195),
+            "ผู้รับผิดชอบ": st.column_config.SelectboxColumn("ผู้รับผิดชอบ", options=names, default=NO_ASSIGNEE, width=105),
+            "วันที่เริ่ม": st.column_config.DateColumn("วันที่เริ่ม", format="YYYY-MM-DD", width=100),
+            "เวลาเริ่ม": st.column_config.TimeColumn("เวลาเริ่ม", format="HH:mm", step=60, width=85),
+            "เวลาสิ้นสุด": st.column_config.TimeColumn("เวลาสิ้นสุด", format="HH:mm", step=60, width=100),
+            "วันที่สิ้นสุด": st.column_config.DateColumn("วันที่สิ้นสุด", format="YYYY-MM-DD", width=100),
+            "สถานะ": st.column_config.TextColumn("สถานะ", width=95),
+            "นัดใน Calendar": st.column_config.LinkColumn("นัดใน Calendar", display_text="เปิดนัด", width=110),
         },
     )
     pending = [it for it in items if it.get("due_date") and not it.get("google_calendar_event_id")]

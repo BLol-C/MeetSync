@@ -11,6 +11,7 @@ from reports.summarizer import match_participant_name
 
 TIMEZONE = "Asia/Bangkok"
 DEFAULT_DURATION = datetime.timedelta(hours=1)
+BANGKOK = datetime.timezone(datetime.timedelta(hours=7))     # ไทยไม่มีเวลาออมแสง ใช้ UTC+7 ตรง ๆ (ไม่พึ่งฐานข้อมูลเขตเวลาของเครื่อง)
 
 
 def _parse_hhmm(value: str | None) -> datetime.time | None:
@@ -35,14 +36,24 @@ def build_event_body(item: dict, email: str | None = None) -> dict:
     """สร้างเนื้อหา Calendar event จาก action item (ฟังก์ชันล้วน ทดสอบได้โดยไม่ต้องต่อ Google)
 
     - ไม่มีวัน -> ValueError (เดิมเดาเป็น "พรุ่งนี้" ซึ่งทำให้นัดผิดวันโดยไม่มีใครรู้)
-    - มีเวลา: ไม่ระบุเวลาจบให้ยาว 1 ชม.; เวลาจบไม่หลังเวลาเริ่ม (เช่น 23:30-00:30) ถือว่าข้ามไปวันถัดไป
-    - ไม่มีเวลา: event ทั้งวัน — Google นับ end.date แบบ "ไม่รวมวันนั้น" จึงต้องเป็นวันถัดไป
+    - มีวันที่สิ้นสุด (due_date_end) = นัดข้ามหลายวัน; วันสิ้นสุดอยู่ก่อนวันเริ่ม -> ValueError; ไม่มี = วันเดียวกับวันเริ่ม
+    - มีเวลา: ไม่ระบุเวลาจบให้ยาว 1 ชม.; เวลาจบไม่หลังเวลาเริ่ม (เช่น 23:30-00:30) และไม่ได้ระบุวันสิ้นสุด ถือว่าข้ามไปวันถัดไป
+      มีวันสิ้นสุด: เวลาจบอยู่ในวันสิ้นสุด (ไม่มีเวลาจบ = เวลาเริ่มของวันสุดท้ายบวก 1 ชม.)
+    - ไม่มีเวลา: event ทั้งวัน (ต่อเนื่องถึงวันสิ้นสุด) — Google นับ end.date แบบ "ไม่รวมวันนั้น" จึงต้องเป็นวันถัดไปจากวันสิ้นสุด
     """
     if not item.get("due_date"):
         raise ValueError("งานนี้ยังไม่มีกำหนดวัน — ระบุวันที่ในรายงานก่อนจึงจะส่งเข้า Calendar ได้")
     day = item["due_date"] if isinstance(item["due_date"], datetime.date) else datetime.date.fromisoformat(
         str(item["due_date"])
     )
+    last_day = item.get("due_date_end")
+    if last_day:
+        last_day = last_day if isinstance(last_day, datetime.date) else datetime.date.fromisoformat(str(last_day))
+        if last_day < day:
+            raise ValueError(f"วันที่สิ้นสุด ({last_day}) อยู่ก่อนวันที่เริ่ม ({day}) — แก้ในรายงานก่อนจึงจะส่งเข้า Calendar ได้")
+    else:
+        last_day = day
+    multi = last_day != day
     start_t = _parse_hhmm(item.get("due_time"))
     end_t = _parse_hhmm(item.get("due_time_end"))
 
@@ -53,19 +64,24 @@ def build_event_body(item: dict, email: str | None = None) -> dict:
     if start_t:
         start_dt = datetime.datetime.combine(day, start_t)
         if end_t:
-            end_dt = datetime.datetime.combine(day, end_t)
-            if end_dt <= start_dt:
+            end_dt = datetime.datetime.combine(last_day, end_t)
+            if end_dt <= start_dt and not multi:
                 end_dt += datetime.timedelta(days=1)
-            detail.append(f"กำหนด: {day} เวลา {start_t:%H:%M} - {end_t:%H:%M} น.")
+            if end_dt <= start_dt:
+                raise ValueError("เวลาสิ้นสุดไม่หลังเวลาเริ่ม — แก้ในรายงานก่อนจึงจะส่งเข้า Calendar ได้")
+            if multi:
+                detail.append(f"กำหนด: {day} เวลา {start_t:%H:%M} ถึง {last_day} เวลา {end_t:%H:%M} น.")
+            else:
+                detail.append(f"กำหนด: {day} เวลา {start_t:%H:%M} - {end_t:%H:%M} น.")
         else:
-            end_dt = start_dt + DEFAULT_DURATION
-            detail.append(f"กำหนด: {day} เวลา {start_t:%H:%M} น.")
+            end_dt = datetime.datetime.combine(last_day, start_t) + DEFAULT_DURATION
+            detail.append(f"กำหนด: {day} เวลา {start_t:%H:%M} น." + (f" ถึง {last_day}" if multi else ""))
         start = {"dateTime": start_dt.isoformat(timespec="seconds"), "timeZone": TIMEZONE}
         end = {"dateTime": end_dt.isoformat(timespec="seconds"), "timeZone": TIMEZONE}
     else:
-        detail.append(f"กำหนด: {day}")
+        detail.append(f"กำหนด: {day}" + (f" ถึง {last_day}" if multi else ""))
         start = {"date": day.isoformat()}
-        end = {"date": (day + datetime.timedelta(days=1)).isoformat()}
+        end = {"date": (last_day + datetime.timedelta(days=1)).isoformat()}
 
     body = {
         "summary": item["description"],
@@ -109,6 +125,55 @@ def create_event(action_item_id: int, user_id: int, send_invites: bool = False, 
     link = event.get("htmlLink")
     db.mark_action_item_synced(action_item_id, event["id"], link)
     return {"action": "created", "event_id": event["id"], "link": link}
+
+
+def event_schedule(event: dict) -> dict:
+    """วัน/เวลาของนัด (รูปแบบ event ของ Google) -> รูปแบบเดียวกับงานของ MeetSync: {due_date, due_date_end, due_time, due_time_end}
+    - เต็มวัน: end.date ของ Google ไม่รวมวันนั้น จึงลบออก 1 วัน; เป็นวันเดียวกับวันเริ่ม = ไม่มีวันสิ้นสุด
+    - มีเวลา: แปลงเป็นเวลาไทยก่อนเสมอ (ผู้ใช้อาจแก้นัดจากอุปกรณ์ที่ตั้งเขตเวลาอื่น)"""
+    start, end = event.get("start") or {}, event.get("end") or {}
+    if "date" in start:
+        first = datetime.date.fromisoformat(start["date"])
+        last = datetime.date.fromisoformat(end["date"]) - datetime.timedelta(days=1) if end.get("date") else first
+        return {"due_date": first.isoformat(), "due_date_end": last.isoformat() if last > first else None,
+                "due_time": None, "due_time_end": None}
+
+    def local(block):
+        return datetime.datetime.fromisoformat(block["dateTime"]).astimezone(BANGKOK)
+
+    s, e = local(start), local(end)
+    return {"due_date": s.date().isoformat(), "due_date_end": e.date().isoformat() if e.date() > s.date() else None,
+            "due_time": f"{s:%H:%M}", "due_time_end": f"{e:%H:%M}"}
+
+
+def fetch_event(event_id: str, user_id: int, service=None) -> dict | None:
+    """อ่านนัดจาก Google Calendar ของ user_id ตามรหัส — นัดไม่อยู่แล้ว (ผู้ใช้ลบเอง) หรืออยู่ในสถานะยกเลิก คืน None"""
+    service = service or _calendar_service(user_id)
+    try:
+        event = service.events().get(calendarId="primary", eventId=event_id).execute()
+    except Exception as e:  # noqa: BLE001
+        if _http_status(e) in (404, 410):
+            return None
+        raise
+    return None if event.get("status") == "cancelled" else event
+
+
+def compare_with_google(item: dict, event: dict | None) -> dict:
+    """เทียบงานของ MeetSync กับนัดใน Google: คืน {"status": same|changed|deleted, "mine": {...}, "remote": {...}}
+    เทียบ 2 อย่าง: ชื่อนัด (description) และวัน/เวลา — ผู้รับผิดชอบไม่เทียบ (Calendar เก็บเป็นอีเมลผู้ได้รับเชิญ คนละชนิดกับชื่อผู้รับผิดชอบ)
+    ฝั่ง MeetSync คำนวณวัน/เวลาเป็น "นัดที่เราเคยส่งไป" (build_event_body) แล้วแปลงเป็นรูปแบบเดียวกับ Google ก่อนเทียบ —
+    ไม่งั้นนัดที่จบข้ามเที่ยงคืนหรือไม่ระบุเวลาจบ (เรากำหนดให้ยาว 1 ชม.) จะถูกมองว่าเปลี่ยนทั้งที่ไม่มีใครแก้
+    ชื่อเทียบหลังรวมช่องว่างซ้ำ; ชื่อนัดว่างใน Calendar ไม่ถือว่าเปลี่ยน (คงชื่อเดิมของงาน)"""
+    mine = {k: item.get(k) for k in ("due_date", "due_date_end", "due_time", "due_time_end")}
+    mine = {k: (str(v)[:10] if k.startswith("due_date") and v else (str(v)[:5] if v else None)) for k, v in mine.items()}
+    mine["description"] = " ".join((item.get("description") or "").split())
+    if event is None:
+        return {"status": "deleted", "mine": mine, "remote": None}
+    remote = event_schedule(event)
+    sent = event_schedule(build_event_body(item))
+    remote["description"] = " ".join((event.get("summary") or "").split()) or mine["description"]
+    same = {k: v for k, v in remote.items() if k != "description"} == sent and remote["description"] == mine["description"]
+    return {"status": "same" if same else "changed", "mine": mine, "remote": remote}
 
 
 def delete_event(event_id: str, user_id: int, service=None) -> bool:

@@ -7,6 +7,7 @@
 """
 
 import datetime
+import re
 
 from integrations import calendar_auth
 from integrations import calendar_sync
@@ -471,13 +472,44 @@ def get_report_view(user: dict, meeting_id: int) -> dict:
     }
 
 
+def report_history(user: dict, meeting_id: int) -> list[dict]:
+    """ประวัติรายงานของการประชุม (รุ่นใหม่สุดก่อน) — ว่างถ้ายังไม่มีรายงาน"""
+    meeting_for(user, meeting_id)
+    report = db.get_report(meeting_id)
+    return db.list_report_versions(report["summary_id"]) if report else []
+
+
+def report_version(user: dict, meeting_id: int, version_no: int) -> dict:
+    """เนื้อหารายงานของรุ่นที่ระบุ ไว้แสดงและเทียบรุ่น"""
+    meeting_for(user, meeting_id)
+    report = db.get_report(meeting_id)
+    content = db.get_report_version(report["summary_id"], version_no) if report else None
+    if content is None:
+        raise ServiceError("ไม่พบรุ่นนี้ของรายงาน", "not_found")
+    return content
+
+
+def use_report_version(user: dict, meeting_id: int, version_no: int) -> bool:
+    """เลือกร่างฉบับเก่ามาเป็นฉบับที่ใช้อยู่ (เขียนเนื้อหาฉบับนั้นลงรายงานทั้งฉบับ) ไม่สร้างรุ่นใหม่และไม่ลบรุ่นใด
+    ทำได้เฉพาะฉบับร่าง รายงานที่อนุมัติแล้วถูกล็อก ต้องยกเลิกการอนุมัติก่อน คืน False ถ้าฉบับนั้นใช้อยู่แล้ว"""
+    meeting = meeting_for(user, meeting_id)
+    _require_status(meeting, "draft", hint="รายงานที่อนุมัติแล้วถูกล็อก ต้องยกเลิกการอนุมัติก่อนจึงจะเลือกใช้ร่างฉบับเก่าได้")
+    report = db.get_report(meeting_id)
+    if not report or report["approved"]:
+        raise ServiceError("ไม่มีรายงานฉบับร่างให้เลือก", "conflict")
+    changed = db.use_report_version(report["summary_id"], version_no)
+    if changed is None:
+        raise ServiceError("ไม่พบร่างฉบับนี้ของรายงาน", "not_found")
+    return changed
+
+
 def generate_report(user: dict, meeting_id: int, generate=None) -> dict:
     """ให้ AI ร่างรายงาน (แทนที่ฉบับร่างที่ค้างอยู่) — ต้องยืนยัน transcript แล้ว"""
     meeting = meeting_for(user, meeting_id)
     _require_status(meeting, "transcript_verified", "draft",
                     hint="ตรวจทานและกด \"ยืนยัน transcript\" ก่อนให้ AI สร้างรายงาน")
     try:
-        saved = summarizer.generate_for_meeting(meeting_id, generate)
+        saved = summarizer.generate_for_meeting(meeting_id, generate, user["user_id"])
     except (RuntimeError, ValueError) as e:
         raise ServiceError(str(e), "invalid")
     except Exception as e:  # noqa: BLE001 — ปัญหาฝั่ง Gemini (โหลดสูง/โควต้า/เครือข่าย)
@@ -508,7 +540,7 @@ def save_report_draft(user: dict, meeting_id: int, content: dict) -> dict:
         cleaned = _validated(meeting, allowed)
     except (AttributeError, TypeError):
         raise ServiceError("รูปแบบเนื้อหารายงานไม่ถูกต้อง", "invalid")
-    if not db.update_report_content(report["summary_id"], summarizer.for_storage(cleaned)):
+    if not db.update_report_content(report["summary_id"], summarizer.for_storage(cleaned), user["user_id"]):
         raise ServiceError("บันทึกไม่ได้ (รายงานถูกอนุมัติไปแล้ว)", "conflict")
     return cleaned
 
@@ -528,7 +560,7 @@ def approve_report(user: dict, meeting_id: int, confirm_warnings: bool = False) 
         report_data.build_header(meeting, db.list_speakers(meeting_id)))
     if warnings and not confirm_warnings:
         raise ServiceError("ยังมีรายการที่ควรตรวจก่อนอนุมัติ", "needs_confirmation", {"warnings": warnings})
-    db.update_report_content(report["summary_id"], summarizer.for_storage(cleaned))
+    db.update_report_content(report["summary_id"], summarizer.for_storage(cleaned), user["user_id"])
     db.mark_unconfirmed_absent(meeting_id)   # คนที่เพิ่มหลังยืนยัน transcript ก็ไม่ให้ค้างเป็น "ยังไม่ยืนยัน" ในรายงานที่ล็อกแล้ว
     if not db.approve_report(meeting_id, user["user_id"]):
         raise ServiceError("อนุมัติไม่ได้ (สถานะเปลี่ยนไปแล้ว)", "conflict")
@@ -544,7 +576,7 @@ def reopen_report(user: dict, meeting_id: int, force: bool = False) -> dict:
     if not report or not report["approved"]:
         raise ServiceError("ยกเลิกการอนุมัติได้เฉพาะรายงานที่อนุมัติแล้ว", "conflict")
     out = _delete_calendar_events(user, report, force, "ลบนัดที่ส่งไปแล้วออกจาก Google Calendar ไม่สำเร็จ จึงยังไม่ยกเลิกการอนุมัติ")
-    if not db.reopen_report(meeting_id):
+    if not db.reopen_report(meeting_id, user["user_id"]):
         raise ServiceError("ยกเลิกการอนุมัติได้เฉพาะรายงานที่อนุมัติแล้ว", "conflict")
     return out
 
@@ -567,6 +599,26 @@ def _delete_calendar_events(user: dict, report: dict, force: bool, fail_message:
     return {"deleted": deleted, "failed": failed}
 
 
+_BAD_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]+')
+
+
+def _title_as_filename(title: str | None, fallback: str) -> str:
+    """หัวข้อประชุมเป็นชื่อไฟล์: ตัดอักขระที่ใช้เป็นชื่อไฟล์บน Windows ไม่ได้ จำกัดความยาว ถ้าเหลือว่างใช้ fallback"""
+    name = _BAD_FILENAME_CHARS.sub(" ", title or "")
+    return re.sub(r'\s+', ' ', name).strip(' .')[:80].strip(' .') or fallback
+
+
+def pdf_filename(title: str | None, meeting_id: int, approved: bool) -> str:
+    """ชื่อไฟล์ PDF = หัวข้อประชุม ฉบับร่างต่อท้าย "(ฉบับร่าง)" ไม่ให้สับสนกับฉบับอนุมัติแล้ว
+    ถ้าไม่มีหัวข้อใช้เลขการประชุม"""
+    return f"{_title_as_filename(title, f'meeting-minutes-{meeting_id}')}{'' if approved else ' (ฉบับร่าง)'}.pdf"
+
+
+def transcript_filename(title: str | None, meeting_id: int) -> str:
+    """ชื่อไฟล์ transcript (.txt) = หัวข้อประชุม ถ้าไม่มีหัวข้อใช้เลขการประชุม"""
+    return f"{_title_as_filename(title, f'transcript-{meeting_id}')}.txt"
+
+
 def build_pdf(user: dict, meeting_id: int) -> tuple[bytes, str]:
     """PDF รายงานฉบับล่าสุด — ยังไม่อนุมัติมีลายน้ำ "ฉบับร่าง" ทุกหน้า คืน (ไบต์, ชื่อไฟล์)"""
     meeting = meeting_for(user, meeting_id)
@@ -579,7 +631,7 @@ def build_pdf(user: dict, meeting_id: int) -> tuple[bytes, str]:
         meeting, people, report["content"], approved=approved,
         approved_by=report["approved_by_name"] if approved else None, approved_at=report["approved_at"],
     )
-    return data, f"meeting-minutes-{meeting_id}{'' if approved else '-draft'}.pdf"
+    return data, pdf_filename(meeting.get("title"), meeting_id, approved)
 
 
 # ── Google Calendar ──
@@ -607,6 +659,46 @@ def sync_calendar(user: dict, meeting_id: int, send_invites: bool = False) -> li
         except Exception as e:  # noqa: BLE001
             results.append({**entry, "ok": False, "error": f"เขียนลง Calendar ไม่สำเร็จ: {e}"})
     return results
+
+
+def check_calendar_changes(user: dict, meeting_id: int) -> list[dict]:
+    """เทียบงานที่ส่งเข้า Google Calendar ไปแล้วกับนัดจริงใน Calendar (ผู้ใช้อาจเลื่อนวัน/เวลาหรือลบนัดเอง) — อ่านอย่างเดียว ไม่แก้อะไร
+    นัดอยู่ในปฏิทินของผู้ที่กดอนุมัติ คนอื่นตรวจแทนไม่ได้ คืนรายการต่องาน:
+    {action_item_id, description, status: same|changed|deleted|error, mine, remote, error?}"""
+    meeting = meeting_for(user, meeting_id)
+    _require_status(meeting, "approved", hint="ตรวจกับ Calendar ได้หลังอนุมัติรายงานและส่งนัดแล้วเท่านั้น")
+    report = db.get_report(meeting_id)
+    if report["approved_by"] != user["user_id"]:
+        raise ServiceError(f"นัดอยู่ในปฏิทินของ {report['approved_by_name'] or 'ผู้อนุมัติ'} — ต้องให้เจ้าของปฏิทินเป็นผู้ตรวจ", "conflict")
+    sent = [it for it in report["content"]["action_items"] if it["google_calendar_event_id"]]
+    if not sent:
+        return []
+    try:
+        client = calendar_sync._calendar_service(user["user_id"])
+    except RuntimeError as e:
+        raise ServiceError(str(e), "unavailable")
+    out = []
+    for it in sent:
+        entry = {"action_item_id": it["action_item_id"], "description": it["description"]}
+        try:
+            event = calendar_sync.fetch_event(it["google_calendar_event_id"], user["user_id"], client)
+            out.append({**entry, **calendar_sync.compare_with_google(it, event)})
+        except Exception as e:  # noqa: BLE001 — งานหนึ่งอ่านไม่ได้ไม่ทำให้รายการอื่นล้ม
+            out.append({**entry, "status": "error", "mine": None, "remote": None, "error": f"อ่านนัดจาก Calendar ไม่สำเร็จ: {e}"})
+    return out
+
+
+def apply_calendar_changes(user: dict, meeting_id: int) -> dict:
+    """อัปเดตงานตามที่ผู้ใช้แก้ใน Google Calendar (ผู้ใช้กดยืนยันเอง): ตรวจใหม่ตอนนี้แล้วปรับเฉพาะที่ต่างจริง
+    - ชื่อหรือวัน/เวลาเปลี่ยน -> ปรับงานตามนัด เก็บเป็นร่างฉบับใหม่ในประวัติ (ผู้รับผิดชอบไม่ซิงก์)
+    - นัดถูกลบ -> ล้างรหัสนัดและลิงก์ของงานนั้น (งานยังอยู่ ส่งใหม่ได้ด้วย "ส่งงานที่ยังไม่ส่ง")
+    คืน {"updated": จำนวนงานที่แก้ชื่อหรือวัน/เวลา, "cleared": จำนวนงานที่นัดถูกลบ}"""
+    results = check_calendar_changes(user, meeting_id)
+    report = db.get_report(meeting_id)
+    schedules = {r["action_item_id"]: r["remote"] for r in results if r["status"] == "changed"}
+    cleared = [r["action_item_id"] for r in results if r["status"] == "deleted"]
+    updated = db.apply_calendar_changes(report["summary_id"], schedules, cleared, user["user_id"]) if (schedules or cleared) else 0
+    return {"updated": updated, "cleared": len(cleared)}
 
 
 def approve_and_send(user: dict, meeting_id: int, confirm_warnings: bool = False, send_invites: bool = False) -> list[dict]:
