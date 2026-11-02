@@ -145,20 +145,38 @@ def _cell_lines(pdf: FPDF, width: float, text: str, row_h: float) -> int:
     return len(pdf.multi_cell(width - 2 * CELL_PAD, row_h, text, dry_run=True, output="LINES"))
 
 
-def _fmt_due(item: dict) -> str:
+def _as_date(value):
     import datetime
-    due = item.get("due_date")
-    if isinstance(due, str):
+    if isinstance(value, str):
         try:
-            due = datetime.date.fromisoformat(due)
+            return datetime.date.fromisoformat(value)
         except ValueError:
-            pass                       # รูปแบบแปลกที่แก้มือ — แสดงตามที่เก็บไว้
-    when = (thai_date(due) if isinstance(due, datetime.date) else str(due)) if due else "-"
-    if item.get("due_time"):
-        when += f" {item['due_time']}"
-        if item.get("due_time_end"):
-            when += f"-{item['due_time_end']}"
-    return when
+            return value               # รูปแบบแปลกที่แก้มือ — แสดงตามที่เก็บไว้
+    return value
+
+
+def _fmt_due(item: dict) -> str:
+    """วันกำหนด: วันเดียว หรือเป็นช่วงเมื่อมีวันสิ้นสุด (เดือน/ปีเดียวกันย่อ เช่น 2 - 4 พฤศจิกายน 2569)"""
+    import datetime
+    due, end = _as_date(item.get("due_date")), _as_date(item.get("due_date_end"))
+    if not due:
+        return "-"
+    if not isinstance(due, datetime.date):
+        return str(due)
+    if not isinstance(end, datetime.date) or end <= due:       # ไม่มีวันสิ้นสุด/วันเดียวกัน/อยู่ก่อนวันเริ่ม = แสดงวันเริ่มวันเดียว
+        return thai_date(due)
+    if (due.month, due.year) == (end.month, end.year):
+        return f"{due.day} - {thai_date(end)}"
+    if due.year == end.year:
+        return f"{thai_date(due)[:-5]} - {thai_date(end)}"      # ตัดปีของวันเริ่มออก (" 2569" 5 ตัวอักษร)
+    return f"{thai_date(due)} - {thai_date(end)}"
+
+
+def _fmt_time(item: dict) -> str:
+    """เวลาของงาน แยกเป็นคอลัมน์ของตัวเอง: 12:00-12:50 / 13:00 (มีแต่เวลาเริ่ม) / - (ไม่ระบุเวลา = กิจกรรมเต็มวัน)"""
+    if not item.get("due_time"):
+        return "-"
+    return f"{item['due_time']}-{item['due_time_end']}" if item.get("due_time_end") else str(item["due_time"])
 
 
 def _subject(title: str | None) -> str:
@@ -259,7 +277,7 @@ def build_minutes_pdf(
         if blank:
             parts.append((" " + _dots(pdf, INDENT + 90), False, False))
         else:
-            parts.append((" " + (text if text else L["no_resolution"]), bool(text), False))
+            parts.append((" " + (text if text else L["no_resolution"]), False, False))     # ข้อความมติไม่หนา มีแค่คำว่า "มติที่ประชุม:" ที่หนา+ขีดเส้นใต้
         _para(pdf, parts)
 
     def sec_agenda():
@@ -270,7 +288,7 @@ def build_minutes_pdf(
 
         def item_block(label: str, a: dict, *, always_resolution: bool):
             """หนึ่งเรื่อง: ชื่อเรื่อง + สาระ + มติ (เรื่องที่ไม่ต้องมีมติ เช่น แจ้งให้ทราบ แสดงมติเฉพาะเมื่อมีข้อความ)"""
-            _line(pdf, f"{label} {a.get('title') or ''}", x=INDENT)
+            _line(pdf, f"{label} {a.get('title') or ''}", x=INDENT, bold=True)     # ชื่อเรื่อง (เช่น 4.2.2) หนา ขนาดเท่าเนื้อหา
             if a.get("discussion"):
                 _para(pdf, a["discussion"])
             if always_resolution or a.get("resolution"):
@@ -339,8 +357,8 @@ def build_minutes_pdf(
             _line(pdf, L["no_action_items"], x=INDENT)
             _blank(pdf)
             return
-        col_no, col_who, col_when = 40, 110, 100
-        col_task = RIGHT_X - LEFT - col_no - col_who - col_when
+        col_no, col_who, col_when, col_time = 32, 92, 112, 72
+        col_task = RIGHT_X - LEFT - col_no - col_who - col_when - col_time
         row_h = 20.0
         size = 14
 
@@ -352,15 +370,16 @@ def build_minutes_pdf(
             pdf.cell(col_no, row_h, L["col_no"], border=1, align="C", fill=True)
             pdf.cell(col_task, row_h, L["col_task"], border=1, fill=True)
             pdf.cell(col_who, row_h, L["col_who"], border=1, fill=True)
-            pdf.cell(col_when, row_h, L["col_when"], border=1, new_x="LMARGIN", new_y="NEXT", fill=True)
+            pdf.cell(col_when, row_h, L["col_when"], border=1, align="C", fill=True)
+            pdf.cell(col_time, row_h, L["col_time"], border=1, new_x="LMARGIN", new_y="NEXT", align="C", fill=True)
             pdf.c_margin = 0
 
         header_row()
         _font(pdf, "", size)
         for i, item in enumerate(items, start=1):
-            desc, who, when = item.get("description") or "-", item.get("assignee") or "-", _fmt_due(item)
+            desc, who, when, at = item.get("description") or "-", item.get("assignee") or "-", _fmt_due(item), _fmt_time(item)
             lines = max(_cell_lines(pdf, col_task, desc, row_h), _cell_lines(pdf, col_who, who, row_h),
-                        _cell_lines(pdf, col_when, when, row_h), 1)
+                        _cell_lines(pdf, col_when, when, row_h), _cell_lines(pdf, col_time, at, row_h), 1)
             h = row_h * lines
             if pdf.get_y() + h > pdf.page_break_trigger:
                 pdf.add_page()
@@ -369,7 +388,8 @@ def build_minutes_pdf(
             y = pdf.get_y()
             # เส้นขอบวาดเป็นสี่เหลี่ยมความสูงเท่ากันทั้งแถว (multi_cell วาดขอบตามจำนวนบรรทัดของแต่ละช่อง ทำให้ช่องสั้นขอบไม่เท่ากัน)
             cx = LEFT
-            for width, txt, align in ((col_no, str(i), "C"), (col_task, desc, "L"), (col_who, who, "L"), (col_when, when, "C")):
+            for width, txt, align in ((col_no, str(i), "C"), (col_task, desc, "L"), (col_who, who, "L"), (col_when, when, "C"),
+                                      (col_time, at, "C")):
                 pdf.rect(cx, y, width, h)
                 pdf.set_xy(cx + CELL_PAD, y)   # เว้นขอบในช่อง (c_margin ตั้งเป็น 0 เพื่อให้ข้อความนอกตารางเริ่มที่ x ตรง ๆ)
                 pdf.multi_cell(width - 2 * CELL_PAD, row_h, txt, align=align, max_line_height=row_h, new_x="LEFT", new_y="TOP")
