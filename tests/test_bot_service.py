@@ -355,6 +355,19 @@ class BotServiceTests(TempDbCase):
         self.assertEqual(saved, [("abc", self.owner["user_id"]), ("abc", self.owner["user_id"])])
 
 
+class LiveRowsSettingTests(unittest.TestCase):
+    """เพดานแถวกล่องสดตั้งจาก .env (BOT_LIVE_ROWS_MAX) เพื่อทดสอบเร็ว — ค่าผิดรูปแบบต้องไม่ทำให้บริการล่ม"""
+
+    def test_env_value_is_used_and_bad_values_fall_back(self):
+        with mock.patch.dict(os.environ, {"BOT_LIVE_ROWS_MAX": "10"}):
+            self.assertEqual(botapp._env_int("BOT_LIVE_ROWS_MAX", 150), 10)
+        with mock.patch.dict(os.environ, {"BOT_LIVE_ROWS_MAX": "abc"}):
+            self.assertEqual(botapp._env_int("BOT_LIVE_ROWS_MAX", 150), 150)
+        with mock.patch.dict(os.environ, {"BOT_LIVE_ROWS_MAX": "0"}):
+            self.assertEqual(botapp._env_int("BOT_LIVE_ROWS_MAX", 150), 1)           # อย่างน้อย 1 แถว
+        self.assertEqual(botapp._env_int("BOT_LIVE_ROWS_UNSET_FOR_TEST", 150), 150)  # ไม่ตั้ง = ค่าปกติ 150
+
+
 class HealthProbeTests(unittest.TestCase):
     """แถบด้านซ้ายบอกว่า "บริการบอทไม่ได้เปิดอยู่" ทั้งที่บอทรันอยู่: เพราะตรวจสถานะรอแค่ 3 วินาที แล้วตีความว่าตอบช้า = ปิดอยู่"""
 

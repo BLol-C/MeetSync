@@ -12,6 +12,7 @@
 
 import asyncio
 import contextlib
+import os
 import secrets
 import time
 import urllib.parse
@@ -33,7 +34,16 @@ from bot.meet_engine import MeetCaptionEngine
 
 _SEGMENT_MAX_CHARS = 3000   # ข้อความต่อ 1 segment สูงสุด (ไทย ~3 ไบต์/ตัวอักษร -> ~9KB ปลอดภัยสำหรับ TEXT 64KB)
 _ROW_MAP_MAX = 500     # จำนวนแถวคำบรรยายล่าสุดที่จำ segment_id ไว้ (แถวเก่ากว่านี้ไม่กลับมา final ซ้ำแล้ว)
-_LIVE_ROWS_MAX = 150   # จำนวนแถวคำบรรยายสดที่เก็บให้หน้าเว็บอ่าน
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.environ.get(name, default)))
+    except ValueError:
+        return default
+
+
+# จำนวนแถวคำบรรยายสดที่เก็บให้หน้าเว็บอ่าน (ปกติ 150) — ตั้ง BOT_LIVE_ROWS_MAX ใน .env ให้เล็กลงชั่วคราว (เช่น 10) เพื่อทดสอบว่าแถวเก่า
+# ที่หลุดจากกล่องแล้วโผล่กลับมาซ้ำไหม ได้ในไม่กี่นาที แทนที่จะรอให้ประชุมยาวเกิน 150 แถว
+_LIVE_ROWS_MAX = _env_int("BOT_LIVE_ROWS_MAX", 150)
 _STATUS_MAX = 30
 
 _engine: MeetCaptionEngine | None = None
