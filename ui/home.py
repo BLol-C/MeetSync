@@ -75,6 +75,8 @@ def render(user: dict):
             left.markdown(f"**{common.md_escape(m['title'] or '(ไม่ได้ตั้งชื่อ)')}**")
             when = common.thai_date(m["started_at"]) + (f" {m['started_at']:%H:%M} น." if m["status"] != "scheduled" else "")
             left.caption(when)
+            left.caption(common.credit_text(user, m["owner_user_id"], m["owner_name"], m["status"] == "approved",
+                                            m["approved_by"], m["approved_by_name"]))
             mid_col.markdown(common.STATUS_LABEL.get(m["status"], m["status"]))
             mid_col.caption(common.NEXT_STEP.get(m["status"], ("", ""))[0])
             if right.button("เปิด", key=f"open_{m['meeting_id']}", width="stretch"):

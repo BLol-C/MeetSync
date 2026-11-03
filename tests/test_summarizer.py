@@ -123,6 +123,36 @@ class ValidateTests(unittest.TestCase):
         body["action_items"][0].update(due_date=None, due_time="10:00")
         self.assertIn("time_without_date", codes(self.check(body)))
 
+    def test_end_date_is_checked_against_the_start_date(self):
+        body = good_body()
+        item = body["action_items"][0]
+        item.update(due_date="2026-10-09", due_date_end="2026-10-11")
+        r = self.check(body)
+        self.assertEqual(r["action_items"][0]["due_date_end"], "2026-10-11")             # ช่วงปกติ = ไม่มีคำเตือนเรื่องวันสิ้นสุด
+        self.assertFalse({"end_before_start", "end_date_without_start", "bad_end_date"} & set(codes(r)))
+        item.update(due_date_end="2026-10-08")
+        r = self.check(body)
+        self.assertIn("end_before_start", codes(r))                                       # เตือนแต่ไม่แก้ค่าให้ คนตัดสินใจเอง
+        self.assertEqual(r["action_items"][0]["due_date_end"], "2026-10-08")
+        item.update(due_date=None, due_date_end="2026-10-11")
+        self.assertIn("end_date_without_start", codes(self.check(body)))
+        item.update(due_date="2026-10-09", due_date_end="2026-13-45")
+        r = self.check(body)
+        self.assertIn("bad_end_date", codes(r))
+        self.assertIsNone(r["action_items"][0]["due_date_end"])                          # อ่านไม่ได้ = ล้างค่า
+
+    def test_multi_day_with_start_time_but_no_end_time_is_flagged(self):
+        body = good_body()
+        body["action_items"][0].update(due_date="2026-10-09", due_date_end="2026-10-11", due_time="10:00", due_time_end=None)
+        self.assertIn("end_time_missing", codes(self.check(body)))
+        body["action_items"][0].update(due_time_end="12:00")
+        self.assertNotIn("end_time_missing", codes(self.check(body)))
+
+    def test_ai_answer_without_the_new_end_date_field_is_still_accepted(self):
+        raw = json.dumps(good_body())                                                    # good_body ไม่มี due_date_end
+        body = summarizer._parse_body(raw)
+        self.assertIsNone(body.action_items[0].due_date_end)
+
     def test_empty_agenda_and_summary_warn(self):
         r = self.check(good_body(agenda=[], summary="  "))
         self.assertTrue({"no_agenda", "empty_summary"} <= set(codes(r)))
@@ -227,14 +257,16 @@ class GenerateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             summarizer.generate_minutes_content(ROWS, PARTS, None, MEETING, self.make([json.dumps(body)]))
 
-    def test_prompt_v4_tells_the_ai_not_to_invent_resolutions_and_to_write_by_speaker(self):
-        text = summarizer.load_prompt("minutes_v4")
+    def test_prompt_v5_tells_the_ai_not_to_invent_resolutions_and_to_write_by_speaker(self):
+        text = summarizer.load_prompt("minutes_v5")
         for phrase in ("รายงานต่อที่ประชุมว่า", "ประธานฯ กล่าวว่า", "ห้ามเติม \"รับทราบ\" หรือ \"เห็นชอบ\" เอง",
                        '"consider_new"', '"inform"'):
             self.assertIn(phrase, text)
         for phrase in ("เรื่องนั้นโดยตรง", "ผู้สรุปมติ ไม่ใช่ผู้เสนอ", "ห้ามเพิ่มรายละเอียด", "ตรงกันทุกจุดของรายงาน"):   # บทเรียนจากการทดสอบกับ Meet จริง
             self.assertIn(phrase, text)
-        self.assertEqual(summarizer.PROMPT_NAME, "minutes_v4")
+        self.assertIn("due_date_end", text)                                                # v5: วันที่สิ้นสุดเฉพาะเมื่อพูดเป็นช่วงชัดเจน
+        self.assertIn("ห้ามเดา", text.split("due_date_end")[1].split("\n")[0])
+        self.assertEqual(summarizer.PROMPT_NAME, "minutes_v5")
 
     def test_long_meeting_uses_map_reduce(self):
         old = summarizer.SINGLE_PASS_CHARS, summarizer.CHUNK_CHARS

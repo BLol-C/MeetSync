@@ -65,7 +65,7 @@ class ReviewSheetTests(unittest.TestCase):
 
     def test_sheet_lists_every_item_with_evidence_and_blank_checks(self):
         meeting = {"meeting_id": 7, "title": "ประชุมทดสอบ"}
-        report = {"content": edited(), "ai_snapshot": AI, "model_used": "m", "prompt_version": "minutes_v4", "generated_at": "t"}
+        report = {"content": edited(), "ai_draft": AI, "model_used": "m", "prompt_version": "minutes_v4", "generated_at": "t"}
         rows = [{"display_name": "สมชาย", "text": "สวัสดีครับ", "spoken_at": datetime.datetime(2026, 10, 13, 9, 0, 5)}]
         text = rs.build_sheet(meeting, report, rows)
         for needle in ("ประชุมทดสอบ (id 7)", "### วาระที่ 3: เรื่อง C", "### งานที่ 2: จองห้อง", "> อ้างอิง: ข", "**แต่งมติ**",

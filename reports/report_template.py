@@ -48,6 +48,7 @@ TEMPLATE = {
         "col_task": "งาน / นัดหมาย",
         "col_who": "ผู้รับผิดชอบ",
         "col_when": "กำหนด",
+        "col_time": "เวลา",
         "no_action_items": "— ไม่มีงานที่ได้รับมอบหมาย —",
     },
     "sections": [

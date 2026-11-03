@@ -86,8 +86,10 @@ class FakeHttpError(Exception):
 class FakeCalendar:
     def __init__(self):
         self.inserted = []      # (body, sendUpdates)
+        self.store = {}         # eventId -> นัดที่อยู่ใน "Google" ตอนนี้ (ทดสอบแก้ใน Calendar ได้โดยแก้ค่านี้)
         self.deleted = []       # eventId
         self.delete_error = None  # ตั้งเป็นสถานะ HTTP เพื่อจำลอง Google ตอบ error ตอนลบ
+        self.get_error = None     # เช่นกัน ตอนอ่านนัด
         self._last = None
 
     def events(self):
@@ -96,6 +98,11 @@ class FakeCalendar:
     def insert(self, calendarId, body, sendUpdates):  # noqa: N803
         self.inserted.append((body, sendUpdates))
         self._last = ("insert", f"evt{len(self.inserted)}")
+        self.store[self._last[1]] = {"id": self._last[1], "status": "confirmed", **body}
+        return self
+
+    def get(self, calendarId, eventId):  # noqa: N803
+        self._last = ("get", eventId)
         return self
 
     def delete(self, calendarId, eventId, sendUpdates):  # noqa: N803
@@ -105,6 +112,12 @@ class FakeCalendar:
 
     def execute(self):
         kind, event_id = self._last
+        if kind == "get":
+            if self.get_error:
+                raise FakeHttpError(self.get_error)
+            if event_id not in self.store:
+                raise FakeHttpError(404)
+            return self.store[event_id]
         if kind == "delete":
             if self.delete_error:
                 raise FakeHttpError(self.delete_error)
@@ -264,6 +277,271 @@ class ServiceTests(TempDbCase):
         service.approve_report(self.owner, mid, confirm_warnings=True)
         return mid
 
+    # ── ประวัติการแก้ไขรายงาน (summary_versions): เพิ่มรุ่นอย่างเดียว ไม่ทับของเดิม ──
+
+    def edit_summary(self, mid, text):
+        content = service.get_report_view(self.owner, mid)["report"]["content"]
+        service.save_report_draft(self.owner, mid, {**content, "summary": text})
+
+    def versions(self, mid):
+        return list(reversed(service.report_history(self.owner, mid)))       # เก่าสุดก่อน
+
+    def test_five_edits_leave_all_five_old_versions_and_the_original_ai_draft(self):
+        mid = self.draft()
+        original = service.report_version(self.owner, mid, 1)["summary"]
+        for k in range(1, 6):
+            self.edit_summary(mid, f"สรุปแก้รอบที่ {k}")
+        vs = self.versions(mid)
+        self.assertEqual([v["kind"] for v in vs], ["ai_draft"] + ["human_edit"] * 5)
+        self.assertEqual([v["version_no"] for v in vs], [1, 2, 3, 4, 5, 6])
+        self.assertEqual([service.report_version(self.owner, mid, n)["summary"] for n in range(2, 7)],
+                         [f"สรุปแก้รอบที่ {k}" for k in range(1, 6)])           # ทุกรอบยังอยู่ครบ
+        self.assertEqual(service.report_version(self.owner, mid, 1)["summary"], original)  # ฉบับ AI เดิมไม่เปลี่ยน
+        self.assertEqual(vs[1]["saved_by"], self.owner["user_id"])
+
+    def test_history_records_who_saved_each_draft_with_their_google_name_and_email(self):
+        mid = self.draft()
+        self.edit_summary(mid, "แก้โดยเจ้าของ")
+        hist = service.report_history(self.owner, mid)                                   # ใหม่สุดก่อน: [แก้, AI ร่าง]
+        for v in hist:
+            self.assertEqual((v["saved_by_name"], v["saved_by_email"]), ("เจ้าของ", "owner@x.com"))
+        sid = db.get_report(mid)["summary_id"]
+        self.execute("UPDATE summary_versions SET saved_by = NULL WHERE summary_id = %s AND version_no = 1", (sid,))
+        first = list(reversed(service.report_history(self.owner, mid)))[0]
+        self.assertEqual((first["saved_by"], first["saved_by_name"], first["saved_by_email"]), (None, None, None))   # ไม่รู้ว่าใคร = ว่าง
+
+    def test_saving_without_changing_anything_does_not_add_a_version(self):
+        mid = self.draft()
+        self.edit_summary(mid, "แก้ครั้งเดียว")
+        before = len(service.report_history(self.owner, mid))
+        self.edit_summary(mid, "แก้ครั้งเดียว")
+        self.assertEqual(len(service.report_history(self.owner, mid)), before)
+
+    def test_editing_agenda_and_tasks_is_versioned_too(self):
+        mid = self.draft()
+        content = service.get_report_view(self.owner, mid)["report"]["content"]
+        agenda = [{**a, "resolution": "มติที่คนแก้"} for a in content["agenda"]]
+        tasks = [{**t, "due_date": "2026-10-20", "due_time_end": "15:00"} for t in content["action_items"][:1]]
+        service.save_report_draft(self.owner, mid, {**content, "agenda": agenda, "action_items": tasks})
+        old, new = service.report_version(self.owner, mid, 1), service.report_version(self.owner, mid, 2)
+        self.assertNotEqual(old["agenda"][0]["resolution"], "มติที่คนแก้")
+        self.assertEqual(new["agenda"][0]["resolution"], "มติที่คนแก้")
+        self.assertEqual((old["action_items"][0]["due_date"], new["action_items"][0]["due_date"]), ("2026-10-09", "2026-10-20"))
+        self.assertEqual(len(old["action_items"]), 2)
+        self.assertEqual(len(new["action_items"]), 1)                             # รุ่นเก่ายังเห็นงานที่ถูกลบไป
+
+    def test_regenerating_adds_a_version_and_keeps_the_human_edits(self):
+        mid = self.draft()
+        self.edit_summary(mid, "คนแก้ก่อน AI ร่างใหม่")
+        service.generate_report(self.owner, mid, generate=fake_ai)
+        self.assertEqual([v["kind"] for v in self.versions(mid)], ["ai_draft", "human_edit", "ai_draft"])
+        self.assertEqual(service.report_version(self.owner, mid, 2)["summary"], "คนแก้ก่อน AI ร่างใหม่")
+
+    def test_approve_and_reopen_are_recorded_with_who_did_it(self):
+        mid = self.draft()
+        service.approve_report(self.owner, mid, confirm_warnings=True)
+        service.reopen_report(self.owner, mid)
+        vs = self.versions(mid)
+        self.assertEqual([v["kind"] for v in vs][-2:], ["approve", "reopen"])
+        self.assertEqual({v["saved_by"] for v in vs[-2:]}, {self.owner["user_id"]})
+        self.assertEqual(db.list_report_versions(db.get_report(mid)["summary_id"])[0]["version_no"], len(vs))   # ใหม่สุดอยู่แถวแรก
+
+    def test_choosing_an_old_draft_makes_it_the_one_in_use_without_creating_a_new_one(self):
+        mid = self.draft()
+        for k in range(1, 4):
+            self.edit_summary(mid, f"สรุปแก้รอบที่ {k}")
+        before = service.report_history(self.owner, mid)
+        self.assertEqual([v["version_no"] for v in before if v["is_current"]], [4])        # ใช้ฉบับล่าสุดอยู่
+        self.assertTrue(service.use_report_version(self.owner, mid, 2))                   # ฉบับ 2 = "สรุปแก้รอบที่ 1"
+        self.assertEqual(db.get_report(mid)["content"]["summary"], "สรุปแก้รอบที่ 1")      # รายงานตอนนี้คือฉบับ 2
+        after = service.report_history(self.owner, mid)
+        self.assertEqual(len(after), len(before))                                         # ไม่มีฉบับใหม่
+        self.assertEqual([v["version_no"] for v in after if v["is_current"]], [2])        # เครื่องหมาย "ใช้อยู่" ย้ายไปที่ 2
+        self.assertEqual([service.report_version(self.owner, mid, n)["summary"] for n in (2, 3, 4)],
+                         ["สรุปแก้รอบที่ 1", "สรุปแก้รอบที่ 2", "สรุปแก้รอบที่ 3"])       # ไม่มีฉบับไหนถูกทับ
+        self.assertTrue(service.use_report_version(self.owner, mid, 4))                   # เปลี่ยนกลับไปฉบับ 4 ได้
+        self.assertEqual(db.get_report(mid)["content"]["summary"], "สรุปแก้รอบที่ 3")
+
+    def test_editing_after_choosing_an_old_draft_adds_a_new_draft_at_the_end(self):
+        mid = self.draft()
+        for k in range(1, 4):
+            self.edit_summary(mid, f"สรุปแก้รอบที่ {k}")
+        service.use_report_version(self.owner, mid, 2)
+        self.edit_summary(mid, "แก้ต่อจากฉบับ 2")
+        history = list(reversed(service.report_history(self.owner, mid)))
+        self.assertEqual([v["version_no"] for v in history], [1, 2, 3, 4, 5])               # ต่อท้าย ไม่ทับฉบับ 3 และ 4
+        self.assertEqual(service.report_version(self.owner, mid, 5)["summary"], "แก้ต่อจากฉบับ 2")
+        self.assertEqual(service.report_version(self.owner, mid, 3)["summary"], "สรุปแก้รอบที่ 2")
+        self.assertEqual([v["version_no"] for v in history if v["is_current"]], [5])
+
+    def test_saving_without_changes_while_using_an_old_draft_adds_nothing(self):
+        mid = self.draft()
+        self.edit_summary(mid, "แก้ครั้งแรก")
+        self.edit_summary(mid, "แก้ครั้งสอง")
+        service.use_report_version(self.owner, mid, 2)
+        before = len(service.report_history(self.owner, mid))
+        self.edit_summary(mid, "แก้ครั้งแรก")                                               # เนื้อหาเท่ากับฉบับที่ใช้อยู่ (ไม่ใช่ฉบับล่าสุด)
+        self.assertEqual(len(service.report_history(self.owner, mid)), before)
+
+    def test_choosing_an_old_draft_brings_back_agenda_and_tasks_as_they_were(self):
+        mid = self.draft()
+        content = service.get_report_view(self.owner, mid)["report"]["content"]
+        service.save_report_draft(self.owner, mid, {**content, "agenda": [], "action_items": []})
+        self.assertEqual(db.get_report(mid)["content"]["agenda"], [])
+        service.use_report_version(self.owner, mid, 1)
+        current_now = db.get_report(mid)["content"]
+        self.assertEqual([a["title"] for a in current_now["agenda"]], ["งบประมาณ"])
+        self.assertEqual(len(current_now["action_items"]), 2)
+        self.assertEqual(current_now["action_items"][0]["due_date"], "2026-10-09")
+
+    def test_choosing_the_draft_already_in_use_changes_nothing(self):
+        mid = self.draft()
+        self.edit_summary(mid, "แก้แล้ว")
+        self.assertFalse(service.use_report_version(self.owner, mid, 2))
+        self.assertEqual(len(service.report_history(self.owner, mid)), 2)
+
+    def test_approved_report_cannot_switch_drafts_until_reopened(self):
+        mid = self.draft()
+        self.edit_summary(mid, "แก้ก่อนอนุมัติ")
+        service.approve_report(self.owner, mid, confirm_warnings=True)
+        with self.assertRaises(ServiceError):
+            service.use_report_version(self.owner, mid, 1)
+        self.assertEqual(db.get_report(mid)["content"]["summary"], "แก้ก่อนอนุมัติ")
+        service.reopen_report(self.owner, mid)
+        self.assertTrue(service.use_report_version(self.owner, mid, 1))
+        with self.assertRaises(ServiceError):
+            service.use_report_version(self.owner, mid, 999)
+
+    def test_pdf_due_column_shows_a_date_range_when_there_is_an_end_date(self):
+        from reports import pdf_report
+        f = pdf_report._fmt_due
+        self.assertEqual(f({"due_date": "2026-11-02", "due_date_end": "2026-11-04"}), "2 - 4 พฤศจิกายน 2569")      # เดือนเดียวกัน ย่อ
+        self.assertEqual(f({"due_date": "2026-10-30", "due_date_end": "2026-11-02"}), "30 ตุลาคม - 2 พฤศจิกายน 2569")   # ต่างเดือนปีเดียวกัน
+        self.assertEqual(f({"due_date": "2026-12-30", "due_date_end": "2027-01-02"}), "30 ธันวาคม 2569 - 2 มกราคม 2570")
+        self.assertEqual(f({"due_date": "2026-11-02", "due_date_end": None}), "2 พฤศจิกายน 2569")                 # ไม่มีวันสิ้นสุด
+        self.assertEqual(f({"due_date": "2026-11-02", "due_date_end": "2026-11-02"}), "2 พฤศจิกายน 2569")         # วันเดียวกัน
+        self.assertEqual(f({"due_date": "2026-11-02", "due_date_end": "2026-11-01"}), "2 พฤศจิกายน 2569")         # ผิด = แสดงวันเริ่มวันเดียว
+        self.assertEqual(f({"due_date": None, "due_date_end": "2026-11-04"}), "-")
+
+    def test_end_date_is_saved_versioned_and_survives_approval(self):
+        mid = self.draft()
+        content = service.get_report_view(self.owner, mid)["report"]["content"]
+        tasks = [{**t, "due_date_end": "2026-10-12"} for t in content["action_items"]]
+        service.save_report_draft(self.owner, mid, {**content, "action_items": tasks})
+        self.assertEqual(db.get_report(mid)["content"]["action_items"][0]["due_date_end"], "2026-10-12")
+        self.assertIsNone(service.report_version(self.owner, mid, 1)["action_items"][0]["due_date_end"])   # ฉบับ AI เดิมยังไม่มี
+        self.assertEqual(service.report_version(self.owner, mid, 2)["action_items"][0]["due_date_end"], "2026-10-12")
+
+    def test_database_made_before_the_end_date_column_gets_it_on_startup(self):
+        self.execute("ALTER TABLE action_items DROP COLUMN due_date_end")
+        db.init_schema()
+        self.assertEqual(self.rows("SELECT COUNT(*) n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() "
+                                   "AND TABLE_NAME = 'action_items' AND COLUMN_NAME = 'due_date_end'")[0]["n"], 1)
+
+    def test_pdf_file_name_is_the_meeting_title(self):
+        mid = self.draft()
+        title = db.get_meeting(mid)["title"]
+        _, name = service.build_pdf(self.owner, mid)
+        self.assertEqual(name, f"{title} (ฉบับร่าง).pdf")                                # ฉบับร่างมีคำกำกับ
+        service.approve_report(self.owner, mid, confirm_warnings=True)
+        _, name = service.build_pdf(self.owner, mid)
+        self.assertEqual(name, f"{title}.pdf")                                           # อนุมัติแล้วใช้ชื่อหัวข้อล้วน
+
+    def test_transcript_file_name_is_the_meeting_title_too(self):
+        f = service.transcript_filename
+        self.assertEqual(f("ทดสอบให้ อ ศศิน", 7), "ทดสอบให้ อ ศศิน.txt")
+        self.assertEqual(f('ประชุม: "งบ" / 4?', 7), "ประชุม งบ 4.txt")
+        self.assertEqual(f("  ", 7), "transcript-7.txt")                                # ไม่มีหัวข้อ = ชื่อเดิม
+        self.assertEqual(f(None, 7), "transcript-7.txt")
+
+    def test_pdf_file_name_is_safe_for_windows_and_never_empty(self):
+        f = service.pdf_filename
+        self.assertEqual(f('ประชุม: "งบ" / ครั้งที่ 4?', 7, True), "ประชุม งบ ครั้งที่ 4.pdf")      # ตัดอักขระที่ตั้งชื่อไฟล์ไม่ได้
+        self.assertEqual(f("a" + chr(92) + "b|c<d>e*f", 7, True), "a b c d e f.pdf")
+        self.assertEqual(f("  ...  ", 7, True), "meeting-minutes-7.pdf")                 # ไม่มีหัวข้อ/มีแต่อักขระที่ใช้ไม่ได้
+        self.assertEqual(f(None, 7, False), "meeting-minutes-7 (ฉบับร่าง).pdf")
+        self.assertLessEqual(len(f("ก" * 300, 7, True)), 84)                              # จำกัดความยาว (80 + ".pdf")
+
+    # ── ผู้สร้าง/ผู้อนุมัติ และเตือนชื่อซ้ำ ──
+
+    def test_meeting_list_and_credit_name_the_creator_and_the_approver(self):
+        mid = self.draft()
+        row = next(m for m in service.list_meetings(self.owner) if m["meeting_id"] == mid)
+        self.assertEqual((row["owner_user_id"], row["owner_name"], row["approved_by"], row["approved_by_name"]),
+                         (self.owner["user_id"], "เจ้าของ", None, None))                      # ยังไม่อนุมัติ = ยังไม่มีผู้อนุมัติ
+        service.approve_report(self.owner, mid, confirm_warnings=True)
+        row = next(m for m in service.list_meetings(self.owner) if m["meeting_id"] == mid)
+        self.assertEqual((row["approved_by"], row["approved_by_name"]), (self.owner["user_id"], "เจ้าของ"))
+        self.assertEqual(service.meeting_credit(self.owner, mid),
+                         {"owner_user_id": self.owner["user_id"], "owner_name": "เจ้าของ",
+                          "approved_by": self.owner["user_id"], "approved_by_name": "เจ้าของ"})
+        with self.assertRaises(ServiceError):
+            service.meeting_credit(self.other, mid)                                           # คนที่ดูไม่ได้ก็ดูผู้สร้างไม่ได้
+
+    def test_a_chair_sees_who_created_the_meeting_they_can_open(self):
+        mid = self.new_meeting()                                                              # สร้างโดย owner มี chair@x.com เป็นประธาน
+        row = next(m for m in service.list_meetings(self.chair_user) if m["meeting_id"] == mid)
+        self.assertEqual((row["owner_name"], row["owner_user_id"] == self.owner["user_id"]), ("เจ้าของ", True))
+
+    def test_next_meeting_number_follows_the_existing_format(self):
+        f = service.next_meeting_number
+        self.assertEqual(f(["3/2569", "1/2569"], 2), "4/2569")
+        self.assertEqual(f(["1", "2"], 2), "3")
+        self.assertEqual(f(["", None], 2), "3")                                              # ไม่มีเลขที่อ่านได้ = จำนวนที่มี + 1
+        self.assertEqual(f(["ครั้งแรก"], 1), "2")
+        self.assertEqual(f(["9/2569", "10/2569"], 2), "11/2569")                              # เทียบเป็นตัวเลข ไม่ใช่ข้อความ
+
+    def test_duplicate_title_suggests_the_next_number_but_only_when_it_helps(self):
+        title = "ประชุมซ้ำชื่อ"
+        self.assertIsNone(service.suggest_meeting_number(self.owner, title, ""))               # ยังไม่มีชื่อนี้
+        first = self.new_meeting(title=title, meeting_no="1/2569")
+        hint = service.suggest_meeting_number(self.owner, title, "")
+        self.assertEqual((hint["suggested"], hint["typed"], [e["meeting_id"] for e in hint["existing"]]), ("2/2569", "", [first]))
+        self.assertEqual(service.suggest_meeting_number(self.owner, f"  {title}  ", "")["suggested"], "2/2569")   # ไม่สนช่องว่างหัวท้าย
+        self.assertEqual(service.suggest_meeting_number(self.owner, title, "1/2569")["typed"], "1/2569")        # เลขซ้ำของเดิม = เตือน
+        self.assertIsNone(service.suggest_meeting_number(self.owner, title, "2/2569"))         # กรอกเลขที่ไม่ซ้ำแล้ว ไม่ต้องเตือน
+        self.assertIsNone(service.suggest_meeting_number(self.owner, "", ""))                  # ไม่มีชื่อ = ระบบตั้งชื่อจากวันเวลา ไม่ซ้ำอยู่แล้ว
+        self.assertIsNone(service.suggest_meeting_number(self.other, title, ""))               # ของคนอื่นที่ไม่เกี่ยวข้องไม่นับ
+
+    def test_history_is_private_to_people_who_can_see_the_meeting(self):
+        mid = self.draft()
+        with self.assertRaises(ServiceError):
+            service.report_history(self.other, mid)
+        with self.assertRaises(ServiceError):
+            service.report_version(self.owner, mid, 999)
+
+    def test_reports_that_predate_the_history_table_get_versions_rebuilt(self):
+        mid = self.draft()
+        self.edit_summary(mid, "คนแก้")
+        service.approve_report(self.owner, mid, confirm_warnings=True)
+        sid = db.get_report(mid)["summary_id"]
+        original = db.get_report_version(sid, 1)
+        self.execute("DROP TABLE summary_versions")                              # เหมือนฐานข้อมูลที่สร้างก่อนมีตารางนี้
+        self.execute("ALTER TABLE summaries ADD COLUMN ai_snapshot LONGTEXT NULL")   # ...และยังมีคอลัมน์ ai_snapshot ของรุ่นเก่า
+        self.execute("UPDATE summaries SET ai_snapshot = %s WHERE summary_id = %s", (json.dumps(original, ensure_ascii=False), sid))
+        db.init_schema()                                                         # เปิดแอปครั้งแรกหลังอัปเดต: สร้างตาราง + สร้างรุ่นย้อนหลัง
+        vs = list(reversed(db.list_report_versions(sid)))
+        self.assertEqual([v["kind"] for v in vs], ["ai_draft", "human_edit", "approve"])
+        self.assertEqual(db.get_report_version(sid, 1)["summary"], original["summary"])      # ฉบับ AI เดิมมาจาก ai_snapshot เก่า
+        self.assertEqual(self.rows("SELECT COUNT(*) n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() "
+                                   "AND TABLE_NAME = 'summaries' AND COLUMN_NAME = 'ai_snapshot'")[0]["n"], 0)   # แล้วลบคอลัมน์เก่าทิ้ง
+        self.assertEqual(db.get_report_version(sid, 2)["summary"], "คนแก้")
+        db.init_schema()                                                         # เรียกซ้ำไม่สร้างรุ่นซ้ำ
+        self.assertEqual(len(db.list_report_versions(sid)), 3)
+
+    def test_report_without_any_ai_draft_record_starts_from_a_baseline_version(self):
+        mid = self.draft()
+        sid = db.get_report(mid)["summary_id"]
+        self.execute("DELETE FROM summary_versions WHERE summary_id = %s", (sid,))
+        db.init_schema()
+        self.assertEqual([v["kind"] for v in db.list_report_versions(sid)], ["baseline"])
+
+    def test_deleting_a_meeting_removes_its_history_with_it(self):
+        mid = self.draft()
+        sid = db.get_report(mid)["summary_id"]
+        service.delete_meeting(self.owner, mid)
+        self.assertEqual(self.rows("SELECT COUNT(*) n FROM summary_versions WHERE summary_id = %s", (sid,))[0]["n"], 0)
+
     def test_agenda_items_keep_their_section_and_only_ai_sections_need_evidence(self):
         mid = self.draft()
         content = service.get_report_view(self.owner, mid)["report"]["content"]
@@ -328,7 +606,7 @@ class ServiceTests(TempDbCase):
         self.assertIn("ผู้รับผิดชอบ: Alice", by["followup"][0]["discussion"])
         self.assertNotIn("consider_old", by)                                               # ครั้งก่อนทุกวาระมีมติ จึงไม่มีเรื่องค้าง
         self.assertEqual([a["title"] for a in by["consider_new"]], ["งบประมาณ"])           # ที่ AI สรุปยังอยู่ 4.2
-        self.assertEqual({a.get("section") for a in report["ai_snapshot"]["agenda"]}, {"consider_new"})   # snapshot เก็บเฉพาะที่ AI ร่าง
+        self.assertEqual({a.get("section") for a in db.latest_ai_draft(report["summary_id"])["agenda"]}, {"consider_new"})   # ฉบับที่ AI ร่าง = เฉพาะที่ AI สรุปเอง
         alone = self.generate_for()                                                        # ไม่เลือกครั้งก่อน = ไม่มีหมวดที่เติมให้
         self.assertEqual({a["section"] for a in db.get_report(alone)["content"]["agenda"]}, {"consider_new"})
 
@@ -471,8 +749,12 @@ class ServiceTests(TempDbCase):
         self.assertGreaterEqual(pdf_report._cell_lines(pdf, width, spill, 20.0), 2)
         self.assertEqual(pdf_report._fmt_due({"due_date": "2026-10-16"}), "16 ตุลาคม 2569")
         self.assertEqual(pdf_report._fmt_due({"due_date": "2026-10-16", "due_time": "13:00", "due_time_end": "14:00"}),
-                         "16 ตุลาคม 2569 13:00-14:00")
+                         "16 ตุลาคม 2569")                                                 # วันที่ล้วน เวลาแยกเป็นอีกคอลัมน์
         self.assertEqual(pdf_report._fmt_due({"due_date": None}), "-")
+        self.assertEqual(pdf_report._fmt_time({"due_time": "12:00", "due_time_end": "12:50"}), "12:00-12:50")
+        self.assertEqual(pdf_report._fmt_time({"due_time": "13:00"}), "13:00")             # มีแต่เวลาเริ่ม
+        self.assertEqual(pdf_report._fmt_time({"due_time": None, "due_time_end": "12:50"}), "-")
+        self.assertEqual(pdf_report._fmt_time({}), "-")                                    # ไม่ระบุเวลา = เต็มวัน
 
     def test_pdf_follows_the_meeting_minutes_form(self):
         import io
@@ -944,10 +1226,10 @@ class ServiceTests(TempDbCase):
         mid = self.draft()
         draft, name = service.build_pdf(self.owner, mid)
         self.assertTrue(draft.startswith(b"%PDF"))
-        self.assertIn("draft", name)
+        self.assertIn("ฉบับร่าง", name)
         service.approve_report(self.owner, mid, confirm_warnings=True)
         final, name2 = service.build_pdf(self.owner, mid)
-        self.assertNotIn("draft", name2)
+        self.assertNotIn("ฉบับร่าง", name2)
         self.assertNotEqual(draft, final)
         with self.assertRaises(ServiceError):
             service.build_pdf(self.owner, self.new_meeting())                    # ยังไม่มีรายงาน
@@ -997,6 +1279,145 @@ class ServiceTests(TempDbCase):
             with self.assertRaises(ServiceError) as cm:                                         # คนอื่นแตะไม่ได้
                 service.sync_calendar(self.other, mid)
             self.assertEqual(cm.exception.kind, "not_found")
+
+    # ── ซิงก์กลับจาก Google Calendar (ผู้ใช้แก้นัดใน Calendar เอง) ──
+
+    def sent_meeting(self, fake):
+        mid = self.draft()
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:
+            service.approve_and_send(self.owner, mid, confirm_warnings=True)
+        return mid
+
+    def test_unchanged_events_are_reported_as_the_same(self):
+        fake = FakeCalendar()
+        mid = self.sent_meeting(fake)
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:
+            res = service.check_calendar_changes(self.owner, mid)
+        self.assertEqual([(r["status"], r["description"]) for r in res], [("same", "ส่งรายงานความก้าวหน้า")])
+
+    def test_moving_an_event_in_google_is_detected_and_applied_after_confirmation(self):
+        fake = FakeCalendar()
+        mid = self.sent_meeting(fake)
+        before = db.get_report(mid)["content"]["action_items"][0]
+        fake.store["evt1"]["start"] = {"dateTime": "2026-10-20T09:00:00+07:00", "timeZone": "Asia/Bangkok"}
+        fake.store["evt1"]["end"] = {"dateTime": "2026-10-22T11:30:00+07:00", "timeZone": "Asia/Bangkok"}      # เลื่อนและขยายเป็นหลายวัน
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:
+            res = service.check_calendar_changes(self.owner, mid)
+            self.assertEqual(res[0]["status"], "changed")
+            self.assertEqual(res[0]["mine"]["due_date"], "2026-10-09")
+            self.assertEqual(res[0]["remote"], {"due_date": "2026-10-20", "due_date_end": "2026-10-22", "due_time": "09:00",
+                                                "due_time_end": "11:30", "description": "ส่งรายงานความก้าวหน้า"})
+            self.assertEqual(db.get_report(mid)["content"]["action_items"][0]["due_date"], "2026-10-09")   # แค่ตรวจ ยังไม่แก้ข้อมูล
+            versions_before = len(service.report_history(self.owner, mid))
+            out = service.apply_calendar_changes(self.owner, mid)
+        self.assertEqual(out, {"updated": 1, "cleared": 0})
+        after = db.get_report(mid)["content"]["action_items"][0]
+        self.assertEqual((after["due_date"], after["due_date_end"], after["due_time"], after["due_time_end"]),
+                         ("2026-10-20", "2026-10-22", "09:00", "11:30"))
+        self.assertEqual((after["action_item_id"], after["google_calendar_event_id"], after["google_calendar_link"]),
+                         (before["action_item_id"], before["google_calendar_event_id"], before["google_calendar_link"]))   # รหัสนัดและลิงก์ไม่หาย
+        hist = service.report_history(self.owner, mid)
+        self.assertEqual(len(hist), versions_before + 1)
+        self.assertEqual((hist[0]["kind"], hist[0]["is_current"]), ("calendar_sync", 1))                    # เก็บเป็นร่างฉบับใหม่ ฉบับก่อนยังอยู่
+        self.assertEqual(service.report_version(self.owner, mid, hist[1]["version_no"])["action_items"][0]["due_date"], "2026-10-09")
+        self.assertEqual(db.get_meeting(mid)["status"], "approved")                                         # ยังอนุมัติอยู่ รายงานส่วนอื่นยังล็อก
+
+    def test_renaming_the_event_in_google_updates_the_task_name_and_keeps_everything_else(self):
+        fake = FakeCalendar()
+        mid = self.sent_meeting(fake)
+        before = db.get_report(mid)["content"]["action_items"][0]
+        fake.store["evt1"]["summary"] = "ส่งรายงานความก้าวหน้า (แก้ชื่อใน Calendar)"
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:
+            res = service.check_calendar_changes(self.owner, mid)
+            self.assertEqual((res[0]["status"], res[0]["remote"]["description"]), ("changed", "ส่งรายงานความก้าวหน้า (แก้ชื่อใน Calendar)"))
+            self.assertEqual(db.get_report(mid)["content"]["action_items"][0]["description"], before["description"])   # แค่ตรวจ ยังไม่แก้
+            self.assertEqual(service.apply_calendar_changes(self.owner, mid), {"updated": 1, "cleared": 0})
+            self.assertEqual(service.check_calendar_changes(self.owner, mid)[0]["status"], "same")                      # แก้แล้วไม่ขึ้นซ้ำ
+        after = db.get_report(mid)["content"]["action_items"][0]
+        self.assertEqual(after["description"], "ส่งรายงานความก้าวหน้า (แก้ชื่อใน Calendar)")
+        self.assertEqual((after["assignee"], after["due_date"], after["google_calendar_event_id"]),
+                         (before["assignee"], before["due_date"], before["google_calendar_event_id"]))                  # ผู้รับผิดชอบ/วัน/รหัสนัดไม่เปลี่ยน
+        hist = service.report_history(self.owner, mid)
+        self.assertEqual(hist[0]["kind"], "calendar_sync")
+        old = service.report_version(self.owner, mid, hist[1]["version_no"])["action_items"][0]["description"]
+        self.assertEqual(old, before["description"])                                                                   # ชื่อเดิมยังอยู่ในประวัติ
+
+    def test_attendees_changed_in_google_do_not_change_the_assignee(self):
+        fake = FakeCalendar()
+        mid = self.sent_meeting(fake)
+        fake.store["evt1"]["attendees"] = [{"email": "someone.else@x.com"}]
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:
+            self.assertEqual(service.check_calendar_changes(self.owner, mid)[0]["status"], "same")                      # ผู้ได้รับเชิญไม่เทียบ
+        self.assertEqual(db.get_report(mid)["content"]["action_items"][0]["assignee"], "Alice")
+
+    def test_all_day_event_changes_and_timezones_are_read_correctly(self):
+        fake = FakeCalendar()
+        mid = self.sent_meeting(fake)
+        fake.store["evt1"]["start"] = {"dateTime": "2026-10-09T06:00:00Z"}                                 # 13:00 เวลาไทย (UTC+7)
+        fake.store["evt1"]["end"] = {"dateTime": "2026-10-09T07:00:00Z"}
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:
+            self.assertEqual(service.check_calendar_changes(self.owner, mid)[0]["status"], "same")          # เวลาเดิมแต่ส่งมาเป็น UTC = ไม่เปลี่ยน
+            fake.store["evt1"]["start"] = {"date": "2026-10-12"}                                             # เปลี่ยนเป็นนัดเต็มวัน 12 ถึง 14
+            fake.store["evt1"]["end"] = {"date": "2026-10-15"}
+            r = service.check_calendar_changes(self.owner, mid)[0]
+        self.assertEqual(r["remote"], {"due_date": "2026-10-12", "due_date_end": "2026-10-14", "due_time": None, "due_time_end": None,
+                                       "description": "ส่งรายงานความก้าวหน้า"})
+
+    def test_event_deleted_in_google_is_flagged_and_its_link_cleared_on_apply_but_the_task_stays(self):
+        fake = FakeCalendar()
+        mid = self.sent_meeting(fake)
+        del fake.store["evt1"]
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:
+            self.assertEqual(service.check_calendar_changes(self.owner, mid)[0]["status"], "deleted")
+            self.assertEqual(service.apply_calendar_changes(self.owner, mid), {"updated": 0, "cleared": 1})
+        item = db.get_report(mid)["content"]["action_items"][0]
+        self.assertEqual((item["description"], item["google_calendar_event_id"], item["google_calendar_link"]),
+                         ("ส่งรายงานความก้าวหน้า", None, None))                                              # งานอยู่ ส่งใหม่ได้
+        with p1, p2:
+            self.assertEqual([r["ok"] for r in service.sync_calendar(self.owner, mid)], [True])
+        self.assertEqual(len(fake.inserted), 2)
+        fake2 = FakeCalendar()
+        mid2 = self.sent_meeting(fake2)
+        fake2.store["evt1"]["status"] = "cancelled"                                                         # ยกเลิกนัดในปฏิทินก็นับว่าถูกลบ
+        p1, p2 = self.calendar_env(fake2)
+        with p1, p2:
+            self.assertEqual(service.check_calendar_changes(self.owner, mid2)[0]["status"], "deleted")
+
+    def test_calendar_check_needs_the_approver_an_approved_report_and_a_connected_calendar(self):
+        fake = FakeCalendar()
+        mid = self.sent_meeting(fake)
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:
+            with self.assertRaises(ServiceError):
+                service.check_calendar_changes(self.chair_user, mid)                                        # ไม่ใช่ผู้ที่นัดอยู่ในปฏิทิน (และไม่มีสิทธิ์)
+        with self.assertRaises(ServiceError) as cm:
+            service.check_calendar_changes(self.owner, mid)                                                 # ยังไม่เชื่อมต่อ Calendar
+        self.assertEqual(cm.exception.kind, "unavailable")
+        draft = self.draft()
+        with self.assertRaises(ServiceError):
+            service.check_calendar_changes(self.owner, draft)                                               # ยังไม่อนุมัติ
+        service.approve_report(self.owner, draft, confirm_warnings=True)
+        with p1, p2:
+            self.assertEqual(service.check_calendar_changes(self.owner, draft), [])                         # อนุมัติแล้วแต่ยังไม่ได้ส่งนัด = ไม่มีอะไรให้ตรวจ
+
+    def test_google_error_on_one_event_is_reported_for_that_task_not_raised(self):
+        fake = FakeCalendar()
+        mid = self.sent_meeting(fake)
+        fake.get_error = 500                                                                                # Google ตอบ error ชั่วคราว
+        p1, p2 = self.calendar_env(fake)
+        with p1, p2:
+            res = service.check_calendar_changes(self.owner, mid)
+            self.assertEqual([r["status"] for r in res], ["error"])
+            self.assertIn("อ่านนัดจาก Calendar ไม่สำเร็จ", res[0]["error"])
+            self.assertEqual(service.apply_calendar_changes(self.owner, mid), {"updated": 0, "cleared": 0})   # error ไม่ทำให้แก้หรือล้างอะไร
+        self.assertTrue(db.get_report(mid)["content"]["action_items"][0]["google_calendar_event_id"])
 
     def test_invite_emails_only_when_asked(self):
         mid = self.draft()

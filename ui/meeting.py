@@ -63,7 +63,9 @@ def render(user: dict, meeting_id: int):
                 st.rerun()
     if back.button("← รายการประชุม", width="stretch"):
         common.go("home")
-    st.caption(common.progress_text(status))
+    credit = service.meeting_credit(user, meeting_id)
+    st.caption(common.progress_text(status) + "  ·  " + common.credit_text(
+        user, credit["owner_user_id"], credit["owner_name"], status == "approved", credit["approved_by"], credit["approved_by_name"]))
 
     tab_key = f"tabs_{meeting_id}"
     tabs = st.tabs(common.TAB_LABELS, default=common.default_tab(status), key=tab_key)

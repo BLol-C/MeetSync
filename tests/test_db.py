@@ -27,7 +27,7 @@ class SchemaTests(TempDbCase):
     def test_empty_database_gets_every_table_and_no_migration_table(self):
         db.init_schema()
         self.assertEqual(self.tables(), {"users", "meetings", "speakers", "transcript_segments", "summaries",
-                                         "agenda_items", "action_items"})
+                                         "agenda_items", "action_items", "summary_versions"})
 
     def test_init_schema_twice_keeps_data(self):
         db.init_schema()
@@ -55,7 +55,7 @@ class SchemaTests(TempDbCase):
         for t in threads:
             t.join(timeout=120)
         self.assertEqual(errors, [])
-        self.assertEqual(len(self.tables()), 7)
+        self.assertEqual(len(self.tables()), 8)
 
     def test_database_with_an_older_structure_is_reported_clearly(self):
         db.init_schema()
@@ -352,9 +352,9 @@ class WorkflowTests(TempDbCase):
         c = {"summary": "สรุป", "other_matters": "เรื่องอื่น",
              "agenda": [{"title": "งบ", "discussion": "คุยงบ", "resolution": "อนุมัติ", "evidence": ["ข้อความอ้างอิง"]},
                         {"title": "ห้อง", "discussion": "ยังไม่สรุป", "resolution": None, "evidence": []}],
-             "action_items": [{"description": "ส่งรายงาน", "assignee": "Alice", "due_date": "2026-10-09",
+             "action_items": [{"description": "ส่งรายงาน", "assignee": "Alice", "due_date": "2026-10-09", "due_date_end": "2026-10-11",
                                "due_time": "13:00", "due_time_end": None, "evidence": ["จะส่ง"]},
-                              {"description": "จองห้อง", "assignee": None, "due_date": None,
+                              {"description": "จองห้อง", "assignee": None, "due_date": None, "due_date_end": None,
                                "due_time": None, "due_time_end": None, "evidence": []}]}
         c.update(over)
         return c
@@ -381,7 +381,8 @@ class WorkflowTests(TempDbCase):
              "google_calendar_event_id": None, "google_calendar_link": None}]})
         self.assertFalse(rep["approved"])
         self.assertEqual(self.rows("SELECT COUNT(*) n FROM agenda_items")[0]["n"] >= 2, True)
-        self.assertEqual(rep["ai_snapshot"]["summary"], "สรุป")
+        self.assertEqual(db.latest_ai_draft(rep["summary_id"])["summary"], "สรุป")        # ฉบับที่ AI ร่างอยู่ในตารางประวัติ
+        self.assertNotIn("ai_snapshot", rep)                                             # ไม่มีคอลัมน์ ai_snapshot แล้ว
 
     def test_regenerating_replaces_the_working_draft_instead_of_stacking(self):
         _, mid = self.to_draft()

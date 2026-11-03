@@ -25,7 +25,7 @@ import db
 
 HERE = pathlib.Path(__file__).resolve().parent.parent
 PROMPT_DIR = HERE / "prompts"
-PROMPT_NAME = os.environ.get("MINUTES_PROMPT", "minutes_v4")          # ชื่อไฟล์ใน prompts/ (ไม่รวม .md)
+PROMPT_NAME = os.environ.get("MINUTES_PROMPT", "minutes_v5")          # ชื่อไฟล์ใน prompts/ (ไม่รวม .md)
                                                                       # v2: ห้ามข้ามหัวข้อที่ไม่มีข้อสรุป + เขียนปี พ.ศ. ในเนื้อความ
                                                                       # v3: บันทึกการอภิปรายละเอียดแบบรายงานจริง (ใครรายงาน/ใครกล่าวอะไร) + AI เลือกหมวดวาระ
                                                                       #     + มติว่างเมื่อไม่มีใครสรุปชัดเจน (ห้ามเติม "รับทราบ" เอง)
@@ -66,6 +66,7 @@ class ActionItemAI(BaseModel):
     description: str
     assignee: str | None
     due_date: str | None
+    due_date_end: str | None
     due_time: str | None
     due_time_end: str | None
     evidence: list[str]
@@ -244,6 +245,7 @@ def validate_minutes(
             "description": _clean_str(a.get("description")) or "",
             "assignee": _clean_str(a.get("assignee")),
             "due_date": _clean_str(a.get("due_date")),
+            "due_date_end": _clean_str(a.get("due_date_end")),
             "due_time": _norm_time(a.get("due_time")),
             "due_time_end": _norm_time(a.get("due_time_end")),
             "evidence": _clean_evidence(a.get("evidence")),
@@ -276,12 +278,30 @@ def validate_minutes(
                 warn("bad_date", f"action_items[{i}].due_date",
                      f"{label}: วันที่ \"{item['due_date']}\" อ่านไม่ได้ จึงล้างค่าให้ (ระบุใหม่ด้วยตนเอง)")
                 item["due_date"] = None
+        if item["due_date_end"]:
+            try:
+                end = datetime.date.fromisoformat(item["due_date_end"])
+                if not item["due_date"]:
+                    warn("end_date_without_start", f"action_items[{i}].due_date_end",
+                         f"{label}: มีวันที่สิ้นสุดแต่ไม่มีวันที่เริ่ม")
+                else:
+                    start = datetime.date.fromisoformat(item["due_date"])
+                    if end < start:
+                        warn("end_before_start", f"action_items[{i}].due_date_end",
+                             f"{label}: วันที่สิ้นสุด {end} อยู่ก่อนวันที่เริ่ม {start}")
+            except ValueError:
+                warn("bad_end_date", f"action_items[{i}].due_date_end",
+                     f"{label}: วันที่สิ้นสุด \"{item['due_date_end']}\" อ่านไม่ได้ จึงล้างค่าให้ (ระบุใหม่ด้วยตนเอง)")
+                item["due_date_end"] = None
         for key, label_t in (("due_time", "เวลา"), ("due_time_end", "เวลาสิ้นสุด")):
             if item[key] == "INVALID":
                 warn("bad_time", f"action_items[{i}].{key}", f"{label}: {label_t}อ่านไม่ได้ จึงล้างค่าให้")
                 item[key] = None
         if item["due_time"] and item["due_time_end"] and item["due_time_end"] <= item["due_time"]:
             warn("time_order", f"action_items[{i}].due_time_end", f"{label}: เวลาสิ้นสุดไม่หลังเวลาเริ่ม")
+        if item["due_time"] and item["due_date_end"] and not item["due_time_end"] and item["due_date_end"] != item["due_date"]:
+            warn("end_time_missing", f"action_items[{i}].due_time_end",
+                 f"{label}: มีวันที่สิ้นสุดและเวลาเริ่ม แต่ไม่มีเวลาสิ้นสุด (นัดใน Calendar จะจบเวลาเริ่มของวันสุดท้ายบวก 1 ชั่วโมง)")
         if (item["due_time"] or item["due_time_end"]) and not item["due_date"]:
             warn("time_without_date", f"action_items[{i}].due_date", f"{label}: มีเวลาแต่ไม่มีวันที่")
 
@@ -381,7 +401,14 @@ def _gemini_generate() -> Callable:
 
 
 def _parse_body(raw: str) -> MinutesBodyAI:
-    return MinutesBodyAI.model_validate_json(raw)
+    """schema ที่ส่งให้ Gemini บังคับทุกฟิลด์ แต่ตอนอ่านคำตอบยอมให้ขาด due_date_end ได้ (ฟิลด์ที่เพิ่มทีหลัง = ไม่มีวันสิ้นสุด)
+    ไม่ใส่ค่าเริ่มต้นใน schema เพราะค่า default ใน response_schema ของ Gemini ไม่แน่นอน"""
+    data = json.loads(raw)
+    if isinstance(data, dict):
+        for item in data.get("action_items") or []:
+            if isinstance(item, dict):
+                item.setdefault("due_date_end", None)
+    return MinutesBodyAI.model_validate(data)
 
 
 def generate_minutes_content(
@@ -457,13 +484,13 @@ def for_storage(content: dict) -> dict:
             key=lambda a: db.AGENDA_SECTIONS.index(a["section"]) if a.get("section") in db.AGENDA_SECTIONS else len(db.AGENDA_SECTIONS),
         ),
         "action_items": [
-            {k: it.get(k) for k in ("description", "assignee", "due_date", "due_time", "due_time_end", "evidence")}
+            {k: it.get(k) for k in ("description", "assignee", "due_date", "due_date_end", "due_time", "due_time_end", "evidence")}
             for it in content.get("action_items") or []
         ],
     }
 
 
-def generate_for_meeting(meeting_id: int, generate: Callable | None = None) -> dict:
+def generate_for_meeting(meeting_id: int, generate: Callable | None = None, user_id: int | None = None) -> dict:
     """ให้ AI ร่างรายงานของการประชุม แล้วเลื่อนสถานะเป็น draft — ถ้ามีฉบับร่างอยู่แล้วจะถูกแทนที่ (รายงาน 1 ฉบับต่อ 1 ประชุม
     ตาม SA) รายงานที่อนุมัติแล้วเขียนทับไม่ได้ ต้องยกเลิกการอนุมัติ (db.reopen_report) ก่อน
     ต้องยืนยัน transcript แล้วเท่านั้น (transcript_verified) หรือกำลังแก้ร่างอยู่ (draft)
@@ -483,6 +510,6 @@ def generate_for_meeting(meeting_id: int, generate: Callable | None = None) -> d
     stored = for_storage(content)
     from reports import continuity   # เติมวาระ 2, 3, 4.1 จากการประชุมครั้งก่อนที่เลือกไว้ (ถ้ามี) — ไม่ผ่าน AI
     full = for_storage({**stored, "agenda": stored["agenda"] + continuity.prefill_items(meeting)})
-    saved = db.save_report(meeting_id, full, _MODEL, PROMPT_NAME, ai_snapshot=stored)   # ai_snapshot = เฉพาะที่ AI ร่าง
+    saved = db.save_report(meeting_id, full, _MODEL, PROMPT_NAME, user_id=user_id)   # ฉบับที่ AI ร่างเก็บเป็นร่างฉบับ ai_draft ในตารางประวัติ
     db.set_meeting_status(meeting_id, "draft")
     return {**saved, "content": content}

@@ -28,7 +28,7 @@ def _due_text(action: dict) -> str:
     if action.get("assignee"):
         parts.append(f"ผู้รับผิดชอบ: {action['assignee']}")
     if action.get("due_date"):
-        when = str(action["due_date"])
+        when = str(action["due_date"]) + (f" ถึง {action['due_date_end']}" if action.get("due_date_end") else "")
         if action.get("due_time"):
             when += f" {action['due_time']}" + (f"-{action['due_time_end']}" if action.get("due_time_end") else "")
         parts.append(f"กำหนดส่ง: {when}")

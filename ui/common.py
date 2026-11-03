@@ -128,6 +128,17 @@ def show_flash():
 
 # ── ตัวบอกขั้นตอน ──
 
+def credit_text(user: dict, owner_id, owner_name, approved: bool, approved_by=None, approved_by_name=None) -> str:
+    """"สร้างโดย X · อนุมัติโดย Y" — คนที่เป็นตัวเองใช้คำว่า "คุณ" คนอื่นใช้ชื่อจากบัญชี Google (ไม่มีชื่อ = ไม่ระบุ)"""
+    def who(uid, name):
+        return "คุณ" if uid is not None and uid == user.get("user_id") else (name or "-")
+
+    text = f"สร้างโดย {who(owner_id, owner_name)}"
+    if approved:
+        text += f" · อนุมัติโดย {who(approved_by, approved_by_name)}"
+    return text
+
+
 def progress_text(status: str) -> str:
     """สถานะ + ลำดับขั้นเป็นบรรทัดเดียว (เลขขั้นตรงกับแท็บ ①–④ — แท็บคือแถบนำทางเดียวของหน้านี้)"""
     label = STATUS_LABEL.get(status, status)

@@ -218,7 +218,7 @@ def render(user: dict, detail: dict):
         if left.button("↩ กลับไปแก้ transcript", key=f"reopen_{mid}"):
             _reopen_dialog(user, mid, has_report=status == "draft")
     right.download_button("⬇ ดาวน์โหลด .txt", data=service.transcript_text(user, mid),
-                          file_name=f"transcript-{mid}.txt", mime="text/plain", key=f"dl_txt_{mid}")
+                          file_name=service.transcript_filename(meeting.get("title"), mid), mime="text/plain", key=f"dl_txt_{mid}")
 
 
 @st.dialog("กลับไปแก้ transcript")
