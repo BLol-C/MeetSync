@@ -299,6 +299,17 @@ class ServiceTests(TempDbCase):
         self.assertEqual(service.report_version(self.owner, mid, 1)["summary"], original)  # ฉบับ AI เดิมไม่เปลี่ยน
         self.assertEqual(vs[1]["saved_by"], self.owner["user_id"])
 
+    def test_history_records_who_saved_each_draft_with_their_google_name_and_email(self):
+        mid = self.draft()
+        self.edit_summary(mid, "แก้โดยเจ้าของ")
+        hist = service.report_history(self.owner, mid)                                   # ใหม่สุดก่อน: [แก้, AI ร่าง]
+        for v in hist:
+            self.assertEqual((v["saved_by_name"], v["saved_by_email"]), ("เจ้าของ", "owner@x.com"))
+        sid = db.get_report(mid)["summary_id"]
+        self.execute("UPDATE summary_versions SET saved_by = NULL WHERE summary_id = %s AND version_no = 1", (sid,))
+        first = list(reversed(service.report_history(self.owner, mid)))[0]
+        self.assertEqual((first["saved_by"], first["saved_by_name"], first["saved_by_email"]), (None, None, None))   # ไม่รู้ว่าใคร = ว่าง
+
     def test_saving_without_changing_anything_does_not_add_a_version(self):
         mid = self.draft()
         self.edit_summary(mid, "แก้ครั้งเดียว")
@@ -450,6 +461,47 @@ class ServiceTests(TempDbCase):
         self.assertEqual(f("  ...  ", 7, True), "meeting-minutes-7.pdf")                 # ไม่มีหัวข้อ/มีแต่อักขระที่ใช้ไม่ได้
         self.assertEqual(f(None, 7, False), "meeting-minutes-7 (ฉบับร่าง).pdf")
         self.assertLessEqual(len(f("ก" * 300, 7, True)), 84)                              # จำกัดความยาว (80 + ".pdf")
+
+    # ── ผู้สร้าง/ผู้อนุมัติ และเตือนชื่อซ้ำ ──
+
+    def test_meeting_list_and_credit_name_the_creator_and_the_approver(self):
+        mid = self.draft()
+        row = next(m for m in service.list_meetings(self.owner) if m["meeting_id"] == mid)
+        self.assertEqual((row["owner_user_id"], row["owner_name"], row["approved_by"], row["approved_by_name"]),
+                         (self.owner["user_id"], "เจ้าของ", None, None))                      # ยังไม่อนุมัติ = ยังไม่มีผู้อนุมัติ
+        service.approve_report(self.owner, mid, confirm_warnings=True)
+        row = next(m for m in service.list_meetings(self.owner) if m["meeting_id"] == mid)
+        self.assertEqual((row["approved_by"], row["approved_by_name"]), (self.owner["user_id"], "เจ้าของ"))
+        self.assertEqual(service.meeting_credit(self.owner, mid),
+                         {"owner_user_id": self.owner["user_id"], "owner_name": "เจ้าของ",
+                          "approved_by": self.owner["user_id"], "approved_by_name": "เจ้าของ"})
+        with self.assertRaises(ServiceError):
+            service.meeting_credit(self.other, mid)                                           # คนที่ดูไม่ได้ก็ดูผู้สร้างไม่ได้
+
+    def test_a_chair_sees_who_created_the_meeting_they_can_open(self):
+        mid = self.new_meeting()                                                              # สร้างโดย owner มี chair@x.com เป็นประธาน
+        row = next(m for m in service.list_meetings(self.chair_user) if m["meeting_id"] == mid)
+        self.assertEqual((row["owner_name"], row["owner_user_id"] == self.owner["user_id"]), ("เจ้าของ", True))
+
+    def test_next_meeting_number_follows_the_existing_format(self):
+        f = service.next_meeting_number
+        self.assertEqual(f(["3/2569", "1/2569"], 2), "4/2569")
+        self.assertEqual(f(["1", "2"], 2), "3")
+        self.assertEqual(f(["", None], 2), "3")                                              # ไม่มีเลขที่อ่านได้ = จำนวนที่มี + 1
+        self.assertEqual(f(["ครั้งแรก"], 1), "2")
+        self.assertEqual(f(["9/2569", "10/2569"], 2), "11/2569")                              # เทียบเป็นตัวเลข ไม่ใช่ข้อความ
+
+    def test_duplicate_title_suggests_the_next_number_but_only_when_it_helps(self):
+        title = "ประชุมซ้ำชื่อ"
+        self.assertIsNone(service.suggest_meeting_number(self.owner, title, ""))               # ยังไม่มีชื่อนี้
+        first = self.new_meeting(title=title, meeting_no="1/2569")
+        hint = service.suggest_meeting_number(self.owner, title, "")
+        self.assertEqual((hint["suggested"], hint["typed"], [e["meeting_id"] for e in hint["existing"]]), ("2/2569", "", [first]))
+        self.assertEqual(service.suggest_meeting_number(self.owner, f"  {title}  ", "")["suggested"], "2/2569")   # ไม่สนช่องว่างหัวท้าย
+        self.assertEqual(service.suggest_meeting_number(self.owner, title, "1/2569")["typed"], "1/2569")        # เลขซ้ำของเดิม = เตือน
+        self.assertIsNone(service.suggest_meeting_number(self.owner, title, "2/2569"))         # กรอกเลขที่ไม่ซ้ำแล้ว ไม่ต้องเตือน
+        self.assertIsNone(service.suggest_meeting_number(self.owner, "", ""))                  # ไม่มีชื่อ = ระบบตั้งชื่อจากวันเวลา ไม่ซ้ำอยู่แล้ว
+        self.assertIsNone(service.suggest_meeting_number(self.other, title, ""))               # ของคนอื่นที่ไม่เกี่ยวข้องไม่นับ
 
     def test_history_is_private_to_people_who_can_see_the_meeting(self):
         mid = self.draft()

@@ -109,6 +109,18 @@ class UiTests(TempDbCase):
         self.assertIn("สาระสำคัญ", first)
         self.assertNotIn(":red[~~", first)
 
+    def test_history_table_shows_who_and_their_email(self):
+        mid = self.meeting("draft")
+        content = service.get_report_view(self.user, mid)["report"]["content"]
+        service.save_report_draft(self.user, mid, {**content, "summary": "สรุปที่คนแก้ใหม่ทั้งหมด"})
+        at = self.app(m=mid)
+        table = next(d.value for d in at.dataframe if "ร่างฉบับที่" in d.value.columns)
+        self.assertEqual(list(table.columns), ["ร่างฉบับที่", "ชนิด", "เมื่อ", "โดย", "อีเมล", "สถานะ"])
+        self.assertEqual(table.iloc[0]["โดย"], self.user["name"])                      # ชื่อจากบัญชี Google ของคนที่กดบันทึก
+        self.assertEqual(table.iloc[0]["อีเมล"], self.user["email"])
+        box = next(x for x in at.selectbox if x.key == f"hist_{mid}_2_2")
+        self.assertFalse(any(self.user["name"] in o for o in box.options))              # รายการ "ดูย้อนหลัง" ยังไม่มีชื่อคน
+
     def test_use_button_only_for_other_drafts_of_an_editable_report(self):
         mid = self.meeting("draft")
         content = service.get_report_view(self.user, mid)["report"]["content"]
@@ -197,6 +209,61 @@ class UiTests(TempDbCase):
         self.assertEqual(db.get_meeting(mid)["title"], "ประชุมที่สร้างจากฟอร์ม")
         self.assertEqual(db.get_meeting(mid)["status"], "scheduled")
         self.assertIn("ประชุมที่สร้างจากฟอร์ม", at.title[0].value)
+
+    NEW_URL = "https://meet.google.com/zzz-yyyy-xxx"
+
+    def fill_new_form(self, at, title, no="", url=None):
+        at.text_input[0].set_value(url or self.NEW_URL)
+        at.text_input[1].set_value(title)
+        if no:
+            at.text_input[2].set_value(no)          # ลำดับในหน้าจอ: ลิงก์, ชื่อเรื่อง, ครั้งที่ (คอลัมน์ซ้าย) แล้วจึงหน่วยงาน, สถานที่ (คอลัมน์ขวา)
+        next(b for b in at.button if b.label == "สร้างการประชุม").click().run()
+
+    def test_same_title_warns_and_offers_the_next_number(self):
+        self.meeting("scheduled")                                                         # ชื่อ "ประชุมทดสอบหน้าเว็บ" ไม่มีครั้งที่
+        at = self.app(view="new")
+        self.fill_new_form(at, "ประชุมทดสอบหน้าเว็บ")
+        self.assertTrue(any("คุณมีการประชุมชื่อ" in v and "แนะนำตั้งเป็นครั้งที่ 2" in v for v in texts(at.warning)))
+        self.assertEqual(len(service.list_meetings(self.user)), 1)                         # ยังไม่สร้าง รอผู้ใช้เลือก
+        next(b for b in at.button if b.label == "ใช้ครั้งที่ 2").click().run()
+        created = [m for m in service.list_meetings(self.user) if m["meet_url"] == self.NEW_URL]
+        self.assertEqual([m["meeting_no"] for m in created], ["2"])                        # สร้างพร้อมเลขที่เสนอ
+
+    def test_same_title_can_still_be_created_as_typed_or_cancelled(self):
+        self.meeting("scheduled")
+        at = self.app(view="new")
+        self.fill_new_form(at, "ประชุมทดสอบหน้าเว็บ")
+        next(b for b in at.button if b.label == "ยกเลิก").click().run()
+        self.assertEqual(len(service.list_meetings(self.user)), 1)                         # ยกเลิก = ไม่สร้าง
+        at = self.app(view="new")
+        self.fill_new_form(at, "ประชุมทดสอบหน้าเว็บ")
+        next(b for b in at.button if b.label == "สร้างตามที่กรอกไว้").click().run()        # เตือนเฉย ๆ ไม่บังคับ
+        created = [m for m in service.list_meetings(self.user) if m["meet_url"] == self.NEW_URL]
+        self.assertEqual([m["meeting_no"] for m in created], [None])
+
+    def test_same_title_with_a_new_number_or_a_new_title_is_created_without_asking(self):
+        self.meeting("scheduled")
+        at = self.app(view="new")
+        self.fill_new_form(at, "ประชุมทดสอบหน้าเว็บ", no="5/2569")                          # กรอกครั้งที่แยกแล้ว
+        self.assertEqual([e.value for e in at.exception], [])
+        self.assertEqual(len([m for m in service.list_meetings(self.user) if m["meet_url"] == self.NEW_URL]), 1)
+        at = self.app(view="new")
+        self.fill_new_form(at, "ชื่อใหม่ไม่ซ้ำ", url="https://meet.google.com/aaa-bbbb-ccc")     # ลิงก์ใหม่ (ลิงก์เดิมถูกใช้ไปแล้วด้านบน)
+        self.assertEqual(len([m for m in service.list_meetings(self.user) if m["title"] == "ชื่อใหม่ไม่ซ้ำ"]), 1)
+
+    def test_home_cards_and_the_meeting_page_say_who_created_and_approved(self):
+        mine = self.meeting("approved")
+        other = {"user_id": db.upsert_user("dev:other@x.com", "other@x.com", "คนอื่น", None), "email": "other@x.com", "name": "คนอื่น"}
+        theirs = service.create_meeting(other, meet_url=URL, title="ของคนอื่นที่ฉันเป็นเลขา", people=[
+            {"display_name": "สมหญิง", "role": "secretary", "email": self.user["email"]}])
+        at = self.app()
+        captions = texts(at.caption)
+        self.assertIn("สร้างโดย คุณ · อนุมัติโดย คุณ", captions)                            # ของตัวเอง ใช้คำว่า "คุณ"
+        self.assertIn("สร้างโดย คนอื่น", captions)                                         # ที่คนอื่นสร้าง ใช้ชื่อจากบัญชี Google
+        page = self.app(m=mine)
+        self.assertTrue(any("อนุมัติแล้ว" in c and "สร้างโดย คุณ · อนุมัติโดย คุณ" in c for c in texts(page.caption)))
+        page2 = self.app(m=theirs)
+        self.assertTrue(any("สร้างโดย คนอื่น" in c and "อนุมัติโดย" not in c for c in texts(page2.caption)))   # ยังไม่อนุมัติ ไม่มีอนุมัติโดย
 
     def test_creating_with_an_existing_link_asks_before_making_a_duplicate(self):
         existing = self.meeting("scheduled")

@@ -51,7 +51,12 @@ def people_column_config() -> dict:
     }
 
 
-def _create(user: dict, payload: dict, force: bool = False):
+def _create(user: dict, payload: dict, force: bool = False, title_checked: bool = False):
+    if not title_checked:
+        hint = service.suggest_meeting_number(user, payload["title"], payload["meeting_no"])
+        if hint:
+            st.session_state["_title_pending"] = {"payload": payload, "hint": hint}
+            st.rerun()
     dups = service.meetings_with_url(user, payload["meet_url"])
     if dups and not force:
         st.session_state["_dup_pending"] = {"payload": payload, "dups": dups}
@@ -64,6 +69,32 @@ def _create(user: dict, payload: dict, force: bool = False):
     st.session_state.pop("_dup_pending", None)
     common.flash("success", "สร้างการประชุมแล้ว — ตรวจรายชื่อผู้เข้าร่วม แล้วไปแท็บ “② บอท” เพื่อเริ่มบอทเมื่อถึงเวลาประชุม")
     common.go("meeting", meeting_id)
+
+
+def _render_title_choice(user: dict):
+    """ชื่อเรื่องซ้ำกับการประชุมที่มีอยู่และ "ครั้งที่" ว่าง/ซ้ำ: เตือนและเสนอเลขถัดไป (ไม่บังคับ — เลือกสร้างตามที่กรอกได้)"""
+    pending = st.session_state["_title_pending"]
+    hint, payload = pending["hint"], pending["payload"]
+    st.title("สร้างการประชุมใหม่")
+    n = len(hint["existing"])
+    st.warning(
+        f"คุณมีการประชุมชื่อ “{common.md_escape(payload['title'].strip())}” อยู่แล้ว {n} ครั้ง — "
+        + (f"ครั้งที่ “{common.md_escape(hint['typed'])}” ซ้ำกับของเดิม " if hint["typed"] else "ยังไม่ได้ระบุครั้งที่ ")
+        + f"แนะนำตั้งเป็นครั้งที่ {hint['suggested']} เพื่อแยกจากครั้งก่อนได้ชัดเจน"
+    )
+    for e in hint["existing"][-5:]:
+        no = f"ครั้งที่ {e['meeting_no']}" if e["meeting_no"] else "ไม่ได้ระบุครั้งที่"
+        st.markdown(f"- {no} · {common.STATUS_LABEL.get(e['status'], e['status'])} · {common.thai_date(e['started_at'])}")
+    c1, c2, c3 = st.columns(3)
+    if c1.button(f"ใช้ครั้งที่ {hint['suggested']}", type="primary", width="stretch"):
+        st.session_state.pop("_title_pending", None)
+        _create(user, {**payload, "meeting_no": hint["suggested"]}, title_checked=True)
+    if c2.button("สร้างตามที่กรอกไว้", width="stretch"):
+        st.session_state.pop("_title_pending", None)
+        _create(user, payload, title_checked=True)
+    if c3.button("ยกเลิก", width="stretch"):
+        st.session_state.pop("_title_pending", None)
+        st.rerun()
 
 
 def _render_duplicate_choice(user: dict):
@@ -90,6 +121,9 @@ def _render_duplicate_choice(user: dict):
 
 
 def render(user: dict):
+    if "_title_pending" in st.session_state:
+        _render_title_choice(user)
+        return
     if "_dup_pending" in st.session_state:
         _render_duplicate_choice(user)
         return

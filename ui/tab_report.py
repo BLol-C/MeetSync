@@ -186,6 +186,8 @@ def _history_panel(user: dict, mid: int, editable: bool = False):
         st.dataframe(
             pd.DataFrame([{"ร่างฉบับที่": v["version_no"], "ชนิด": history.KIND_LABEL.get(v["kind"], history.OTHER_KIND),
                            "เมื่อ": f"{common.thai_date(v['saved_at'])} {v['saved_at']:%H:%M}",
+                           "โดย": v.get("saved_by_name") or "-",          # ชื่อจากบัญชี Google (ไม่มีข้อมูล เช่นฉบับที่ระบบสร้างย้อนหลัง = "-")
+                           "อีเมล": v.get("saved_by_email") or "-",
                            "สถานะ": "ใช้อยู่" if v.get("is_current") else ""}
                           for v in versions]),
             hide_index=True, width="stretch", height=common.table_height(len(versions), max_px=260))

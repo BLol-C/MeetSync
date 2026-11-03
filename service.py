@@ -126,6 +126,48 @@ def list_meetings(user: dict) -> list[dict]:
     return db.list_meetings(user["user_id"], user.get("email"))
 
 
+def meeting_credit(user: dict, meeting_id: int) -> dict:
+    """ผู้สร้างและผู้อนุมัติของการประชุม (ชื่อจากบัญชี Google) ไว้แสดงที่หัวหน้าการประชุม"""
+    meeting_for(user, meeting_id)
+    return db.get_meeting_credit(meeting_id)
+
+
+_MEETING_NO_RE = re.compile(r"^(\d+)(?:\s*/\s*(\d+))?$")
+
+
+def _norm_title(title: str | None) -> str:
+    return " ".join((title or "").split()).casefold()
+
+
+def next_meeting_number(numbers: list[str], count: int) -> str:
+    """เลข "ครั้งที่" ถัดไปจากที่มีอยู่: อ่านเลขนำหน้าของรูปแบบ N หรือ N/ปี (เช่น 3/2569 -> 4/2569) ถ้าไม่มีเลขที่อ่านได้เลย
+    ใช้จำนวนการประชุมชื่อเดียวกัน + 1 (ครั้งที่เว้นว่างถือเป็นครั้งแรก)"""
+    parsed = [(int(m.group(1)), m.group(2)) for n in numbers if (m := _MEETING_NO_RE.match((n or "").strip()))]
+    if not parsed:
+        return str(count + 1)
+    top, year = max(parsed, key=lambda p: p[0])
+    return f"{top + 1}/{year}" if year else str(top + 1)
+
+
+def suggest_meeting_number(user: dict, title: str | None, meeting_no: str | None) -> dict | None:
+    """ก่อนสร้างการประชุม: ถ้าชื่อเรื่องซ้ำกับการประชุมที่ผู้ใช้มีอยู่แล้ว และ "ครั้งที่" ที่กรอกว่างหรือซ้ำกับของเดิม
+    คืน {"existing": [...], "typed": ครั้งที่ที่กรอก, "suggested": เลขที่เสนอ} ไว้เตือนและเสนอเลขถัดไป — ไม่ซ้ำ/กรอกเลขที่ไม่ซ้ำแล้ว/ไม่มีชื่อเรื่อง = None
+    (เป็นแค่คำเตือน ไม่บังคับ ผู้ใช้เลือกสร้างตามที่กรอกได้)"""
+    key = _norm_title(title)
+    if not key:
+        return None
+    same = sorted((m for m in list_meetings(user) if _norm_title(m["title"]) == key), key=lambda m: m["started_at"])
+    if not same:
+        return None
+    typed = (meeting_no or "").strip()
+    used = {(m["meeting_no"] or "").strip() for m in same} - {""}
+    if typed and typed not in used:
+        return None
+    return {"existing": [{"meeting_id": m["meeting_id"], "meeting_no": m["meeting_no"], "started_at": m["started_at"], "status": m["status"]}
+                         for m in same],
+            "typed": typed, "suggested": next_meeting_number([m["meeting_no"] for m in same], len(same))}
+
+
 def meetings_with_url(user: dict, meet_url: str) -> list[dict]:
     """การประชุมของผู้ใช้ที่ใช้ลิงก์ Meet เดียวกัน (ไว้เตือนก่อนสร้างซ้ำ) — เทียบโดยตัดพารามิเตอร์ท้ายลิงก์"""
     def key(u: str) -> str:

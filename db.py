@@ -540,6 +540,24 @@ def get_meeting(meeting_id: int) -> dict | None:
         conn.close()
 
 
+def get_meeting_credit(meeting_id: int) -> dict | None:
+    """ผู้สร้าง (เจ้าของ) และผู้อนุมัติของการประชุม: {owner_user_id, owner_name, approved_by, approved_by_name} — ชื่อจากบัญชี Google"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT m.owner_user_id, COALESCE(NULLIF(o.name, ''), o.email) AS owner_name,
+                          s.approved_by, COALESCE(NULLIF(a.name, ''), a.email) AS approved_by_name
+                   FROM meetings m
+                        LEFT JOIN users o ON o.user_id = m.owner_user_id
+                        LEFT JOIN summaries s ON s.meeting_id = m.meeting_id AND s.approved_at IS NOT NULL
+                        LEFT JOIN users a ON a.user_id = s.approved_by
+                   WHERE m.meeting_id = %s""", (meeting_id,))
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
 def is_meeting_manager(meeting: dict, user_id: int | None, email: str | None) -> bool:
     """เจ้าของการประชุม หรือผู้เข้าร่วมที่เป็นประธาน/เลขาและอีเมลตรงกับผู้ใช้ — จัดการประชุมนี้ได้
     (เทียบอีเมลแบบไม่สนตัวพิมพ์เล็ก/ใหญ่)
@@ -569,9 +587,14 @@ def list_meetings(owner_user_id: int, email: str | None = None, limit: int = 100
         with conn.cursor() as cur:
             cur.execute(
                 """SELECT m.meeting_id, m.meet_url, m.title, m.meeting_no, m.org_name, m.started_at, m.ended_at, m.status, m.owner_user_id,
+                          COALESCE(NULLIF(o.name, ''), o.email) AS owner_name,
+                          s.approved_by, COALESCE(NULLIF(a.name, ''), a.email) AS approved_by_name,
                           (SELECT COUNT(*) FROM transcript_segments t
                             WHERE t.meeting_id = m.meeting_id AND t.deleted = FALSE) AS segment_count
                    FROM meetings m
+                        LEFT JOIN users o ON o.user_id = m.owner_user_id
+                        LEFT JOIN summaries s ON s.meeting_id = m.meeting_id AND s.approved_at IS NOT NULL
+                        LEFT JOIN users a ON a.user_id = s.approved_by
                    WHERE m.owner_user_id = %s
                       OR EXISTS (SELECT 1 FROM speakers p
                                  WHERE p.meeting_id = m.meeting_id AND p.role IN ('chair', 'secretary')
@@ -1224,7 +1247,7 @@ def list_report_versions(summary_id: int) -> list[dict]:
         with conn.cursor() as cur:
             cur.execute(
                 """SELECT v.version_no, v.kind, v.saved_by, v.saved_at, COALESCE(u.name, u.email) AS saved_by_name,
-                          (v.version_no = s.current_version_no) AS is_current
+                          u.email AS saved_by_email, (v.version_no = s.current_version_no) AS is_current
                    FROM summary_versions v JOIN summaries s ON s.summary_id = v.summary_id
                         LEFT JOIN users u ON u.user_id = v.saved_by
                    WHERE v.summary_id = %s ORDER BY v.version_no DESC""", (summary_id,))
