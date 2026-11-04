@@ -392,7 +392,7 @@ class WorkflowTests(TempDbCase):
         self.assertEqual(self.rows("SELECT COUNT(*) n FROM summaries WHERE meeting_id=%s", (mid,))[0]["n"], 1)
         rep = db.get_report(mid)
         self.assertEqual((rep["content"]["summary"], rep["content"]["agenda"]), ("รอบสอง", []))
-        self.assertEqual(self.rows("SELECT COUNT(*) n FROM agenda_items WHERE summary_id=%s", (rep["summary_id"],))[0]["n"], 0)
+        self.assertEqual(self.rows("SELECT COUNT(*) n FROM agenda_items WHERE summary_id=%s AND section <> 'other'", (rep["summary_id"],))[0]["n"], 0)
 
     def test_approve_is_atomic_and_locks_the_report(self):
         uid, mid = self.to_draft()
@@ -477,6 +477,56 @@ class WorkflowTests(TempDbCase):
         first, second = db.get_report(mid)["content"]["action_items"]
         self.assertEqual((first["google_calendar_event_id"], first["google_calendar_link"]), ("evt-1", "https://calendar.google.com/e/1"))
         self.assertEqual((second["google_calendar_event_id"], second["google_calendar_link"]), (None, None))
+
+    def test_other_matters_is_stored_as_one_agenda_row_not_a_summaries_column(self):
+        uid, mid = self.to_draft()
+        db.save_report(mid, self.report_content(other_matters="นัดครั้งหน้า"))
+        cols = {r["COLUMN_NAME"] for r in self.rows(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'summaries'")}
+        self.assertNotIn("other_matters", cols)
+        rep = db.get_report(mid)
+        self.assertEqual(rep["content"]["other_matters"], "นัดครั้งหน้า")
+        self.assertEqual([a["title"] for a in rep["content"]["agenda"]], ["งบ", "ห้อง"])      # ไม่ปนเข้ารายการวาระ 1-4
+        rows = self.rows("SELECT section, title, discussion, order_no FROM agenda_items WHERE summary_id=%s ORDER BY order_no",
+                         (rep["summary_id"],))
+        self.assertEqual([r["section"] for r in rows], ["consider_new", "consider_new", "other"])
+        self.assertEqual((rows[-1]["title"], rows[-1]["discussion"], rows[-1]["order_no"]), ("เรื่องอื่น ๆ", "นัดครั้งหน้า", 3))
+        # แก้เป็นว่าง = ไม่มีแถว; ใช้ร่างฉบับเก่าที่มีข้อความ = แถวกลับมา
+        db.update_report_content(rep["summary_id"], self.report_content(other_matters=None), uid)
+        self.assertIsNone(db.get_report(mid)["content"]["other_matters"])
+        self.assertEqual(self.rows("SELECT COUNT(*) n FROM agenda_items WHERE summary_id=%s AND section='other'", (rep["summary_id"],))[0]["n"], 0)
+        db.use_report_version(rep["summary_id"], 1)
+        self.assertEqual(db.get_report(mid)["content"]["other_matters"], "นัดครั้งหน้า")
+
+    def test_old_database_other_matters_column_is_moved_into_agenda_and_dropped(self):
+        uid, mid = self.to_draft()
+        db.save_report(mid, self.report_content(other_matters=None))
+        sid = db.get_report(mid)["summary_id"]
+        self.execute("ALTER TABLE summaries ADD COLUMN other_matters TEXT NULL")                 # หน้าตาของฐานข้อมูลเก่า
+        self.execute("UPDATE summaries SET other_matters = %s WHERE summary_id = %s", ("  ข้อความเก่า  ", sid))
+        db.init_schema()
+        cols = {r["COLUMN_NAME"] for r in self.rows(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'summaries'")}
+        self.assertNotIn("other_matters", cols)
+        self.assertEqual(db.get_report(mid)["content"]["other_matters"], "ข้อความเก่า")
+        db.init_schema()                                                                          # รันซ้ำไม่เพิ่มแถวซ้ำ
+        self.assertEqual(self.rows("SELECT COUNT(*) n FROM agenda_items WHERE summary_id=%s AND section='other'", (sid,))[0]["n"], 1)
+
+    def test_invite_sent_is_remembered_per_event_and_cleared_with_it(self):
+        uid = db.upsert_user("sub-inv", "inv@x.com", "I", None)
+        mid = db.create_meeting_setup(uid, meet_url=URL)
+        db.save_report(mid, {"summary": "x", "agenda": [], "other_matters": None, "action_items": [
+            {"description": "ก", "assignee": "Alice", "due_date": "2026-10-16", "evidence": []},
+            {"description": "ข", "assignee": "Bob", "due_date": "2026-10-17", "evidence": []}]})
+        ids = [i["action_item_id"] for i in db.get_report(mid)["content"]["action_items"]]
+        self.assertFalse(db.meeting_invites_sent(mid))
+        db.mark_action_item_synced(ids[0], "evt-1", "https://x/1")                       # ส่งนัดโดยไม่ส่งเชิญ
+        self.assertFalse(db.meeting_invites_sent(mid))
+        db.mark_action_item_synced(ids[1], "evt-2", "https://x/2", invite_sent=True)
+        self.assertTrue(db.meeting_invites_sent(mid))
+        self.execute("UPDATE action_items SET google_calendar_event_id = NULL, google_calendar_link = NULL, invite_sent = 0 "
+                     "WHERE action_item_id = %s", (ids[1],))
+        self.assertFalse(db.meeting_invites_sent(mid))
 
     def test_calendar_token_lives_on_the_user(self):
         a = db.upsert_user("sub-t1", "t1@x.com", "T1", None)

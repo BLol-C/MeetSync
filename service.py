@@ -682,6 +682,11 @@ def calendar_connected(user: dict) -> bool:
     return calendar_auth.is_connected(user["user_id"])
 
 
+def invites_sent(meeting_id: int) -> bool:
+    """ส่งอีเมลเชิญผู้รับผิดชอบไปแล้วหรือยัง (ไว้ให้ช่องติ๊กในแท็บ ⑤ แสดงค่าจริงหลังอนุมัติ)"""
+    return db.meeting_invites_sent(meeting_id)
+
+
 def sync_calendar(user: dict, meeting_id: int, send_invites: bool = False) -> list[dict]:
     """ส่งงานของรายงานที่อนุมัติแล้วเข้า Google Calendar ของผู้ใช้ — เฉพาะงานที่มีวันและยังไม่เคยส่ง (เรียกซ้ำได้ ไม่สร้างนัดซ้ำ)
     งานไม่มีวันถูกข้ามเฉย ๆ ส่งไม่สำเร็จรายการไหน ไม่ทำให้รายการอื่นล้ม คืนผลรายงาน [{description, ok, error?, action?}]"""

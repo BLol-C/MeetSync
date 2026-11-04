@@ -96,7 +96,6 @@ CREATE TABLE summaries (
     summary_id         INT AUTO_INCREMENT PRIMARY KEY,
     meeting_id         INT NOT NULL UNIQUE,
     executive_summary  TEXT NOT NULL,
-    other_matters      TEXT NULL,
     model_used         VARCHAR(50) NULL,
     prompt_version     VARCHAR(20) NULL,
     generated_at       DATETIME NOT NULL,
@@ -174,11 +173,14 @@ _STATUS_TRANSITIONS: dict[str, set[str]] = {
 
 ROLES = ("chair", "secretary", "attendee", "guest")  # ประธาน / เลขา / กรรมการ-สมาชิก (ผู้มาประชุม) / ผู้เข้าร่วม (ไม่ใช่กรรมการ)
 UNIQUE_ROLES = ("chair", "secretary")               # แต่ละการประชุมมีได้คนเดียว
-# หมวดของวาระในรายงานตามแบบฟอร์ม (วาระที่ 5 เรื่องอื่น ๆ เก็บเป็นข้อความ summaries.other_matters ไม่ใช่แถววาระ)
+# หมวดของวาระในรายงานตามแบบฟอร์ม (วาระที่ 5 เรื่องอื่น ๆ เก็บเป็นแถวใน agenda_items หมวด 'other' แถวเดียว ไม่อยู่ในรายการด้านล่าง
+# เพราะโปรแกรมแยกออกมาเป็น content["other_matters"] เหมือนเดิม)
 #   inform = วาระ 1 แจ้งให้ที่ประชุมทราบ · approve_prev = วาระ 2 รับรองรายงานครั้งก่อน · followup = วาระ 3 เรื่องสืบเนื่อง
 #   consider_old = วาระ 4.1 เรื่องค้างพิจารณา · consider_new = วาระ 4.2 เรื่องพิจารณาใหม่ (ค่าเริ่มต้น — เรื่องที่ AI สรุป)
 AGENDA_SECTIONS = ("inform", "approve_prev", "followup", "consider_old", "consider_new")
 DEFAULT_AGENDA_SECTION = "consider_new"
+OTHER_SECTION = "other"                             # วาระ 5 เรื่องอื่น ๆ (แถวเดียว: discussion = ข้อความ)
+OTHER_TITLE = "เรื่องอื่น ๆ"
 ATTENDANCE = ("invited", "present", "absent")       # เชิญไว้ (ยังไม่ยืนยัน) / เข้าร่วม / ไม่มา
 
 
@@ -259,6 +261,8 @@ def init_schema():
                 cur.execute(_VERSIONS_DDL)
                 _ensure_pointer_column(cur)
                 _ensure_task_end_date_column(cur)
+                _ensure_invite_sent_column(cur)
+                _move_other_matters_to_agenda(cur)
                 _backfill_versions(cur)
                 cur.execute("""UPDATE summaries s SET current_version_no =
                                (SELECT MAX(v.version_no) FROM summary_versions v WHERE v.summary_id = s.summary_id)
@@ -1108,6 +1112,13 @@ def _insert_report_rows(cur, summary_id: int, content: dict):
              (a.get("title") or "")[:255], a.get("discussion") or None,
              a.get("resolution") or None, _dump_list(a.get("evidence"))),
         )
+    other = (content.get("other_matters") or "").strip()
+    if other:
+        cur.execute(
+            """INSERT INTO agenda_items (summary_id, order_no, section, title, discussion)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (summary_id, len(content.get("agenda") or []) + 1, OTHER_SECTION, OTHER_TITLE, other),
+        )
     for it in content.get("action_items") or []:
         cur.execute(
             """INSERT INTO action_items
@@ -1153,12 +1164,43 @@ def _drop_ai_snapshot_column(cur):
         cur.execute("ALTER TABLE summaries DROP COLUMN ai_snapshot")
 
 
+def _move_other_matters_to_agenda(cur):
+    """ฐานข้อมูลที่ยังมีคอลัมน์ summaries.other_matters: ย้ายข้อความไปเป็นแถว agenda_items หมวด 'other' แล้วลบคอลัมน์
+    (ลบเฉพาะเมื่อย้ายครบ เรียกซ้ำได้ ต้องทำก่อนสร้างรุ่นย้อนหลัง เพราะรุ่นอ่านเนื้อหาจากแถววาระ)"""
+    cur.execute("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() "
+                "AND TABLE_NAME = 'summaries' AND COLUMN_NAME = 'other_matters'")
+    if cur.fetchone() is None:
+        return
+    cur.execute("SELECT summary_id, other_matters FROM summaries WHERE other_matters IS NOT NULL AND TRIM(other_matters) <> ''")
+    for row in cur.fetchall():
+        sid = row["summary_id"]
+        cur.execute("SELECT 1 FROM agenda_items WHERE summary_id = %s AND section = %s", (sid, OTHER_SECTION))
+        if cur.fetchone():
+            continue
+        cur.execute("SELECT COALESCE(MAX(order_no), 0) + 1 AS n FROM agenda_items WHERE summary_id = %s", (sid,))
+        cur.execute(
+            """INSERT INTO agenda_items (summary_id, order_no, section, title, discussion)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (sid, cur.fetchone()["n"], OTHER_SECTION, OTHER_TITLE, row["other_matters"].strip()),
+        )
+    cur.execute("ALTER TABLE summaries DROP COLUMN other_matters")
+
+
 def _ensure_task_end_date_column(cur):
     """วันที่สิ้นสุดของงาน/นัดหมาย (action_items.due_date_end) — ว่าง = วันเดียวกับวันเริ่ม"""
     cur.execute("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() "
                 "AND TABLE_NAME = 'action_items' AND COLUMN_NAME = 'due_date_end'")
     if cur.fetchone() is None:
         cur.execute("ALTER TABLE action_items ADD COLUMN due_date_end DATE NULL AFTER due_date")
+
+
+def _ensure_invite_sent_column(cur):
+    """action_items.invite_sent = ตอนสร้างนัดได้ขอให้ Google ส่งอีเมลเชิญจริง (1) หรือไม่ (0)
+    นัดที่ส่งไปก่อนมีคอลัมน์นี้ไม่รู้ค่าเดิม จึงเป็น 0"""
+    cur.execute("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() "
+                "AND TABLE_NAME = 'action_items' AND COLUMN_NAME = 'invite_sent'")
+    if cur.fetchone() is None:
+        cur.execute("ALTER TABLE action_items ADD COLUMN invite_sent TINYINT(1) NOT NULL DEFAULT 0")
 
 
 def _ensure_pointer_column(cur):
@@ -1272,8 +1314,13 @@ def get_report_version(summary_id: int, version_no: int) -> dict | None:
 def _report_row_to_dict(cur, row: dict) -> dict:
     sid = row["summary_id"]
     cur.execute("SELECT * FROM agenda_items WHERE summary_id = %s ORDER BY order_no, agenda_item_id", (sid,))
-    agenda = [{"section": a["section"], "title": a["title"], "discussion": a["discussion"] or "",
-               "resolution": a["resolution"], "evidence": _json_list(a["evidence"])} for a in cur.fetchall()]
+    agenda, other_matters = [], None
+    for a in cur.fetchall():
+        if a["section"] == OTHER_SECTION:
+            other_matters = other_matters or a["discussion"] or None      # วาระ 5 แยกออกมาเป็นข้อความเหมือนเดิม
+            continue
+        agenda.append({"section": a["section"], "title": a["title"], "discussion": a["discussion"] or "",
+                       "resolution": a["resolution"], "evidence": _json_list(a["evidence"])})
     cur.execute("SELECT * FROM action_items WHERE summary_id = %s ORDER BY action_item_id", (sid,))
     actions = []
     for a in cur.fetchall():
@@ -1294,7 +1341,7 @@ def _report_row_to_dict(cur, row: dict) -> dict:
         "model_used": row["model_used"], "prompt_version": row["prompt_version"],
         "generated_at": row["generated_at"], "edited_at": row["edited_at"],
         "content": {"summary": row["executive_summary"], "agenda": agenda,
-                    "other_matters": row["other_matters"], "action_items": actions},
+                    "other_matters": other_matters, "action_items": actions},
     }
 
 
@@ -1320,13 +1367,13 @@ def save_report(
     with _tx() as cur:
         cur.execute("SELECT summary_id, approved_at FROM summaries WHERE meeting_id = %s FOR UPDATE", (meeting_id,))
         last = cur.fetchone()
-        fields = (content.get("summary") or "", content.get("other_matters") or None, model_used, prompt_version)
+        fields = (content.get("summary") or "", model_used, prompt_version)
         if last and last["approved_at"] is not None:
             raise ValueError("รายงานอนุมัติแล้ว — ต้องยกเลิกการอนุมัติก่อนจึงจะสร้างใหม่ได้")
         if last:
             sid = last["summary_id"]
             cur.execute(
-                """UPDATE summaries SET executive_summary = %s, other_matters = %s,
+                """UPDATE summaries SET executive_summary = %s,
                           model_used = %s, prompt_version = %s, generated_at = NOW(), edited_at = NULL
                    WHERE summary_id = %s""",
                 (*fields, sid),
@@ -1336,8 +1383,8 @@ def save_report(
         else:
             cur.execute(
                 """INSERT INTO summaries
-                   (meeting_id, executive_summary, other_matters, model_used, prompt_version, generated_at)
-                   VALUES (%s, %s, %s, %s, %s, NOW())""",
+                   (meeting_id, executive_summary, model_used, prompt_version, generated_at)
+                   VALUES (%s, %s, %s, %s, NOW())""",
                 (meeting_id, *fields),
             )
             sid = cur.lastrowid
@@ -1354,8 +1401,8 @@ def update_report_content(summary_id: int, content: dict, user_id: int | None = 
         if not row or row["approved_at"] is not None:
             return False
         cur.execute(
-            "UPDATE summaries SET executive_summary = %s, other_matters = %s, edited_at = NOW() WHERE summary_id = %s",
-            (content.get("summary") or "", content.get("other_matters") or None, summary_id),
+            "UPDATE summaries SET executive_summary = %s, edited_at = NOW() WHERE summary_id = %s",
+            (content.get("summary") or "", summary_id),
         )
         cur.execute("DELETE FROM agenda_items WHERE summary_id = %s", (summary_id,))
         cur.execute("DELETE FROM action_items WHERE summary_id = %s", (summary_id,))
@@ -1380,9 +1427,9 @@ def use_report_version(summary_id: int, version_no: int) -> bool | None:
             return False
         content = json.loads(picked["content"])
         cur.execute(
-            "UPDATE summaries SET executive_summary = %s, other_matters = %s, edited_at = NOW(), current_version_no = %s "
+            "UPDATE summaries SET executive_summary = %s, edited_at = NOW(), current_version_no = %s "
             "WHERE summary_id = %s",
-            (content["summary"], content["other_matters"], version_no, summary_id),
+            (content["summary"], version_no, summary_id),
         )
         cur.execute("DELETE FROM agenda_items WHERE summary_id = %s", (summary_id,))
         cur.execute("DELETE FROM action_items WHERE summary_id = %s", (summary_id,))
@@ -1427,7 +1474,7 @@ def reopen_report(meeting_id: int, user_id: int | None = None) -> bool:
         )
         cur.execute(
             """UPDATE action_items a JOIN summaries s ON s.summary_id = a.summary_id
-               SET a.google_calendar_event_id = NULL, a.google_calendar_link = NULL WHERE s.meeting_id = %s""",
+               SET a.google_calendar_event_id = NULL, a.google_calendar_link = NULL, a.invite_sent = 0 WHERE s.meeting_id = %s""",
             (meeting_id,),
         )
         cur.execute("SELECT summary_id FROM summaries WHERE meeting_id = %s", (meeting_id,))
@@ -1491,21 +1538,36 @@ def apply_calendar_changes(summary_id: int, schedules: dict[int, dict], cleared:
             changed += cur.rowcount
         for item_id in cleared:
             cur.execute(
-                """UPDATE action_items SET google_calendar_event_id = NULL, google_calendar_link = NULL
+                """UPDATE action_items SET google_calendar_event_id = NULL, google_calendar_link = NULL, invite_sent = 0
                    WHERE action_item_id = %s AND summary_id = %s""", (item_id, summary_id))
         if changed:
             _record_version(cur, summary_id, "calendar_sync", _current_content(cur, summary_id), user_id)
     return changed
 
 
-def mark_action_item_synced(action_item_id: int, event_id: str, link: str | None = None):
+def mark_action_item_synced(action_item_id: int, event_id: str, link: str | None = None, invite_sent: bool = False):
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """UPDATE action_items SET google_calendar_event_id = %s, google_calendar_link = %s
+                """UPDATE action_items SET google_calendar_event_id = %s, google_calendar_link = %s, invite_sent = %s
                    WHERE action_item_id = %s""",
-                (event_id, link, action_item_id),
+                (event_id, link, 1 if invite_sent else 0, action_item_id),
             )
+    finally:
+        conn.close()
+
+
+def meeting_invites_sent(meeting_id: int) -> bool:
+    """มีนัดของการประชุมนี้ที่ส่งอีเมลเชิญไปแล้วหรือไม่ (นัดที่ยังอยู่ใน Calendar เท่านั้น)"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT 1 FROM action_items a JOIN summaries s ON s.summary_id = a.summary_id
+                   WHERE s.meeting_id = %s AND a.invite_sent = 1 AND a.google_calendar_event_id IS NOT NULL LIMIT 1""",
+                (meeting_id,),
+            )
+            return cur.fetchone() is not None
     finally:
         conn.close()
