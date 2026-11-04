@@ -204,8 +204,12 @@ def render(user: dict, detail: dict):
     )
     pending = [it for it in items if it.get("due_date") and not it.get("google_calendar_event_id")]
     # อนุมัติแล้ว และส่งครบแล้ว = ตัวเลือกนี้ไม่มีผลอีก จึงล็อกไว้ (ยังใช้ได้เมื่อมีงานค้างให้กดส่งซ้ำ)
-    invites = st.checkbox("ส่งอีเมลเชิญผู้รับผิดชอบที่มีอีเมลในรายชื่อด้วย", value=_invites_default(), key=f"cal_invites_{mid}",
-                          disabled=approved and not pending)
+    if approved and not pending:
+        # ล็อกและแสดงค่าที่เกิดขึ้นจริงตอนส่ง (อ่านจากฐานข้อมูล ไม่ใช่ค่าเริ่มต้น) — ใช้ key แยก กันค่าเก่าค้างใน session
+        invites = st.checkbox("ส่งอีเมลเชิญผู้รับผิดชอบที่มีอีเมลในรายชื่อด้วย", value=service.invites_sent(mid),
+                              key=f"cal_invites_done_{mid}_{tab_report._rev(mid)}", disabled=True)
+    else:
+        invites = st.checkbox("ส่งอีเมลเชิญผู้รับผิดชอบที่มีอีเมลในรายชื่อด้วย", value=_invites_default(), key=f"cal_invites_{mid}")
 
     edited_items = tab_report.actions_from_df(edited)
 

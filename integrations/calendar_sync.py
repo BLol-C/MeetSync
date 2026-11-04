@@ -123,7 +123,8 @@ def create_event(action_item_id: int, user_id: int, send_invites: bool = False, 
     service = service or _calendar_service(user_id)
     event = service.events().insert(calendarId="primary", body=body, sendUpdates="all" if send_invites else "none").execute()
     link = event.get("htmlLink")
-    db.mark_action_item_synced(action_item_id, event["id"], link)
+    # จดว่าส่งเชิญจริงเฉพาะเมื่อขอส่ง และนัดนี้มีผู้รับเชิญ (ไม่มีอีเมล = ไม่มีอีเมลเชิญไปไหน)
+    db.mark_action_item_synced(action_item_id, event["id"], link, invite_sent=bool(send_invites and email))
     return {"action": "created", "event_id": event["id"], "link": link}
 
 

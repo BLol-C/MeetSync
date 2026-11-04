@@ -684,8 +684,12 @@ class UiTests(TempDbCase):
             self.assertTrue(any("อนุมัติแล้วโดย" in v for v in texts(at.success)))
             self.assertFalse(any(b.key == f"approve_{mid}" for b in at.button))             # อนุมัติแล้ว ปุ่มอนุมัติหาย
             self.assertFalse(any(b.key == f"sync_{mid}" for b in at.button))                # ส่งครบแล้ว ไม่มีปุ่มส่งซ้ำ
-            invite_box = next(c for c in at.checkbox if c.key == f"cal_invites_{mid}")
+            invite_box = next(c for c in at.checkbox if c.key.startswith(f"cal_invites_done_{mid}_"))
             self.assertTrue(invite_box.disabled)                                           # ส่งครบแล้ว ติ๊กส่งอีเมลเชิญไม่ได้อีก
+            self.assertFalse(invite_box.value)                                             # รอบนี้ไม่ได้ส่งอีเมลเชิญ จึงไม่ติ๊ก
+            db.mark_action_item_synced(sent[0][0], "evt-" + str(sent[0][0]), "https://calendar.google.com/x", invite_sent=True)
+            again = next(c for c in self.app(m=mid).checkbox if c.key.startswith(f"cal_invites_done_{mid}_"))
+            self.assertTrue(again.disabled and again.value)                                # ส่งเชิญไปแล้ว: ติ๊กไว้เสมอแม้รีเฟรชหน้า
             self.assertTrue(any(b.key == f"reopen_cal_{mid}" for b in at.button))
             pdf_buttons = [d.proto.label for d in at.get("download_button") if "PDF" in d.proto.label]
             self.assertEqual(pdf_buttons, ["⬇ ดาวน์โหลด PDF ฉบับเต็ม"])                      # PDF ฉบับเต็มอยู่แท็บ ⑤ ที่เดียว ไม่ซ้ำที่ ④
