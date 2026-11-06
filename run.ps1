@@ -12,7 +12,7 @@ if (-not (Test-Path ".streamlit\secrets.toml")) {
 }
 
 Write-Host "เปิดบริการบอท http://127.0.0.1:8000 (หน้าต่างแยก — ห้ามปิดระหว่างประชุม)" -ForegroundColor Cyan
-$bot = Start-Process -FilePath $py -ArgumentList "-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", "8000" `
+$bot = Start-Process -FilePath $py -ArgumentList "-m", "uvicorn", "bot_service:app", "--host", "127.0.0.1", "--port", "8000" `
     -WorkingDirectory $PSScriptRoot -PassThru
 try {
     Write-Host "เปิดหน้าเว็บ http://localhost:8501" -ForegroundColor Cyan

@@ -1,5 +1,5 @@
 """
-ไคลเอนต์ของ "บริการบอท" (app.py) สำหรับหน้าเว็บ + โทเคนลับที่สองฝั่งใช้ร่วมกัน
+ไคลเอนต์ของ "บริการบอท" (bot_service.py) สำหรับหน้าเว็บ + โทเคนลับที่สองฝั่งใช้ร่วมกัน
 
 หน้าเว็บ (Streamlit) กับบริการบอท (FastAPI) เป็นคนละโปรเซส คุยกันผ่าน HTTP ในเครื่องเดียวกัน (127.0.0.1) โดยแนบโทเคนลับ
 ทุกคำขอ ผู้ใช้ที่ล็อกอินแล้ว (ตรวจโดยหน้าเว็บ) ถูกส่งไปในเฮดเดอร์ — บริการบอทเชื่อตามนั้นเพราะรับเฉพาะคำขอที่มีโทเคนถูกต้อง
@@ -85,7 +85,7 @@ def _call(method: str, path: str, user: dict, **kwargs) -> dict:
     try:
         r = requests.request(method, BOT_API_URL + path, headers=headers_for(user), timeout=TIMEOUT, **kwargs)
     except requests.ConnectionError:
-        raise BotError("ติดต่อบริการบอทไม่ได้ — ตรวจว่าเปิด run.ps1 (หรือ uvicorn app:app) อยู่", unreachable=True)
+        raise BotError("ติดต่อบริการบอทไม่ได้ — ตรวจว่าเปิด run.ps1 (หรือ uvicorn bot_service:app) อยู่", unreachable=True)
     except requests.Timeout:
         raise BotError("บริการบอทตอบช้าเกินไป ลองใหม่อีกครั้ง", unreachable=True)
     if r.status_code >= 400:

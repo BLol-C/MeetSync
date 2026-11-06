@@ -4,7 +4,7 @@ MeetSync — หน้าเว็บ (Streamlit)
 รัน:  venv\\Scripts\\streamlit run streamlit_app.py   (หรือใช้ run.ps1 เปิดทั้งหน้าเว็บและบริการบอทพร้อมกัน)
 เปิด: http://localhost:8501
 
-หน้าเว็บทำงานกับฐานข้อมูลผ่าน service.py และคุมบอทผ่านบริการบอท (app.py) ด้วย botclient.py
+หน้าเว็บทำงานกับฐานข้อมูลผ่าน service.py และคุมบอทผ่านบริการบอท (bot_service.py) ด้วย botclient.py
 """
 
 import streamlit as st

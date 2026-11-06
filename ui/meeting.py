@@ -17,7 +17,7 @@ def _bot_info(user: dict, meeting_id: int) -> dict:
             "rows": [], "status": [], "bot_error": None}
     health = botclient.health()
     if health is None:
-        info["error"] = "บริการบอทไม่ได้เปิดอยู่ — เปิดด้วย run.ps1 (หรือ uvicorn app:app) แล้วรีเฟรชหน้านี้"
+        info["error"] = "บริการบอทไม่ได้เปิดอยู่ — เปิดด้วย run.ps1 (หรือ uvicorn bot_service:app) แล้วรีเฟรชหน้านี้"
         return info
     if not health.get("db"):
         info["error"] = "บริการบอทต่อฐานข้อมูลไม่ได้"

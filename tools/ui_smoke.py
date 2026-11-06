@@ -64,7 +64,7 @@ async def main(out: pathlib.Path):
 
     import uvicorn
 
-    import app as botapp
+    import bot_service as botapp
     from tests.test_bot_service import FakeEngine, cap
 
     out.mkdir(parents=True, exist_ok=True)

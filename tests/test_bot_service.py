@@ -1,5 +1,5 @@
 """
-ทดสอบบริการบอท (app.py) ผ่าน HTTP จริงด้วย TestClient กับ MySQL ชั่วคราว — ใช้เอนจินปลอมแทน Chrome/Meet
+ทดสอบบริการบอท (bot_service.py) ผ่าน HTTP จริงด้วย TestClient กับ MySQL ชั่วคราว — ใช้เอนจินปลอมแทน Chrome/Meet
 พิสูจน์: ต้องมีโทเคน, สิทธิ์ตามรายการประชุม, บันทึกคำบรรยายลง DB ไม่ซ้ำ, บอทจบเองแล้วปิดประชุมให้, บันทึกต่อได้, OAuth ของ Calendar
 """
 
@@ -15,7 +15,7 @@ os.environ.setdefault("BOT_API_TOKEN", "test-token")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-import app as botapp  # noqa: E402
+import bot_service as botapp  # noqa: E402
 from bot import botclient  # noqa: E402
 import db  # noqa: E402
 
