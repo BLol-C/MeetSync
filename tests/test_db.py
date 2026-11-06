@@ -5,6 +5,7 @@
 รัน:  venv\\Scripts\\python.exe -m unittest discover -s tests -t . -v
 """
 
+import json
 import unittest
 import uuid
 
@@ -373,7 +374,7 @@ class WorkflowTests(TempDbCase):
         saved = db.save_report(mid, self.report_content(), "gemini", "minutes_v2")
         rep = db.get_report(mid)
         self.assertEqual(rep["summary_id"], saved["summary_id"])
-        self.assertEqual(rep["content"], {**self.report_content(), "agenda": [
+        self.assertEqual(rep["content"], {**self.report_content(), "other_evidence": [], "agenda": [
             {**a, "section": "consider_new"} for a in self.report_content()["agenda"]], "action_items": [
             {**self.report_content()["action_items"][0], "action_item_id": rep["content"]["action_items"][0]["action_item_id"],
              "google_calendar_event_id": None, "google_calendar_link": None},
@@ -497,6 +498,20 @@ class WorkflowTests(TempDbCase):
         self.assertEqual(self.rows("SELECT COUNT(*) n FROM agenda_items WHERE summary_id=%s AND section='other'", (rep["summary_id"],))[0]["n"], 0)
         db.use_report_version(rep["summary_id"], 1)
         self.assertEqual(db.get_report(mid)["content"]["other_matters"], "นัดครั้งหน้า")
+
+    def test_other_matters_evidence_is_stored_with_the_other_row_and_old_versions_still_compare_equal(self):
+        uid, mid = self.to_draft()
+        db.save_report(mid, self.report_content(other_matters="นัดครั้งหน้า", other_evidence=["พบกันวันศุกร์"]))
+        rep = db.get_report(mid)
+        self.assertEqual(rep["content"]["other_evidence"], ["พบกันวันศุกร์"])
+        row = self.rows("SELECT evidence FROM agenda_items WHERE summary_id=%s AND section='other'", (rep["summary_id"],))[0]
+        self.assertEqual(json.loads(row["evidence"]), ["พบกันวันศุกร์"])
+        self.assertIn("other_evidence", db.get_report_version(rep["summary_id"], 1))
+        # ไม่มีหลักฐาน: ไม่มีคีย์ในรุ่น จึงเทียบเท่ากับรุ่นที่เก็บก่อนมีฟีเจอร์นี้ (บันทึกซ้ำโดยไม่แก้ ไม่เกิดรุ่นใหม่)
+        db.save_report(mid, self.report_content(other_matters="เรื่องเก่า"))
+        self.assertNotIn("other_evidence", db.get_report_version(rep["summary_id"], 2))
+        db.update_report_content(rep["summary_id"], self.report_content(other_matters="เรื่องเก่า"), uid)
+        self.assertEqual(len(db.list_report_versions(rep["summary_id"])), 2)
 
     def test_old_database_other_matters_column_is_moved_into_agenda_and_dropped(self):
         uid, mid = self.to_draft()

@@ -577,7 +577,7 @@ def save_report_draft(user: dict, meeting_id: int, content: dict) -> dict:
     report = db.get_report(meeting_id)
     if not report or report["approved"]:
         raise ServiceError("ไม่มีรายงานฉบับร่างให้แก้", "conflict")
-    allowed = {k: content.get(k) for k in ("summary", "agenda", "other_matters", "action_items")}
+    allowed = {k: content.get(k) for k in ("summary", "agenda", "other_matters", "other_evidence", "action_items")}
     try:
         cleaned = _validated(meeting, allowed)
     except (AttributeError, TypeError):

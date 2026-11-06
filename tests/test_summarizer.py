@@ -68,6 +68,45 @@ class ValidateTests(unittest.TestCase):
         body["agenda"][0]["resolution"] = None          # เพื่อทราบ ไม่มีมติ -> ไม่ต้องมีหลักฐาน
         self.assertNotIn("no_evidence", codes(self.check(body)))
 
+    def test_other_matters_is_checked_for_evidence_like_the_agenda(self):
+        body = good_body(other_matters="นัดซ้อมใหญ่วันศุกร์", other_evidence=["เห็นด้วยค่ะ ดิฉันจะส่งรายงานความก้าวหน้า"])
+        r = self.check(body)
+        self.assertEqual(r["warnings"], [])
+        self.assertIs(r["other_grounded"], True)
+        self.assertEqual(r["other_evidence"], ["เห็นด้วยค่ะ ดิฉันจะส่งรายงานความก้าวหน้า"])
+        body["other_evidence"] = []                                      # มีเรื่องอื่นๆ แต่ไม่มีหลักฐาน
+        r = self.check(body)
+        self.assertIn("no_evidence", codes(r))
+        self.assertEqual([w["path"] for w in r["warnings"]], ["other_matters.evidence"])
+        body["other_evidence"] = ["ที่ประชุมมีมติเอกฉันท์ให้ซื้อเซิร์ฟเวอร์ใหม่ทั้งหมดสิบเครื่อง"]   # อ้างข้อความที่ไม่มีจริง
+        r = self.check(body)
+        self.assertIn("ungrounded", codes(r))
+        self.assertIs(r["other_grounded"], False)
+        body["other_matters"] = None                                     # ไม่มีเรื่องอื่นๆ ก็ไม่ต้องมีหลักฐาน
+        body["other_evidence"] = []
+        r = self.check(body)
+        self.assertEqual(r["warnings"], [])
+        self.assertIsNone(r["other_grounded"])
+
+    def test_items_from_the_previous_meeting_are_checked_only_when_the_ai_gave_evidence(self):
+        item = {"section": "followup", "title": "ส่งรายงาน", "discussion": "ประธานแจ้งว่า…", "resolution": "รับทราบ", "evidence": []}
+        r = self.check(good_body(agenda=[good_body()["agenda"][0], dict(item)]))
+        self.assertEqual(r["warnings"], [])                                    # คนพิมพ์มติเอง ไม่มีหลักฐาน = ไม่เตือน
+        self.assertIsNone(r["agenda"][1]["grounded"])
+        item["evidence"] = ["ผมเสนอให้อนุมัติงบสองหมื่นบาท"]
+        r = self.check(good_body(agenda=[good_body()["agenda"][0], dict(item)]))
+        self.assertIs(r["agenda"][1]["grounded"], True)
+        item["evidence"] = ["ที่ประชุมมีมติเอกฉันท์ให้ซื้อเซิร์ฟเวอร์ใหม่ทั้งหมดสิบเครื่อง"]
+        r = self.check(good_body(agenda=[good_body()["agenda"][0], dict(item)]))
+        self.assertIn("ungrounded", codes(r))                                  # AI อ้างข้อความที่ไม่มีจริง -> เตือน
+
+    def test_no_agenda_warning_is_skipped_when_items_from_the_previous_meeting_exist(self):
+        carried = {"section": "approve_prev", "title": "รับรองรายงานครั้งที่ 1", "discussion": "ประธานขอให้ที่ประชุมพิจารณา",
+                   "resolution": None, "evidence": []}
+        self.assertIn("no_agenda", codes(self.check(good_body(agenda=[]))))                   # ไม่มีวาระเลย: ยังเตือนเหมือนเดิม
+        self.assertNotIn("no_agenda", codes(self.check(good_body(agenda=[dict(carried)]))))   # มีแต่วาระจากครั้งก่อน: ไม่เตือน
+        self.assertNotIn("no_agenda", codes(self.check(good_body(agenda=[dict(carried, section="followup")]))))
+
     def test_grounding_ignores_thai_spacing(self):
         sh = summarizer.transcript_shingles(["ส่งรายงานวันศุกร์หน้า"])
         self.assertEqual(summarizer.grounding_score("ส่งรายงาน วันศุกร์ หน้า", sh), 1.0)
@@ -201,7 +240,7 @@ class PromptTests(unittest.TestCase):
 
     def test_prompt_files_only_use_known_placeholders(self):
         import re
-        known = {"meeting_title", "weekday", "date", "participants", "source_label", "source_title", "transcript"}
+        known = {"meeting_title", "weekday", "date", "participants", "source_label", "source_title", "transcript", "carried_items"}
         known_map = {"part", "total", "date", "participants", "transcript"}
         for name, allowed in ((summarizer.PROMPT_NAME, known), (summarizer.MAP_PROMPT_NAME, known_map)):
             text = summarizer.load_prompt(name)
@@ -266,7 +305,31 @@ class GenerateTests(unittest.TestCase):
             self.assertIn(phrase, text)
         self.assertIn("due_date_end", text)                                                # v5: วันที่สิ้นสุดเฉพาะเมื่อพูดเป็นช่วงชัดเจน
         self.assertIn("ห้ามเดา", text.split("due_date_end")[1].split("\n")[0])
-        self.assertEqual(summarizer.PROMPT_NAME, "minutes_v5")
+
+    def test_prompt_v6_asks_for_evidence_of_other_matters_and_the_reply_may_omit_it(self):
+        self.assertEqual(summarizer.PROMPT_NAME, "minutes_v7")
+        text = summarizer.load_prompt("minutes_v6")
+        self.assertIn("other_evidence", text)
+        self.assertIn("คัดลอกตรงตัว", text.split("other_evidence")[1].split(chr(10))[0])
+        self.assertIn("ห้ามเติม \"รับทราบ\" หรือ \"เห็นชอบ\" เอง", text)                 # กฎเดิมของ v5 ยังอยู่ครบ
+        body = good_body(other_matters="เรื่องอื่นๆ")                    # AI ไม่ตอบ other_evidence มา: ไม่ error แต่ตัวตรวจเตือน
+        out = summarizer.generate_minutes_content(ROWS, PARTS, None, MEETING, self.make([json.dumps(body)]))
+        self.assertEqual(out["other_evidence"], [])
+        self.assertIn("no_evidence", codes(out))
+
+    def test_prompt_v7_lists_the_carried_items_and_demands_evidence(self):
+        text = summarizer.load_prompt("minutes_v7")
+        self.assertIn("{carried_items}", text)
+        part = text.split("8. carried:")[1].split("7. ถ้าไม่มีสาระ")[0]
+        for phrase in ("ref", "ห้ามเติมเอง", "คัดลอกตรงตัว", "ไม่ต้องตอบรายการนั้น", "ห้ามสร้างเป็นวาระซ้ำ", "รายการนั้นโดยตรง",
+                       "ให้ถือเป็นเรื่องใหม่", "เรื่องใหม่หายไปจากรายงาน"):
+            self.assertIn(phrase, part)
+        self.assertIn("ห้ามเติม \"รับทราบ\" หรือ \"เห็นชอบ\" เอง", text)                      # กฎเดิมยังอยู่ครบ
+        gen = self.make([json.dumps(good_body())])                          # AI ไม่ตอบ carried = รายการว่าง ไม่ error
+        out = summarizer.generate_minutes_content(ROWS, PARTS, None, MEETING, gen, carried_text="- R1 [รับรองรายงานครั้งก่อน] ทดสอบ")
+        self.assertEqual(out["carried"], [])
+        self.assertIn("- R1 [รับรองรายงานครั้งก่อน] ทดสอบ", self.calls[0][0])
+        self.assertIn("ไม่มี — ไม่ได้เลือกการประชุมครั้งก่อน", summarizer.fill("{carried_items}", carried_items="(ไม่มี — ไม่ได้เลือกการประชุมครั้งก่อน)"))
 
     def test_long_meeting_uses_map_reduce(self):
         old = summarizer.SINGLE_PASS_CHARS, summarizer.CHUNK_CHARS

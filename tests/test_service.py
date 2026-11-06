@@ -603,12 +603,67 @@ class ServiceTests(TempDbCase):
         self.assertIn("ครั้งที่ 3/2569", approve)                                          # มาจาก meeting_no ของครั้งก่อน
         self.assertIn(str(prev_meeting["started_at"].year + 543), approve)
         self.assertEqual([a["title"] for a in by["followup"]], [x["description"] for x in prev_report["action_items"]])
-        self.assertIn("ผู้รับผิดชอบ: Alice", by["followup"][0]["discussion"])
+        self.assertIn("ได้มอบหมายให้ Alice", by["followup"][0]["discussion"])             # โครงของวาระ 3 เขียนจากข้อมูลครั้งก่อน
         self.assertNotIn("consider_old", by)                                               # ครั้งก่อนทุกวาระมีมติ จึงไม่มีเรื่องค้าง
         self.assertEqual([a["title"] for a in by["consider_new"]], ["งบประมาณ"])           # ที่ AI สรุปยังอยู่ 4.2
         self.assertEqual({a.get("section") for a in db.latest_ai_draft(report["summary_id"])["agenda"]}, {"consider_new"})   # ฉบับที่ AI ร่าง = เฉพาะที่ AI สรุปเอง
         alone = self.generate_for()                                                        # ไม่เลือกครั้งก่อน = ไม่มีหมวดที่เติมให้
         self.assertEqual({a["section"] for a in db.get_report(alone)["content"]["agenda"]}, {"consider_new"})
+
+    def carried_generate(self, answers):
+        """AI จำลอง: ตอบเหมือน fake_ai แต่เพิ่ม carried (answers = ฟังก์ชันรับข้อความ prompt คืนรายการ carried)"""
+        def gen(prompt, schema=None):
+            body = json.loads(fake_ai(prompt, schema))
+            if schema is not None:
+                body["carried"] = answers(prompt)
+            return json.dumps(body)
+        return gen
+
+    def test_ai_fills_progress_and_resolution_of_the_carried_items_but_only_with_evidence(self):
+        prev = self.approved_meeting()
+        cur = self.new_meeting(previous_meeting_id=prev, meeting_no="4/2569")
+        self.record(cur)
+        self.settle(cur)
+        service.verify_transcript(self.owner, cur)
+        seen = {}
+
+        def answers(prompt):
+            seen["prompt"] = prompt
+            return [
+                {"ref": "R1", "progress": None, "resolution": "รับรองรายงานการประชุมโดยไม่มีการแก้ไข",
+                 "evidence": ["ผมเสนอให้อนุมัติงบสองหมื่นบาท"]},                                          # วาระ 2: มีหลักฐาน -> เติม
+                {"ref": "R2", "progress": "Alice รายงานว่าส่งรายงานแล้ว", "resolution": "รับทราบ", "evidence": []},   # ไม่มีหลักฐาน -> ข้าม
+                {"ref": "R99", "progress": "รายการที่ไม่มีในโครง", "resolution": "x", "evidence": ["เห็นด้วยค่ะ"]},   # AI สร้างรายการเองไม่ได้
+            ]
+
+        service.generate_report(self.owner, cur, generate=self.carried_generate(answers))
+        self.assertIn("R1 [รับรองรายงานครั้งก่อน]", seen["prompt"])                                     # AI เห็นโครงที่ระบบสร้าง
+        self.assertIn("R2 [งานที่ครั้งก่อนมอบหมาย]", seen["prompt"])
+        agenda = db.get_report(cur)["content"]["agenda"]
+        approve = next(a for a in agenda if a["section"] == "approve_prev")
+        self.assertEqual(approve["resolution"], "รับรองรายงานการประชุมโดยไม่มีการแก้ไข")
+        self.assertEqual(approve["evidence"], ["ผมเสนอให้อนุมัติงบสองหมื่นบาท"])
+        self.assertTrue(approve["discussion"].startswith("ประธานขอให้ที่ประชุมพิจารณารายงานการประชุม ภาควิชา ครั้งที่ 3/2569"))
+        self.assertIn("ประธานจึงเสนอให้ที่ประชุมพิจารณา", approve["discussion"])
+        followups = [a for a in agenda if a["section"] == "followup"]
+        self.assertTrue(all(a["resolution"] is None and a["evidence"] == [] for a in followups))        # ไม่มีหลักฐาน = ว่างให้คนกรอก
+        self.assertNotIn("รายการที่ไม่มีในโครง", " ".join(a["discussion"] for a in agenda))
+        self.assertEqual(len([a for a in agenda if a["section"] in ("approve_prev", "followup", "consider_old")]), 1 + len(followups))
+
+    def test_without_a_previous_meeting_the_ai_gets_no_carried_list_and_its_carried_answers_are_ignored(self):
+        cur = self.new_meeting()
+        self.record(cur)
+        self.settle(cur)
+        service.verify_transcript(self.owner, cur)
+        seen = {}
+
+        def answers(prompt):
+            seen["prompt"] = prompt
+            return [{"ref": "R1", "progress": "ไม่ควรเข้า", "resolution": "x", "evidence": ["เห็นด้วยค่ะ"]}]
+
+        service.generate_report(self.owner, cur, generate=self.carried_generate(answers))
+        self.assertIn("ไม่มี — ไม่ได้เลือกการประชุมครั้งก่อน", seen["prompt"])
+        self.assertEqual({a["section"] for a in db.get_report(cur)["content"]["agenda"]}, {"consider_new"})
 
     def test_unresolved_agenda_items_of_the_previous_meeting_become_section_4_1(self):
         prev = self.draft()

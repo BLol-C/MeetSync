@@ -25,7 +25,7 @@ import db
 
 HERE = pathlib.Path(__file__).resolve().parent.parent
 PROMPT_DIR = HERE / "prompts"
-PROMPT_NAME = os.environ.get("MINUTES_PROMPT", "minutes_v5")          # ชื่อไฟล์ใน prompts/ (ไม่รวม .md)
+PROMPT_NAME = os.environ.get("MINUTES_PROMPT", "minutes_v7")          # ชื่อไฟล์ใน prompts/ (ไม่รวม .md)
                                                                       # v2: ห้ามข้ามหัวข้อที่ไม่มีข้อสรุป + เขียนปี พ.ศ. ในเนื้อความ
                                                                       # v3: บันทึกการอภิปรายละเอียดแบบรายงานจริง (ใครรายงาน/ใครกล่าวอะไร) + AI เลือกหมวดวาระ
                                                                       #     + มติว่างเมื่อไม่มีใครสรุปชัดเจน (ห้ามเติม "รับทราบ" เอง)
@@ -72,10 +72,19 @@ class ActionItemAI(BaseModel):
     evidence: list[str]
 
 
+class CarriedItemAI(BaseModel):
+    ref: str                       # รหัสรายการที่ระบบสร้างไว้จากครั้งก่อน (R1, R2, ...) AI สร้างรายการใหม่เองไม่ได้
+    progress: str | None
+    resolution: str | None
+    evidence: list[str]
+
+
 class MinutesBodyAI(BaseModel):
     summary: str
     agenda: list[AgendaItemAI]
     other_matters: str | None
+    other_evidence: list[str]
+    carried: list[CarriedItemAI]
     action_items: list[ActionItemAI]
 
 
@@ -212,6 +221,9 @@ def validate_minutes(
 
     summary = _clean_str(content.get("summary")) or ""
     check_numbers("summary", summary, "สรุปภาพรวม")
+    other_matters = _clean_str(content.get("other_matters"))
+    other_evidence = _clean_evidence(content.get("other_evidence"))
+    other_grounded = check_evidence("other_matters.evidence", other_evidence, required=bool(other_matters), what="เรื่องอื่น ๆ ") if (other_matters or other_evidence) else None
     if not summary:
         warn("empty_summary", "summary", "ไม่มีสรุปภาพรวมการประชุม")
 
@@ -233,10 +245,15 @@ def validate_minutes(
                 f"agenda[{i}].resolution", item["evidence"], required=bool(item["resolution"]),
                 what=f"มติของเรื่องที่ {i + 1} ",
             )
+        elif item["section"] in db.CARRIED_SECTIONS and item["evidence"]:    # วาระจากครั้งก่อน: ตรวจเฉพาะที่ AI เติมมาพร้อมหลักฐาน (ที่คนพิมพ์เองไม่บังคับ)
+            item["grounded"] = check_evidence(
+                f"agenda[{i}].resolution", item["evidence"], required=False, what=f"เนื้อหาที่ AI เติมในเรื่องที่ {i + 1} ",
+            )
         else:
             item["grounded"] = None
         agenda.append(item)
-    if not any(a["section"] in GROUNDED_SECTIONS for a in agenda):
+    # ไม่เตือนถ้ามีวาระที่ระบบสร้างจากครั้งก่อนอยู่แล้ว (ประชุมที่พูดแต่เรื่องสืบเนื่องไม่ต้องมีเรื่องใหม่)
+    if not any(a["section"] in GROUNDED_SECTIONS or a["section"] in db.CARRIED_SECTIONS for a in agenda):
         warn("no_agenda", "agenda", "ไม่พบวาระการประชุมที่ AI สกัดได้ — ตรวจสอบ transcript หรือเพิ่มวาระเอง")
 
     actions = []
@@ -318,7 +335,9 @@ def validate_minutes(
     return {
         "summary": summary,
         "agenda": agenda,
-        "other_matters": _clean_str(content.get("other_matters")),
+        "other_matters": other_matters,
+        "other_evidence": other_evidence,
+        "other_grounded": other_grounded,
         "action_items": actions,
         "warnings": warnings,
     }
@@ -405,6 +424,8 @@ def _parse_body(raw: str) -> MinutesBodyAI:
     ไม่ใส่ค่าเริ่มต้นใน schema เพราะค่า default ใน response_schema ของ Gemini ไม่แน่นอน"""
     data = json.loads(raw)
     if isinstance(data, dict):
+        data.setdefault("carried", [])
+        data.setdefault("other_evidence", [])         # v5 และ AI ที่ไม่ตอบฟิลด์นี้ = ไม่มีหลักฐานอ้างอิง (ตัวตรวจจะเตือนเอง)
         for item in data.get("action_items") or []:
             if isinstance(item, dict):
                 item.setdefault("due_date_end", None)
@@ -417,6 +438,7 @@ def generate_minutes_content(
     meeting_title: str | None,
     meeting_date: datetime.datetime,
     generate: Callable | None = None,
+    carried_text: str = "",
 ) -> dict:
     """transcript ที่ตรวจแล้ว -> เนื้อหารายงานที่ผ่าน validate_minutes แล้ว (มี warnings)
 
@@ -453,6 +475,7 @@ def generate_minutes_content(
         weekday=_THAI_WEEKDAYS[meeting_date.weekday()],
         date=date_str,
         participants=parts_text,
+        carried_items=carried_text or "(ไม่มี — ไม่ได้เลือกการประชุมครั้งก่อน จึงให้ carried เป็นรายการว่าง)",
         source_label=source_label,
         source_title=source_title,
         transcript=source,
@@ -466,9 +489,9 @@ def generate_minutes_content(
         except (ValidationError, json.JSONDecodeError, TypeError):
             if attempt == 2:
                 raise ValueError("AI ตอบกลับรูปแบบที่ไม่ถูกต้อง ลองสร้างรายงานใหม่อีกครั้ง")
-    return validate_minutes(
-        body.model_dump(), participants, [r["text"] for r in rows], meeting_date.date()
-    )
+    content = validate_minutes(body.model_dump(), participants, [r["text"] for r in rows], meeting_date.date())
+    content["carried"] = [c.model_dump() for c in body.carried]       # เติมเข้าวาระที่ระบบสร้างโครงไว้ใน generate_for_meeting
+    return content
 
 
 # ── ประกอบเข้ากับ DB ──
@@ -478,6 +501,7 @@ def for_storage(content: dict) -> dict:
     return {
         "summary": content.get("summary") or "",
         "other_matters": content.get("other_matters"),
+        "other_evidence": content.get("other_evidence") or [],
         "agenda": sorted(     # เรียงตามหมวดวาระ (คงลำดับเดิมในหมวดเดียวกัน) ให้ตรงกับที่แสดงในรายงาน
             ({k: a.get(k) for k in ("section", "title", "discussion", "resolution", "evidence")}
              for a in content.get("agenda") or []),
@@ -503,13 +527,16 @@ def generate_for_meeting(meeting_id: int, generate: Callable | None = None, user
 
     rows = db.get_transcript(meeting_id)
     participants = [p for p in db.list_speakers(meeting_id) if p["source"] != "excluded"]
+    from reports import continuity   # วาระ 2, 3, 4.1: ระบบสร้างโครงจากครั้งก่อนที่เลือกไว้ (ข้อเท็จจริงจากฐานข้อมูล) AI เติมเฉพาะเนื้อหา/มติที่พูดจริงในครั้งนี้
+    skeleton = continuity.prefill_items(meeting)
     content = generate_minutes_content(
         rows, participants, meeting.get("title"),
         meeting.get("started_at") or datetime.datetime.now(), generate,
+        carried_text=continuity.prompt_list(skeleton),
     )
     stored = for_storage(content)
-    from reports import continuity   # เติมวาระ 2, 3, 4.1 จากการประชุมครั้งก่อนที่เลือกไว้ (ถ้ามี) — ไม่ผ่าน AI
-    full = for_storage({**stored, "agenda": stored["agenda"] + continuity.prefill_items(meeting)})
+    carried_items = continuity.apply_carried(skeleton, content.get("carried") or [])
+    full = for_storage({**stored, "agenda": stored["agenda"] + carried_items})
     saved = db.save_report(meeting_id, full, _MODEL, PROMPT_NAME, user_id=user_id)   # ฉบับที่ AI ร่างเก็บเป็นร่างฉบับ ai_draft ในตารางประวัติ
     db.set_meeting_status(meeting_id, "draft")
     return {**saved, "content": content}

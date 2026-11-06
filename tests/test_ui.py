@@ -84,6 +84,31 @@ class UiTests(TempDbCase):
             service.approve_report(self.user, mid, confirm_warnings=True)
         return mid
 
+    def test_other_matters_shows_its_evidence_and_warns_when_it_has_none(self):
+        mid = self.meeting("draft")
+        content = service.get_report_view(self.user, mid)["report"]["content"]
+        quote = "ผมเสนอให้อนุมัติงบสองหมื่นบาท"                                  # มีใน transcript จริง
+        service.save_report_draft(self.user, mid, {**content, "other_matters": "นัดซ้อมวันศุกร์", "other_evidence": [quote]})
+        at = self.app(m=mid)
+        self.assertTrue(any("✓ พบใน transcript" in v and quote in v for v in texts(at.caption)))
+        self.assertFalse(any("เรื่องอื่น ๆ ไม่มีข้อความอ้างอิง" in v for v in texts(at.warning)))
+        service.save_report_draft(self.user, mid, {**content, "other_matters": "นัดซ้อมวันศุกร์", "other_evidence": []})
+        at = self.app(m=mid)
+        self.assertTrue(any("เรื่องอื่น ๆ ไม่มีข้อความอ้างอิง" in v for v in texts(at.warning)))     # เหมือนวาระที่มีมติแต่ไม่มีหลักฐาน
+
+    def test_items_from_the_previous_meeting_show_evidence_only_when_the_ai_filled_them(self):
+        mid = self.meeting("draft")
+        content = service.get_report_view(self.user, mid)["report"]["content"]
+        quote = "ผมเสนอให้อนุมัติงบสองหมื่นบาท"                                  # มีใน transcript จริง
+        service.save_report_draft(self.user, mid, {**content, "agenda": content["agenda"] + [
+            {"section": "approve_prev", "title": "รับรองรายงานการประชุม ครั้งที่ 1", "discussion": "ประธานขอให้ที่ประชุมพิจารณา",
+             "resolution": "รับรองโดยไม่มีการแก้ไข", "evidence": [quote]},
+            {"section": "followup", "title": "งานเดิม", "discussion": "ประธานแจ้งว่า…", "resolution": "คนพิมพ์เอง", "evidence": []}]})
+        at = self.app(m=mid)
+        captions = [v for v in texts(at.caption) if v.startswith("หลักฐานจาก transcript")]
+        self.assertTrue(any("✓ พบใน transcript" in v and quote in v for v in captions))
+        self.assertEqual(len(captions), 2)                                         # วาระ 4.2 เดิม + วาระ 2 ที่ AI เติม; งานที่คนพิมพ์เองไม่ขึ้นหลักฐาน
+
     def test_report_tab_shows_edit_history_and_which_draft_is_in_use(self):
         mid = self.meeting("draft")
         at = self.app(m=mid)
