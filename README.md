@@ -17,7 +17,7 @@
 | ส่วน | พอร์ต | หน้าที่ |
 |---|---|---|
 | หน้าเว็บ Streamlit (`streamlit_app.py`, โฟลเดอร์ `ui/`) | 8501 | ทุกอย่างที่ผู้ใช้เห็น (login ด้วย Google ผ่าน `st.login`) ใช้ `service.py` และ `db.py` โดยตรง |
-| บริการบอท FastAPI (`app.py`) | 8000 (เฉพาะ localhost) | คุมบอท Playwright ที่เข้า Meet, บันทึกคำบรรยายลง DB, รับ callback ของ Calendar |
+| บริการบอท FastAPI (`bot_service.py`) | 8000 (เฉพาะ localhost) | คุมบอท Playwright ที่เข้า Meet, บันทึกคำบรรยายลง DB, รับ callback ของ Calendar |
 
 สองส่วนคุยกันผ่าน HTTP ด้วย token ลับร่วม (ไฟล์ `.bot_token` สร้างให้เอง) ข้อมูลเก็บใน MySQL ตาราง: `users`, `meetings`,
 `speakers`, `transcript_segments`, `summaries` (รายงาน 1 ฉบับต่อ 1 การประชุม), `action_items`, `agenda_items`, `summary_versions` (ประวัติรายงาน: ทุกครั้งที่ AI ร่าง/คนบันทึกแก้/อนุมัติ/ยกเลิกอนุมัติ เพิ่มแถวเก็บรายงานทั้งฉบับไว้เป็นร่างฉบับหนึ่ง ไม่แก้ไม่ลบของเดิม ดูย้อนหลังและเลือกร่างฉบับเก่ามาใช้ได้ในแท็บ ④ โดย `summaries.current_version_no` ชี้ว่าใช้ฉบับไหนอยู่) (รวม 8 ตาราง ไม่มีตารางเทคนิคอื่น)
@@ -25,7 +25,7 @@
 ## โครงสร้างโฟลเดอร์
 
 ```
-app.py  service.py  streamlit_app.py  db.py   จุดเริ่มต้น / ชั้นบริการ / ฐานข้อมูล
+bot_service.py  service.py  streamlit_app.py  db.py   บริการบอท / ชั้นบริการ / หน้าเว็บ / ฐานข้อมูล
 run.ps1                                      เปิดทั้งสองส่วนพร้อมกัน
 bot/            botclient.py (หน้าเว็บเรียกบริการบอท), meet_engine.py (Playwright + ตัวจับ CC + watchdog)
 reports/        summarizer.py (Gemini + ตรวจผล), continuity.py (เติมวาระจากครั้งก่อน), report_data.py, report_template.py, pdf_report.py (PDF)
@@ -33,7 +33,7 @@ integrations/   calendar_auth.py (OAuth), calendar_sync.py (ส่งงาน�
 ui/             หน้าเว็บ Streamlit ทีละแท็บ
 prompts/  fonts/   ไฟล์ prompt ของ AI (มีเวอร์ชัน) และฟอนต์ TH Sarabun New
 tools/          สคริปต์ช่วย (monitor memory, ทดสอบความเสถียร, จำลอง Meet)
-tests/          เทสต์อัตโนมัติ   docs/  ข้อความแก้ Proposal
+tests/          เทสต์อัตโนมัติ   docs/  แผนที่โค้ดตามฟังก์ชันใน TOR (CODE_MAP_TOR.md)
 ```
 
 ## ขั้นตอนใช้งาน

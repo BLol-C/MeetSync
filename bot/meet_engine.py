@@ -1,7 +1,7 @@
 """
 เครื่องยนต์กลาง: เข้าห้อง Google Meet, เปิดคำบรรยาย (CC), เฝ้าอ่านแล้วส่ง event ออกทาง callback
 
-ใช้โดยบริการบอท (app.py)
+ใช้โดยบริการบอท (bot_service.py)
 
 event ที่ส่งออก (dict):
   {"type": "status",  "text": ...}
