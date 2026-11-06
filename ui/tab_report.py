@@ -262,7 +262,8 @@ def _agenda_cards(mid: int, content: dict, warnings: list[dict], editable: bool)
             resolution = st.text_area("มติที่ประชุม (เว้นว่าง = เพื่อทราบ / ยังไม่มีมติ)", value=a["resolution"],
                                       key=f"ag_r_{mid}_{rev}_{i}", disabled=not editable, height=70)
             evidence = a.get("evidence") or []
-            if section in ("inform", "consider_new") and (evidence or resolution.strip()):   # เฉพาะเรื่องที่ AI สกัดจาก transcript
+            if (section in ("inform", "consider_new") and (evidence or resolution.strip())) \
+                    or (section in ("approve_prev", "followup", "consider_old") and evidence):   # เรื่องที่ AI สกัด หรือ AI เติมในวาระจากครั้งก่อน
                 st.caption("หลักฐานจาก transcript: " + _evidence_text(evidence, a.get("grounded", True if evidence else None)))
             for w in warnings:
                 if w["path"].startswith(f"agenda[{i}]"):
@@ -295,9 +296,9 @@ def has_unsaved(content: dict, summary: str, other: str, agenda: list[dict]) -> 
             or _agenda_key(agenda) != _agenda_key(content["agenda"]))
 
 
-def _collect(mid: int, summary: str, other: str, agenda: list[dict], action_items: list[dict]) -> dict:
+def _collect(mid: int, summary: str, other: str, agenda: list[dict], action_items: list[dict], other_evidence: list[str] | None = None) -> dict:
     return {
-        "summary": summary, "other_matters": other.strip() or None,
+        "summary": summary, "other_matters": other.strip() or None, "other_evidence": other_evidence or [],
         "agenda": [{"section": a["section"], "title": a["title"], "discussion": a["discussion"],
                     "resolution": a["resolution"].strip() or None, "evidence": a["evidence"]}
                    for a in agenda if a["title"].strip() or a["discussion"].strip()],
@@ -411,6 +412,12 @@ def render(user: dict, detail: dict):
     st.subheader("วาระ 5 · เรื่องอื่น ๆ")
     other = st.text_area("เรื่องอื่น ๆ", value=content["other_matters"] or "", key=f"other_{mid}_{rev}",
                          disabled=not editable, height=80, label_visibility="collapsed")
+    if other.strip():
+        other_ev = content.get("other_evidence") or []
+        st.caption("หลักฐานจาก transcript: " + _evidence_text(other_ev, content.get("other_grounded", True if other_ev else None)))
+        for w in warnings:
+            if w["path"].startswith("other_matters"):
+                st.warning(w["message"])
 
     _history_panel(user, mid, editable)
 
@@ -423,7 +430,7 @@ def render(user: dict, detail: dict):
     if editable:
         if b1.button("💾 บันทึกร่าง", key=f"savedraft_{mid}"):
             try:
-                service.save_report_draft(user, mid, _collect(mid, summary, other, agenda, content["action_items"]))
+                service.save_report_draft(user, mid, _collect(mid, summary, other, agenda, content["action_items"], content.get("other_evidence")))
             except ServiceError as e:
                 st.error(str(e))
             else:

@@ -1115,9 +1115,10 @@ def _insert_report_rows(cur, summary_id: int, content: dict):
     other = (content.get("other_matters") or "").strip()
     if other:
         cur.execute(
-            """INSERT INTO agenda_items (summary_id, order_no, section, title, discussion)
-               VALUES (%s, %s, %s, %s, %s)""",
-            (summary_id, len(content.get("agenda") or []) + 1, OTHER_SECTION, OTHER_TITLE, other),
+            """INSERT INTO agenda_items (summary_id, order_no, section, title, discussion, evidence)
+               VALUES (%s, %s, %s, %s, %s, %s)""",
+            (summary_id, len(content.get("agenda") or []) + 1, OTHER_SECTION, OTHER_TITLE, other,
+             _dump_list(content.get("other_evidence"))),
         )
     for it in content.get("action_items") or []:
         cur.execute(
@@ -1135,9 +1136,12 @@ def _canonical_content(content: dict) -> dict:
     def t(v):
         return str(v)[:5] if v else None
 
+    other_evidence = [str(e) for e in (content.get("other_evidence") or [])]
     return {
         "summary": content.get("summary") or "",
         "other_matters": content.get("other_matters") or None,
+        # ใส่เฉพาะเมื่อมีหลักฐาน: รุ่นเก่าในตารางประวัติไม่มีคีย์นี้ จึงยังเท่ากันเมื่อเทียบ (skip_if_same)
+        **({"other_evidence": other_evidence} if other_evidence else {}),
         "agenda": [{"section": a.get("section") if a.get("section") in AGENDA_SECTIONS else DEFAULT_AGENDA_SECTION,
                     "title": a.get("title") or "", "discussion": a.get("discussion") or "",
                     "resolution": a.get("resolution") or None, "evidence": [str(e) for e in (a.get("evidence") or [])]}
@@ -1260,6 +1264,7 @@ def _backfill_versions(cur):
             _record_version(cur, sid, "approve", current, row["approved_by"], saved_at=row["approved_at"])
 
 
+CARRIED_SECTIONS = ("approve_prev", "followup", "consider_old")   # วาระที่ระบบสร้างโครงจากครั้งก่อน (AI เติมเนื้อหา/มติจาก transcript ครั้งนี้ได้)
 AI_SECTIONS = ("inform", "consider_new")     # หมวดที่ AI เลือกได้ (วาระ 2, 3, 4.1 ระบบเติมจากครั้งก่อน ไม่ใช่ AI)
 
 
@@ -1314,10 +1319,12 @@ def get_report_version(summary_id: int, version_no: int) -> dict | None:
 def _report_row_to_dict(cur, row: dict) -> dict:
     sid = row["summary_id"]
     cur.execute("SELECT * FROM agenda_items WHERE summary_id = %s ORDER BY order_no, agenda_item_id", (sid,))
-    agenda, other_matters = [], None
+    agenda, other_matters, other_evidence = [], None, []
     for a in cur.fetchall():
         if a["section"] == OTHER_SECTION:
-            other_matters = other_matters or a["discussion"] or None      # วาระ 5 แยกออกมาเป็นข้อความเหมือนเดิม
+            if other_matters is None:
+                other_matters = a["discussion"] or None      # วาระ 5 แยกออกมาเป็นข้อความเหมือนเดิม
+                other_evidence = _json_list(a["evidence"])
             continue
         agenda.append({"section": a["section"], "title": a["title"], "discussion": a["discussion"] or "",
                        "resolution": a["resolution"], "evidence": _json_list(a["evidence"])})
@@ -1341,7 +1348,7 @@ def _report_row_to_dict(cur, row: dict) -> dict:
         "model_used": row["model_used"], "prompt_version": row["prompt_version"],
         "generated_at": row["generated_at"], "edited_at": row["edited_at"],
         "content": {"summary": row["executive_summary"], "agenda": agenda,
-                    "other_matters": other_matters, "action_items": actions},
+                    "other_matters": other_matters, "other_evidence": other_evidence, "action_items": actions},
     }
 
 
