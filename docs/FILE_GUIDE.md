@@ -25,7 +25,7 @@
 ลำดับงานของผู้ใช้ตรงกับแท็บ ①–⑤ ในหน้าการประชุม: ① ข้อมูลและผู้เข้าร่วม → ② บอท → ③ Transcript → ④ รายงาน (AI ร่าง ตรวจ แก้) → ⑤ Calendar (ตรวจงาน อนุมัติ ส่งนัด)
 สถานะการประชุมใน DB เดินตามนี้: `scheduled → recording → transcript_review → transcript_verified → draft → approved` (กำหนดที่ `db.py:161-169`)
 
-หลักการแยกชั้น: **หน้าเว็บ (`ui/`) ไม่แตะฐานข้อมูลเอง** เรียก `service.py` เท่านั้น ส่วน `service.py` เรียก `db.py`, `reports/`, `integrations/`, `bot/botclient.py`
+หลักการแยกชั้น: **หน้าเว็บ (`ui/`) เรียก `service.py` เป็นหลัก** (ยกเว้น `ui/auth.py` ที่เรียก `db.init_schema` และ `db.upsert_user` ตอนเตรียมฐานข้อมูลและบันทึกผู้ใช้ที่ล็อกอิน) ส่วน `service.py` เรียก `db.py`, `reports/`, `integrations/`, `bot/botclient.py`
 ถ้าจะไล่โค้ดตามปุ่มบนหน้าจอ ให้เริ่มที่ไฟล์ `ui/tab_*.py` แล้วตามไปที่ `service.<ชื่อฟังก์ชัน>` ตามด้วย `db.<ชื่อฟังก์ชัน>`
 
 ---
