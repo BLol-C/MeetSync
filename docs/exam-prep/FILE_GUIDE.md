@@ -3,7 +3,7 @@
 เลขบรรทัดในเอกสารนี้ตรวจจากโค้ดจริง ณ commit `8094448` วันที่ 11 พ.ย. 2569 ถ้าแก้โค้ดต่อ เลขบรรทัดจะเลื่อน ให้ค้นด้วยชื่อฟังก์ชันแทน
 ส่วนที่เขียนว่า "ผมไม่ได้ตรวจ" แปลว่ายังไม่ได้เปิดอ่านลึกถึงบรรทัดนั้น ไม่ได้แปลว่าไม่มี
 
-ไฟล์คู่กัน: `docs/TOR_MAP.md` (ฟังก์ชันใน TOR ตรงกับโค้ดตรงไหน)
+ไฟล์คู่กัน: `docs/exam-prep/TOR_MAP.md` (ฟังก์ชันใน TOR ตรงกับโค้ดตรงไหน)
 
 ---
 
@@ -81,7 +81,7 @@
 | `tools/upgrade_calendar_link.py` | 73 | อัปเกรดฐานข้อมูลเก่าให้มีคอลัมน์ใหม่ (สคริปต์ย้อนยุค) |
 | `tools/meet_people_probe.js` | 41 | โค้ดวางใน DevTools เพื่อดูโครงสร้างแผงรายชื่อของ Meet (ใช้ปรับ selector) |
 | `tests/` (15 ไฟล์) | – | เทสต์อัตโนมัติ 311 ข้อ |
-| `docs/CODE_MAP_TOR.md` | 65 | แผนที่ TOR ฉบับเดิม (แทนด้วย `TOR_MAP.md`) |
+| `docs/exam-prep/CODE_MAP_TOR.md` | 65 | แผนที่ TOR ฉบับเดิม (แทนด้วย `docs/exam-prep/TOR_MAP.md`) |
 
 (ไม่ได้ยัดไฟล์ฟอนต์ 2 ไฟล์ในตารางเป็นบรรทัดแยกเพราะเป็นไฟล์ข้อมูลไม่ใช่โค้ด)
 
@@ -246,7 +246,7 @@
 
 ### 3.9 `docs/` และ `fonts/`
 
-- `docs/CODE_MAP_TOR.md`: แผนที่เดิม (ใน `docs/TOR_MAP.md` มีฉบับที่ตรวจเลขบรรทัดใหม่ทั้งหมดแทน)
+- `docs/exam-prep/CODE_MAP_TOR.md`: แผนที่เดิม (ใน `docs/exam-prep/TOR_MAP.md` มีฉบับที่ตรวจเลขบรรทัดใหม่ทั้งหมดแทน)
 - `docs/SCRIPT_1HR_natural.md`, `docs/SCRIPT_15MIN_CONTINUE_V2.md`: บทพูดทดสอบ (ยังไม่ได้ commit)
 - `fonts/`: ฟอนต์ TH Sarabun New (ปกติ/ตัวหนา) แจกฟรีจาก SIPA ใช้ใน `pdf_report.py`
 
@@ -297,7 +297,7 @@
 | `README.md` บรรทัด 126 | บอกว่า 150 เทสต์ ณ 9 ต.ค. ปัจจุบันคือ 311 |
 | `README.md` บรรทัด 121 | อ้างถึง `docs/ai_quality_check.md` ซึ่งไม่มีไฟล์นี้ใน `docs/` |
 | `README.md` บรรทัด 142, 159 | ข้อความเรื่องทดสอบ Meet จริงรอบเดียวและ prompt v7 "ยังไม่ได้ทดสอบกับ Gemini จริง" อาจไม่ตรงกับสถานะล่าสุด (คุณแจ้งว่าทดสอบวาระ 2, 3, 4.1, 5 แล้ว) |
-| `docs/CODE_MAP_TOR.md` บรรทัด 4 | ชื่อ `streamlit_bot_service.py` ผิด (ที่ถูกคือ `streamlit_app.py`) เกิดจากการแทนที่ชื่อไฟล์ตอนเปลี่ยน `app.py` เป็น `bot_service.py` |
+| `docs/exam-prep/CODE_MAP_TOR.md` บรรทัด 4 | ชื่อ `streamlit_bot_service.py` ผิด (ที่ถูกคือ `streamlit_app.py`) เกิดจากการแทนที่ชื่อไฟล์ตอนเปลี่ยน `app.py` เป็น `bot_service.py` |
 | `prompts/` | v1–v4 และ `minutes_map_v1` ไม่มีโค้ดเรียกใช้ (เก็บเป็นประวัติ) |
 | `tools/upgrade_calendar_link.py` | เป็นสคริปต์ของฐานข้อมูลรุ่นเก่า ฐานข้อมูลใหม่ไม่ต้องใช้ |
 | `.meet_profile/Default/...` | โฟลเดอร์ข้อมูลของ Chrome ไม่ใช่โค้ด |
