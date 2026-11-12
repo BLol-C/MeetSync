@@ -34,7 +34,7 @@ ui/             หน้าเว็บ Streamlit ทีละแท็บ
 prompts/  fonts/   ไฟล์ prompt ของ AI (มีเวอร์ชัน) และฟอนต์ TH Sarabun New
 tools/          สคริปต์ช่วย (monitor memory, ทดสอบความเสถียร, จำลอง Meet)
 tests/          เทสต์อัตโนมัติ 311 ข้อ
-docs/           exam-prep/        FILE_GUIDE.md (หน้าที่ทุกไฟล์) · TOR_MAP.md (ฟังก์ชันใน TOR ↔ โค้ด) · ADVISOR_PREP.md (เตรียมตอบอาจารย์) · CODE_MAP_TOR.md (แผนที่ TOR ฉบับเดิม)
+docs/           exam-prep/        FILE_GUIDE.md (หน้าที่ทุกไฟล์) · TOR_MAP.md (ฟังก์ชันใน TOR ↔ โค้ด) · ADVISOR_PREP.md (เตรียมตอบอาจารย์) · CODE_MAP_TOR.md (แผนที่ TOR ฉบับเดิม) · BACKEND_DEEP_DIVE.md (ฐานข้อมูล สิทธิ์ ประวัติ ทดสอบ prompt)
                 subsystem-guides/ PLAYWRIGHT_BOT_GUIDE.md · CALENDAR_GUIDE.md · SOAK_GUIDE.md (วัดเสถียรภาพ)
                 handoff/          PROPOSAL_V9_HANDOFF.md · GEMINI_HANDOFF_PROMPT.md
                 recording/        SCRIPT_3HR_FULL.md (บทพูดสำหรับอัดคลิป)
