@@ -20,7 +20,7 @@
 | GitHub | `https://github.com/BLol-C/MeetSync.git` branch `roster-and-alias` (merge เข้า `main` ผ่าน Pull Request แล้วหลายรอบ ฉบับล่าสุดของ `roster-and-alias` คือ commit `29d8ae5`) |
 | สถานะระบบ | ระบบครบตามที่ตกลง เจ้าของโปรเจกต์ตัดสินใจ **ไม่แก้ฟีเจอร์เพิ่ม** เหลือแต่เอกสาร การอัดคลิป และการเตรียมสาธิตอาจารย์ |
 | เทสต์ | 311 ข้อ ผ่านทั้งหมดเมื่อ 11 พ.ย. 2569 ใช้เวลา ~5 นาที |
-| เอกสารในโปรเจกต์ | `docs/FILE_GUIDE.md`, `docs/TOR_MAP.md`, `docs/ADVISOR_PREP.md`, `docs/SOAK_GUIDE.md`, `docs/PLAYWRIGHT_BOT_GUIDE.md`, `docs/CALENDAR_GUIDE.md`, `docs/PROPOSAL_V9_HANDOFF.md`, `docs/CODE_MAP_TOR.md` (ฉบับเก่า) และ `README.md` |
+| เอกสารในโปรเจกต์ | `docs/exam-prep/FILE_GUIDE.md`, `docs/exam-prep/TOR_MAP.md`, `docs/exam-prep/ADVISOR_PREP.md`, `docs/subsystem-guides/SOAK_GUIDE.md`, `docs/subsystem-guides/PLAYWRIGHT_BOT_GUIDE.md`, `docs/subsystem-guides/CALENDAR_GUIDE.md`, `docs/handoff/PROPOSAL_V9_HANDOFF.md`, `docs/exam-prep/CODE_MAP_TOR.md` (ฉบับเก่า) และ `README.md` |
 | เอกสารนอกโปรเจกต์ | Proposal: `C:\Users\<ผู้ใช้>\Documents\docs project\Proposal\v9_...docx` (ฉบับล่าสุด), TOR: `...\docs project\TOR\v2_01418499_TOR_MeetSync.docx` |
 
 ---
@@ -63,13 +63,13 @@ Repo: `https://github.com/BLol-C/MeetSync.git` branch ทำงานคือ `
 **ระบบ:** ครบแล้ว เทสต์ 311 ข้อผ่าน (11 พ.ย. 2569) ฟีเจอร์ล่าสุด: AI เติมวาระ 2, 3, 4.1 จากรายงานครั้งก่อน (ระบบสร้างโครงจาก DB แล้วให้ AI เติมความคืบหน้า/มติเฉพาะที่พูดจริงและมีหลักฐาน), วาระ 5 "เรื่องอื่นๆ" เก็บเป็นแถวหมวด `other` พร้อมหลักฐาน, ประวัติรายงานแบบเพิ่มอย่างเดียว (`summary_versions`), ส่งนัดเข้า Calendar แบบหลายวัน/ช่วงเวลา เจ้าของแจ้งว่าทดสอบเติมวาระ 2, 3, 4.1, 5 กับ Gemini จริงแล้วเมื่อ 11 พ.ย. (ผู้ช่วยก่อนหน้าไม่ได้เห็นผลนั้นเอง)
 
 **เอกสารที่เตรียมไว้ใน `docs/` (อ่านก่อนเริ่มงานใดๆ):**
-- `FILE_GUIDE.md` หน้าที่ของทุกไฟล์ ตัวแปร `.env` และข้อสังเกตข้อความล้าสมัยในโค้ด
-- `TOR_MAP.md` ฟังก์ชัน 1–6 ของ TOR v2 ↔ โค้ด (ไฟล์:บรรทัด) ↔ เทสต์
-- `ADVISOR_PREP.md` อ่านโค้ดทีละจุด + คำอธิบายพร้อมพูด + แบบฝึกถามตอบ 30 ข้อ
-- `PLAYWRIGHT_BOT_GUIDE.md` บอทเข้าห้อง เปิดคำบรรยาย แผง "บุคคล"
-- `CALENDAR_GUIDE.md` OAuth ส่งนัด ตรวจกลับ ลบนัด
-- `SOAK_GUIDE.md` เครื่องมือวัดเสถียรภาพและข้อจำกัดของวิธีวัด
-- `PROPOSAL_V9_HANDOFF.md` สรุปว่า Proposal v9 แก้อะไรไปแล้วและอะไรยังเหลือ
+- `docs/exam-prep/FILE_GUIDE.md` หน้าที่ของทุกไฟล์ ตัวแปร `.env` และข้อสังเกตข้อความล้าสมัยในโค้ด
+- `docs/exam-prep/TOR_MAP.md` ฟังก์ชัน 1–6 ของ TOR v2 ↔ โค้ด (ไฟล์:บรรทัด) ↔ เทสต์
+- `docs/exam-prep/ADVISOR_PREP.md` อ่านโค้ดทีละจุด + คำอธิบายพร้อมพูด + แบบฝึกถามตอบ 30 ข้อ
+- `docs/subsystem-guides/PLAYWRIGHT_BOT_GUIDE.md` บอทเข้าห้อง เปิดคำบรรยาย แผง "บุคคล"
+- `docs/subsystem-guides/CALENDAR_GUIDE.md` OAuth ส่งนัด ตรวจกลับ ลบนัด
+- `docs/subsystem-guides/SOAK_GUIDE.md` เครื่องมือวัดเสถียรภาพและข้อจำกัดของวิธีวัด
+- `docs/handoff/PROPOSAL_V9_HANDOFF.md` สรุปว่า Proposal v9 แก้อะไรไปแล้วและอะไรยังเหลือ
 
 **อาจารย์ที่ปรึกษา:** ตรวจโดยไล่ตารางฟังก์ชันใน TOR จากบนลงล่าง เคยขอดูโค้ดส่วนตรวจจับผู้เข้าร่วมจาก Meet (`bot/meet_engine.py:228-261`, `:470-500`, `db.py:655`) ขอหลักฐานว่าบอทอยู่ในห้องได้ 1 ชั่วโมงโดยไม่เกิดหน่วยความจำรั่ว และสนใจตารางประวัติรายงาน
 
@@ -81,8 +81,8 @@ Repo: `https://github.com/BLol-C/MeetSync.git` branch ทำงานคือ `
 
 ### 5) งานที่ยังเหลือ (เรียงตามความสำคัญ)
 1. **TOR v2 หัวข้อ 3.1 ยังมีข้อความเก่า** ("เลือกส่งภาระงานไปยัง Google Calendar ของตนเองได้" และ "ยังไม่สามารถแก้ไขเนื้อหาสรุปที่ AI สร้างได้") ขัดกับฟังก์ชัน 5 และ 6 ใน TOR เดียวกัน และขัดกับระบบจริง (ระบบส่งงานที่มีวันกำหนดทั้งหมดพร้อมกันตอนอนุมัติ และแก้ได้ทุกช่อง) แผน: ทำสำเนา v3 แก้ข้อความนี้ และปรับถ้อยคำฟังก์ชัน 4 ข้อ "จัดโครงสร้างข้อมูลให้อยู่ในรูปแบบ JSON Schema ที่พร้อมนำไปใช้งานต่อ" ให้ชัด (เสนอ: บังคับให้ AI ตอบในโครงสร้างตายตัว (JSON Schema) เพื่อบันทึกลงฐานข้อมูล แสดงให้แก้ไข และส่งเข้า Calendar ได้โดยไม่ต้องแปลงเอง) และจัดหน้าให้เท่าข้อบน ต้องถามเจ้าของก่อนลงมือ
-2. **Proposal v9 (docx)** งานที่ค้างอยู่ใน `docs/PROPOSAL_V9_HANDOFF.md` หัวข้อ 2 (11 ข้อ) เช่น ลิงก์เอกสารอ้างอิง [13]–[17] ที่ชี้ไฟล์ในเครื่อง, Tracked Change ที่ค้าง 1 จุด, ป้ายหัวข้อตกค้างใน [7]–[11], ข้อจำกัดที่ยังไม่เขียน, การลบไฮไลต์และ export PDF
-3. **อัดคลิป 1 ชั่วโมง** (บอทอยู่ในห้องจริงนาน 1 ชั่วโมง) แนะนำใช้บทพูดมาตรฐาน `tools/stability_script.txt` และตรวจด้วย `tools/stability_check.py` ขั้นตอนใน `docs/SOAK_GUIDE.md`
+2. **Proposal v9 (docx)** งานที่ค้างอยู่ใน `docs/handoff/PROPOSAL_V9_HANDOFF.md` หัวข้อ 2 (11 ข้อ) เช่น ลิงก์เอกสารอ้างอิง [13]–[17] ที่ชี้ไฟล์ในเครื่อง, Tracked Change ที่ค้าง 1 จุด, ป้ายหัวข้อตกค้างใน [7]–[11], ข้อจำกัดที่ยังไม่เขียน, การลบไฮไลต์และ export PDF
+3. **อัดคลิป 1 ชั่วโมง** (บอทอยู่ในห้องจริงนาน 1 ชั่วโมง) แนะนำใช้บทพูดมาตรฐาน `tools/stability_script.txt` และตรวจด้วย `tools/stability_check.py` ขั้นตอนใน `docs/subsystem-guides/SOAK_GUIDE.md`
 4. **ตั้งระบบจากศูนย์หน้างาน** บนฐาน `meetsync_demo` (ว่าง 8 ตาราง): ต้องให้เจ้าของตั้ง `DB_NAME` ใน `.env` เอง (AI ห้ามแก้ `.env`) รีสตาร์ท ล็อกอิน และเชื่อม Calendar ใหม่
 5. **ตัดสินใจเรื่องโมเดล Gemini:** `.env` ตอนนี้ตั้งเป็น `gemini-3.5-flash-lite` ชั่วคราว (ค่าเริ่มต้นในโค้ดและตัวอย่างในเอกสารคือ `gemini-3.6-flash`) ตรวจโควตาก่อนซ้อม/วันตรวจ อย่ากดร่างรายงานรัว
 6. **ซ้อมทั้งสายบนฐานสาธิต** ด้วยบัญชีที่จะใช้จริง และให้อีเมลผู้รับผิดชอบใน roster ถูกรูปแบบ
@@ -106,23 +106,23 @@ Repo: `https://github.com/BLol-C/MeetSync.git` branch ทำงานคือ `
 ```
 ตอนนี้ให้คุณเล่นเป็นอาจารย์ที่ปรึกษาของโปรเจกต์นี้ ตรวจโดยไล่ตาราง TOR v2 ฟังก์ชัน 1–6 จากบนลงล่าง ถามฉันทีละข้อ (ครั้งละ 1 คำถาม) โดยเน้นเรื่อง
 (1) บอทเข้าห้อง Meet ด้วย Playwright ทำงานอย่างไร (2) การตรวจจับและเปิดแผงรายชื่อผู้เข้าร่วม (3) Gemini ร่างรายงานและการตรวจหลักฐาน (4) Google Calendar ทำงานอย่างไร (5) หน่วยความจำรั่ว/การทดสอบ 1 ชั่วโมง
-หลังฉันตอบ ให้บอกว่าถูกหรือขาดอะไร โดยเทียบกับโค้ดจริง (เปิดไฟล์ในโปรเจกต์ แล้วอ้าง ไฟล์:บรรทัด) ใช้ docs/ADVISOR_PREP.md, docs/PLAYWRIGHT_BOT_GUIDE.md และ docs/CALENDAR_GUIDE.md เป็นแนวทาง แต่ตรวจกับโค้ดอีกรอบ ถ้าฉันตอบไม่ตรงข้อเท็จจริง ให้แก้ตรงๆ อย่าตามใจฉัน
+หลังฉันตอบ ให้บอกว่าถูกหรือขาดอะไร โดยเทียบกับโค้ดจริง (เปิดไฟล์ในโปรเจกต์ แล้วอ้าง ไฟล์:บรรทัด) ใช้ docs/exam-prep/ADVISOR_PREP.md, docs/subsystem-guides/PLAYWRIGHT_BOT_GUIDE.md และ docs/subsystem-guides/CALENDAR_GUIDE.md เป็นแนวทาง แต่ตรวจกับโค้ดอีกรอบ ถ้าฉันตอบไม่ตรงข้อเท็จจริง ให้แก้ตรงๆ อย่าตามใจฉัน
 ```
 
 ### C2. ทำ TOR v3 (ต้องถามก่อนลงมือ)
 ```
 งาน: ทำสำเนา TOR v2 (Documents\docs project\TOR\v2_01418499_TOR_MeetSync.docx) เป็น v3 แก้สามเรื่อง ได้แก่ หัวข้อ 3.1 ที่มีข้อความเก่า, ถ้อยคำฟังก์ชัน 4 ข้อ JSON Schema, การจัดหน้าของแถวนั้นให้เท่าข้อบน ก่อนลงมือ
-(1) อ่าน TOR v2 ทั้งฉบับ (ใช้ python-docx ของ Python ระบบ) แล้วแสดงข้อความปัจจุบันของสามจุดนี้ให้ฉันดู (2) เสนอข้อความใหม่ที่ตรงกับระบบ โดยตรวจกับ docs/TOR_MAP.md และโค้ดจริง (3) รอให้ฉันอนุมัติ แล้วจึงสร้าง v3 เป็นสำเนาใหม่ ห้ามทับ v2 แล้วเทียบผลก่อน/หลังให้ฉันดู
+(1) อ่าน TOR v2 ทั้งฉบับ (ใช้ python-docx ของ Python ระบบ) แล้วแสดงข้อความปัจจุบันของสามจุดนี้ให้ฉันดู (2) เสนอข้อความใหม่ที่ตรงกับระบบ โดยตรวจกับ docs/exam-prep/TOR_MAP.md และโค้ดจริง (3) รอให้ฉันอนุมัติ แล้วจึงสร้าง v3 เป็นสำเนาใหม่ ห้ามทับ v2 แล้วเทียบผลก่อน/หลังให้ฉันดู
 ```
 
 ### C3. ตรวจ Proposal เทียบกับระบบ
 ```
-งาน: ตรวจ Proposal (Documents\docs project\Proposal\v9_...docx) ว่าข้อความตรงกับระบบไหม ให้ใช้ docs/PROPOSAL_V9_HANDOFF.md เป็นรายการที่ตรวจแล้วและที่ค้างอยู่ ตรวจเพิ่มเฉพาะส่วนที่ระบุว่ายังไม่ได้ตรวจ แล้วทำตาราง "ไม่ตรง / ไม่แน่ใจ / ตรงแล้ว" พร้อมไฟล์:บรรทัดหรือหน้าที่อ้างอิง ห้ามบอกว่าตรง 100% ให้บอกเฉพาะ "ตรวจแล้วไม่พบจุดขัดในส่วนที่ตรวจได้" และห้ามแก้ไฟล์ ถ้าจะแก้ให้ทำสำเนาเวอร์ชันใหม่และถามฉันก่อน
+งาน: ตรวจ Proposal (Documents\docs project\Proposal\v9_...docx) ว่าข้อความตรงกับระบบไหม ให้ใช้ docs/handoff/PROPOSAL_V9_HANDOFF.md เป็นรายการที่ตรวจแล้วและที่ค้างอยู่ ตรวจเพิ่มเฉพาะส่วนที่ระบุว่ายังไม่ได้ตรวจ แล้วทำตาราง "ไม่ตรง / ไม่แน่ใจ / ตรงแล้ว" พร้อมไฟล์:บรรทัดหรือหน้าที่อ้างอิง ห้ามบอกว่าตรง 100% ให้บอกเฉพาะ "ตรวจแล้วไม่พบจุดขัดในส่วนที่ตรวจได้" และห้ามแก้ไฟล์ ถ้าจะแก้ให้ทำสำเนาเวอร์ชันใหม่และถามฉันก่อน
 ```
 
 ### C4. แผนอัดคลิป 1 ชั่วโมง
 ```
-งาน: ช่วยวางแผนอัดคลิปที่ให้เห็นว่าบอทอยู่ในห้อง Google Meet จริงนาน 1 ชั่วโมงโดยหน่วยความจำไม่เพิ่มต่อเนื่อง ใช้ docs/SOAK_GUIDE.md เป็นแนวทาง ทำรายการเตรียมของก่อนอัด ขั้นตอนระหว่างอัด (ใช้ tools/proc_monitor.ps1, tools/stability_script.txt, tools/stability_check.py) และสิ่งที่ต้องแสดงในคลิป ระบุข้อจำกัดของวิธีวัดตามที่เขียนไว้ใน SOAK_GUIDE (วัดรวมทั้งเครื่อง เกณฑ์เฉลี่ยหนึ่งในสี่มองไม่เห็นการไต่ช้าๆ ช่วงท้าย) และเสนอวิธีอ่านผลที่ซื่อตรง อย่ารันบอทหรือแตะ .env เอง
+งาน: ช่วยวางแผนอัดคลิปที่ให้เห็นว่าบอทอยู่ในห้อง Google Meet จริงนาน 1 ชั่วโมงโดยหน่วยความจำไม่เพิ่มต่อเนื่อง ใช้ docs/subsystem-guides/SOAK_GUIDE.md เป็นแนวทาง ทำรายการเตรียมของก่อนอัด ขั้นตอนระหว่างอัด (ใช้ tools/proc_monitor.ps1, tools/stability_script.txt, tools/stability_check.py) และสิ่งที่ต้องแสดงในคลิป ระบุข้อจำกัดของวิธีวัดตามที่เขียนไว้ใน SOAK_GUIDE (วัดรวมทั้งเครื่อง เกณฑ์เฉลี่ยหนึ่งในสี่มองไม่เห็นการไต่ช้าๆ ช่วงท้าย) และเสนอวิธีอ่านผลที่ซื่อตรง อย่ารันบอทหรือแตะ .env เอง
 ```
 
 ### C5. จูน prompt ของ AI (ถามก่อนทำ)
@@ -136,10 +136,10 @@ Repo: `https://github.com/BLol-C/MeetSync.git` branch ทำงานคือ `
 
 | งาน | ไฟล์ที่ควรแนบ/ให้เปิดอ่าน |
 |---|---|
-| ทุกงาน | `README.md`, `docs/FILE_GUIDE.md` |
-| ตอบอาจารย์ / ซ้อมถามตอบ | `docs/ADVISOR_PREP.md`, `docs/TOR_MAP.md`, `docs/PLAYWRIGHT_BOT_GUIDE.md`, `docs/CALENDAR_GUIDE.md` และโค้ดที่ถูกอ้าง (`bot/meet_engine.py`, `bot_service.py`, `db.py`, `service.py`, `reports/summarizer.py`, `integrations/calendar_sync.py`) |
-| แก้ TOR / Proposal | ไฟล์ .docx ที่เกี่ยวข้อง, `docs/TOR_MAP.md`, `docs/PROPOSAL_V9_HANDOFF.md` |
-| อัดคลิป 1 ชั่วโมง / soak | `docs/SOAK_GUIDE.md`, `tools/proc_monitor.ps1`, `tools/stability_check.py`, `tools/stability_script.txt` |
+| ทุกงาน | `README.md`, `docs/exam-prep/FILE_GUIDE.md` |
+| ตอบอาจารย์ / ซ้อมถามตอบ | `docs/exam-prep/ADVISOR_PREP.md`, `docs/exam-prep/TOR_MAP.md`, `docs/subsystem-guides/PLAYWRIGHT_BOT_GUIDE.md`, `docs/subsystem-guides/CALENDAR_GUIDE.md` และโค้ดที่ถูกอ้าง (`bot/meet_engine.py`, `bot_service.py`, `db.py`, `service.py`, `reports/summarizer.py`, `integrations/calendar_sync.py`) |
+| แก้ TOR / Proposal | ไฟล์ .docx ที่เกี่ยวข้อง, `docs/exam-prep/TOR_MAP.md`, `docs/handoff/PROPOSAL_V9_HANDOFF.md` |
+| อัดคลิป 1 ชั่วโมง / soak | `docs/subsystem-guides/SOAK_GUIDE.md`, `tools/proc_monitor.ps1`, `tools/stability_check.py`, `tools/stability_script.txt` |
 | จูน prompt AI | `prompts/minutes_v7.md`, `reports/summarizer.py`, `reports/continuity.py` |
 | ตรวจ/เขียนเทสต์ | โฟลเดอร์ `tests/` (ไฟล์ที่ตรงกับโมดูล) |
 

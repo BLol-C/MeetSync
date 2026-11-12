@@ -4,7 +4,7 @@
 เลขบรรทัดตรวจจากโค้ด ณ commit `a080b13` (วันที่ 12 พ.ย. 2569) ถ้าแก้โค้ด เลขเลื่อน ให้ค้นด้วยชื่อฟังก์ชัน
 
 ไฟล์หลักที่เกี่ยวข้อง: `bot/meet_engine.py` (เครื่องยนต์บอท), `bot_service.py` (บริการที่คุมบอทและเขียนลง DB), `bot/botclient.py` (หน้าเว็บเรียกบริการบอท)
-ไฟล์คู่กัน: `docs/CALENDAR_GUIDE.md` (การทำงานของ Calendar), `docs/ADVISOR_PREP.md` (เตรียมตอบอาจารย์), `docs/FILE_GUIDE.md` (หน้าที่ทุกไฟล์)
+ไฟล์คู่กัน: `docs/subsystem-guides/CALENDAR_GUIDE.md` (การทำงานของ Calendar), `docs/exam-prep/ADVISOR_PREP.md` (เตรียมตอบอาจารย์), `docs/exam-prep/FILE_GUIDE.md` (หน้าที่ทุกไฟล์)
 
 ข้อความที่เป็น "ความรู้ทั่วไปของ Playwright" (ไม่ได้มาจากโค้ดของโปรเจกต์) ผมกำกับไว้ว่า "ทั่วไป"
 
@@ -122,7 +122,7 @@ ui/tab_bot.py:12 _start                  bot_service.py:278 /bot/start          
 - อ่านพลาดไม่กระทบการจับคำบรรยาย (กลืน exception ที่ `:578-579`)
 
 ### 5.4 หลังอ่านได้ ไปเกิดอะไรกับรายชื่อ
-event `participants` → `bot_service.py:173-177` → คิว → `_persist_participants` (`:139`) → `db.record_room_names` (`db.py:675`) → จับคู่กับ "ชื่อภาษาอังกฤษ" ที่ลงทะเบียนไว้ (`_find_speaker_for_name` `db.py:708`) ตั้ง "เข้าร่วม" และ `seen_in_room` ให้ที่ตรง ชื่อที่ไม่ตรงใครสร้างเป็นแถว `guest` (`source = 'meet'`) ให้ผู้ใช้ตัดสินที่แท็บ ③ (รายละเอียดดู `docs/ADVISOR_PREP.md` หัวข้อ 1.1)
+event `participants` → `bot_service.py:173-177` → คิว → `_persist_participants` (`:139`) → `db.record_room_names` (`db.py:675`) → จับคู่กับ "ชื่อภาษาอังกฤษ" ที่ลงทะเบียนไว้ (`_find_speaker_for_name` `db.py:708`) ตั้ง "เข้าร่วม" และ `seen_in_room` ให้ที่ตรง ชื่อที่ไม่ตรงใครสร้างเป็นแถว `guest` (`source = 'meet'`) ให้ผู้ใช้ตัดสินที่แท็บ ③ (รายละเอียดดู `docs/exam-prep/ADVISOR_PREP.md` หัวข้อ 1.1)
 
 ---
 
@@ -143,7 +143,7 @@ event `participants` → `bot_service.py:173-177` → คิว → `_persist_pa
 
 - **ฝังสคริปต์:** `_install_watcher` (`:461-468`) เรียก `page.evaluate(JS_CAPTION_WATCHER)` ก่อนนั้นตั้งตัวนับ id แถวให้ต่อจากรอบก่อนเสมอ (`SEQ_BASE_STEP` `:285`) เพราะถ้าหน้าโหลดใหม่ ตัวนับในหน้าจะรีเซ็ตและ id ชนกับของเดิม
 - **สะพาน:** สคริปต์เรียก `window.__onCaption(payload)` (ฟังก์ชันที่ `expose_function` สร้างไว้ที่ `:623-625`) → Python เรียก `_emit(type="caption", ...)` (`:341`) → callback `on_event` ของบริการบอท (`bot_service.py:201`)
-- **รายละเอียดตัวจับ:** `MutationObserver` เฝ้ากรอบคำบรรยาย, รวมข้อความด้วย "จุดยึด" (`mergeCommit` `:94-115`), ปิดแถวเมื่อเงียบ 1.5 วินาที (`FINALIZE_MS`), ล้างข้อมูลแถวที่จบแล้ว (`cleanup` `:130-136`) อ่านต่อใน `docs/ADVISOR_PREP.md` หัวข้อ 1.2
+- **รายละเอียดตัวจับ:** `MutationObserver` เฝ้ากรอบคำบรรยาย, รวมข้อความด้วย "จุดยึด" (`mergeCommit` `:94-115`), ปิดแถวเมื่อเงียบ 1.5 วินาที (`FINALIZE_MS`), ล้างข้อมูลแถวที่จบแล้ว (`cleanup` `:130-136`) อ่านต่อใน `docs/exam-prep/ADVISOR_PREP.md` หัวข้อ 1.2
 
 ---
 

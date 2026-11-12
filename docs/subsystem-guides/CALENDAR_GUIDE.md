@@ -4,7 +4,7 @@
 เลขบรรทัดตรวจจากโค้ด ณ commit `a080b13` (วันที่ 12 พ.ย. 2569) ถ้าแก้โค้ด เลขเลื่อน ให้ค้นด้วยชื่อฟังก์ชัน
 
 ไฟล์หลักที่เกี่ยวข้อง: `integrations/calendar_auth.py` (OAuth), `integrations/calendar_sync.py` (สร้าง/อ่าน/เทียบ/ลบนัด), `service.py` (ลำดับขั้นและสิทธิ์), `bot_service.py` (รับ callback ของ Google), `bot/botclient.py` (โทเคนที่เซ็นแล้ว), `ui/tab_calendar.py` (หน้าจอแท็บ ⑤), `db.py` (เก็บ token และสถานะนัด)
-ไฟล์คู่กัน: `docs/PLAYWRIGHT_BOT_GUIDE.md` (การทำงานของบอท), `docs/ADVISOR_PREP.md` (เตรียมตอบอาจารย์), `docs/TOR_MAP.md` (ฟังก์ชัน 6 ของ TOR)
+ไฟล์คู่กัน: `docs/subsystem-guides/PLAYWRIGHT_BOT_GUIDE.md` (การทำงานของบอท), `docs/exam-prep/ADVISOR_PREP.md` (เตรียมตอบอาจารย์), `docs/exam-prep/TOR_MAP.md` (ฟังก์ชัน 6 ของ TOR)
 
 ข้อความที่เป็น "ความรู้ทั่วไป" ของ OAuth/Google API (ไม่ได้มาจากโค้ดของโปรเจกต์) ผมกำกับไว้ว่า "ทั่วไป"
 
